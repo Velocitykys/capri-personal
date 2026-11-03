@@ -339,6 +339,7 @@ namespace CapriDesktop
         {
             capri = owner;
             Hands.Activity = owner.RecordEnhancementActivity;
+            Hands.FeatureOn = owner.ExperimentalFeatureOn;
             Text = "Capri Mainframe";
             Icon = icon;
             ShowInTaskbar = true;
