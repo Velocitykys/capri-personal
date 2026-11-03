@@ -1424,10 +1424,10 @@ namespace CapriDesktop
         }
 
         private HighlightAssistanceSheet highlightAssistance;
-        private void OpenHighlightAssistance(string selected)
+        private void OpenHighlightAssistance(byte[] selectedImage)
         {
             if (highlightAssistance != null && !highlightAssistance.IsDisposed) highlightAssistance.Close();
-            highlightAssistance = new HighlightAssistanceSheet(this, zoom, selected);
+            highlightAssistance = new HighlightAssistanceSheet(this, zoom, selectedImage);
             highlightAssistance.Show(this);
             highlightAssistance.Activate();
         }
