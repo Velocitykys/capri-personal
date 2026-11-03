@@ -338,6 +338,8 @@ namespace CapriDesktop
         internal Mainframe(Companion owner, Icon icon, string version)
         {
             capri = owner;
+            Hands.Activity = owner.RecordEnhancementActivity;
+            Hands.FeatureOn = owner.ExperimentalFeatureOn;
             Text = "Capri Mainframe";
             Icon = icon;
             ShowInTaskbar = true;
@@ -354,7 +356,11 @@ namespace CapriDesktop
             build = Caption("v" + version, 200, 20, small, Faint);
             build.AutoSize = false;
             build.TextAlign = ContentAlignment.MiddleRight;
-            build.Bounds = new Rectangle(230, 20, 62, 22);
+            build.Bounds = new Rectangle(230, 43, 62, 14);
+            Key enhancementsButton = Make("Enhance", 230, 20, 62, 22, delegate { OpenEnhancements(); });
+            enhancementsButton.Accent = Cyan;
+            enhancementsButton.Loud = true;
+            enhancementsButton.AccessibleName = "Enhancements: open experimental features";
             minimize = Make("", 300, 20, 26, 22, delegate { WindowState = FormWindowState.Minimized; });
             minimize.Glyph = 1;
             minimize.AccessibleName = "Minimize";
@@ -1914,7 +1920,14 @@ namespace CapriDesktop
         {
             string page = (name ?? "main").Trim().ToLowerInvariant();
             if (page.Length == 0) page = "main";
-            if (!Regex.IsMatch(page, @"\A(main|settings|brain|voice|you|moves|keys|capri|watch|habits|games|clips|security|extras|layers|personality|memories)\z")) return false;
+            if (!Regex.IsMatch(page, @"\A(main|settings|brain|voice|you|moves|keys|capri|watch|habits|games|clips|security|extras|layers|personality|memories|enhancements)\z")) return false;
+            if (page == "enhancements")
+            {
+                ShowSettings(false);
+                Restore();
+                OpenEnhancements();
+                return true;
+            }
             bool settings = page != "main" && page != "brain" && page != "voice";
             ShowSettings(settings);
             if (settings && page != "settings" && !capri.AdvancedSettings)

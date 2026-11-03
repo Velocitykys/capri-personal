@@ -1426,9 +1426,29 @@ namespace CapriDesktop
         // On stream, asking her to play starts her stream job however it's worded.
         internal static bool Streams(string said) { return Regex.IsMatch(said ?? "", @"\b(play|playing|game|gaming|stream|streaming|streamer|live|chat|viewers|audience)\b", RegexOptions.IgnoreCase); }
 
+        internal static Action<string, string> Activity;
+        internal static Func<string, bool> FeatureOn;
+
         internal static string Do(string tool, ToolArguments args)
         {
+            string result = DoCore(tool, args);
+            Action<string, string> log = Activity;
+            Func<string, bool> enabled = FeatureOn;
+            if (log != null && enabled != null && (enabled("command_history") || enabled("notification_centre")) && !string.IsNullOrEmpty(tool) && !string.IsNullOrEmpty(result))
+            {
+                try { log("Command", tool + " · " + (result.StartsWith("That didn't work", StringComparison.Ordinal) ? "failed" : "completed")); }
+                catch (Exception) { }
+            }
+            return result;
+        }
+
+        private static string DoCore(string tool, ToolArguments args)
+        {
             if (args == null) args = new ToolArguments();
+            Func<string, bool> enabled = FeatureOn;
+            if (enabled != null && tool == "remind" && !enabled("better_timers")) return "Timers and reminders are switched off in Enhancements.";
+            if (enabled != null && tool == "routine" && !enabled("custom_commands")) return "Custom commands are switched off in Enhancements.";
+            if (enabled != null && tool == "pc_status" && !enabled("pc_health_monitor")) return "PC Health Monitor is switched off in Enhancements.";
             try
             {
                 // Something that can't work here gets her line saying so and why, before anything runs.
