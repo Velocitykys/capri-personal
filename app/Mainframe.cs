@@ -244,6 +244,7 @@ namespace CapriDesktop
         private bool syncing;
         internal bool Quitting;
         private readonly Key more;
+        private readonly Key enhancementsButton;
         private readonly Key minimize;
         private readonly Key close;
         private readonly Label build;
@@ -356,7 +357,7 @@ namespace CapriDesktop
             build.AutoSize = false;
             build.TextAlign = ContentAlignment.MiddleRight;
             build.Bounds = new Rectangle(230, 43, 62, 14);
-            Key enhancementsButton = Make("Enhance", 230, 20, 62, 22, delegate { OpenEnhancements(); });
+            enhancementsButton = Make("Enhance", 230, 20, 62, 22, delegate { OpenEnhancements(); });
             enhancementsButton.Accent = Cyan;
             enhancementsButton.Loud = true;
             enhancementsButton.AccessibleName = "Enhancements: open experimental features";
@@ -1226,6 +1227,7 @@ namespace CapriDesktop
             if (!on) CancelKeys();
             ScrollPage(0);
             paged = on;
+            enhancementsButton.Visible = !on;
             simple = !capri.AdvancedSettings;
             advancedKey.Text = simple ? "Advanced Settings" : "Simple Settings";
             advancedKey.AccessibleName = simple ? "Advanced Settings: show every setting" : "Simple Settings: show only the main settings";
