@@ -1045,7 +1045,6 @@ namespace CapriDesktop
                 instruction.Bounds = Box(16, 82, 374, 34); instruction.BackColor = Field;
                 instruction.ForeColor = White; instruction.Font = Type(8.5f * scale);
                 instruction.Text = ""; instruction.AccessibleName = "Custom instructions for Capri";
-                instruction.PlaceholderText = "Or tell Capri what to do...";
                 Controls.Add(instruction);
                 ask = new Key(); ask.Text = "Ask Capri"; ask.Accent = Rose; ask.Loud = true;
                 ask.Bounds = Box(400, 82, 106, 34); ask.Click += delegate { AskCapri(instruction.Text); }; Controls.Add(ask);
