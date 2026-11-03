@@ -1426,7 +1426,21 @@ namespace CapriDesktop
         // On stream, asking her to play starts her stream job however it's worded.
         internal static bool Streams(string said) { return Regex.IsMatch(said ?? "", @"\b(play|playing|game|gaming|stream|streaming|streamer|live|chat|viewers|audience)\b", RegexOptions.IgnoreCase); }
 
+        internal static Action<string, string> Activity;
+
         internal static string Do(string tool, ToolArguments args)
+        {
+            string result = DoCore(tool, args);
+            Action<string, string> log = Activity;
+            if (log != null && !string.IsNullOrEmpty(tool) && !string.IsNullOrEmpty(result))
+            {
+                try { log("Command", tool + " · " + (result.StartsWith("That didn't work", StringComparison.Ordinal) ? "failed" : "completed")); }
+                catch (Exception) { }
+            }
+            return result;
+        }
+
+        private static string DoCore(string tool, ToolArguments args)
         {
             if (args == null) args = new ToolArguments();
             try
