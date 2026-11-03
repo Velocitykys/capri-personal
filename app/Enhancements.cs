@@ -135,7 +135,7 @@ namespace CapriDesktop
                 {
                     Dictionary<string, bool> saved = (Dictionary<string, bool>)new DataContractJsonSerializer(typeof(Dictionary<string, bool>)).ReadObject(stream);
                     if (saved == null) saved = new Dictionary<string, bool>();
-                    foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history" })
+                    foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history", "immersive_routines", "highlight_assistance", "personal_dashboard" })
                         saved.Remove(retired);
                     return saved;
                 }
@@ -367,20 +367,16 @@ namespace CapriDesktop
                     "SAVED PHRASES · MULTI-STEP ACTIONS"),
                 new Enhancement("immersive_routines", "Immersive Routines", "AUTOMATION",
                     "Let Capri adapt to your day with routines that can respond to time, the apps you open and your activity.",
-                    "AUTOMATIC TRIGGERS IN DEVELOPMENT",
-                    new EnhancementOption("triggers", "Routine triggers", "Time + apps", "Manual only", "Time only", "Time + apps", "Context-aware")),
+                    "COMING LATER · AUTOMATIC TRIGGERS"),
                 new Enhancement("better_timers", "Better Timers & Reminders", "PRODUCTIVITY",
                     "Manage multiple timers, recurring reminders, snooze and rescheduling. Existing reminders are being extended rather than replaced.",
                     "SAVED TIMERS · REMINDERS · PERSISTENT"),
                 new Enhancement("highlight_assistance", "Highlight Assistance", "PRODUCTIVITY",
                     "Select text in an app and ask Capri to explain, summarise, translate or rewrite just that selection instead of analysing your whole screen.",
-                    "SELECTION CAPTURE IN DEVELOPMENT",
-                    new EnhancementOption("shortcut", "Activation shortcut", "Ctrl + Alt + E", "Ctrl + Alt + E", "Ctrl + Shift + E", "Ctrl + Alt + H")),
+                    "COMING LATER · TEXT SELECTION"),
                 new Enhancement("personal_dashboard", "Personal Dashboard", "PRODUCTIVITY",
                     "A dedicated workspace for your calendar, tasks, reminders and upcoming events. Capri will be able to add and manage events from chat.",
-                    "DASHBOARD IN DEVELOPMENT",
-                    new EnhancementOption("view", "Default calendar view", "Week", "Day", "Week", "Month"),
-                    new EnhancementOption("week_start", "Week starts on", "Monday", "Monday", "Sunday")),
+                    "COMING LATER · TASKS + CALENDAR"),
                 new Enhancement("memory_explorer", "Memory Explorer", "COMPANION",
                     "Browse, search and manage what Capri remembers, including her notes and older chat transcripts. Nothing is uploaded by this panel.",
                     "LOCAL MEMORY FILES · PRIVATE TO THIS PC"),
@@ -490,6 +486,7 @@ namespace CapriDesktop
                 toggles[index] = new Toggle();
                 toggles[index].Text = feature.Name;
                 toggles[index].Font = Type(9.5f * Zoom, true);
+                toggles[index].Enabled = feature.Id != "immersive_routines" && feature.Id != "highlight_assistance" && feature.Id != "personal_dashboard";
                 toggles[index].Switch = 96;
                 toggles[index].Bounds = Box(16, 14, 450, 24);
                 toggles[index].AccessibleName = feature.Name + ". " + feature.Description;
