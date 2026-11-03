@@ -41,6 +41,13 @@ namespace CapriDesktop
             if (image == null || image.Length == 0) throw new ArgumentException("The selected image is empty.", "image");
             return brain.See(image, Brain.Persona + Brain.Speech() + Brain.Remembered(), instruction, 1200);
         }
+
+        // Highlight assistance speaks through Capri's normal voice and animation pipeline, on her UI thread.
+        internal void EnhancementSpeak(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            Post(delegate { if (!IsDisposed) Remark("highlight assistance", text); });
+        }
         private Dictionary<string, string> enhancementOptions;
 
         internal List<Reminder> EnhancementReminders()
@@ -1007,80 +1014,70 @@ namespace CapriDesktop
             private readonly Mainframe owner;
             private readonly float scale;
             private readonly byte[] selectedImage;
-            private readonly PictureBox preview;
             private readonly TextBox instruction;
-            private readonly TextBox response;
             private readonly Key[] actions;
             private readonly Key ask;
-            private readonly Key close;
             private bool thinking;
 
             internal HighlightAssistanceSheet(Mainframe owner, float zoom, byte[] image)
             {
                 this.owner = owner; scale = zoom; selectedImage = image;
-                Text = "Highlight Assistance"; Icon = owner.Icon;
+                Text = "Ask Capri"; Icon = owner.Icon;
                 ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
                 StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
-                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(600), Z(610));
-                Label title = LabelText("HIGHLIGHT ASSISTANCE", 22, 18, 550, 24, Cyan, 12f, true); Controls.Add(title);
-                Label hint = LabelText("Your selected screen area · Capri will see the image itself", 22, 48, 556, 20, Faint, 8.5f, false); Controls.Add(hint);
-                preview = new PictureBox(); preview.Bounds = Box(22, 76, 556, 250);
-                preview.BackColor = Field; preview.BorderStyle = BorderStyle.FixedSingle;
-                preview.SizeMode = PictureBoxSizeMode.Zoom;
-                using (MemoryStream stream = new MemoryStream(selectedImage))
-                using (Image loaded = Image.FromStream(stream)) preview.Image = new Bitmap(loaded);
-                Controls.Add(preview);
-                Label askLabel = LabelText("WHAT SHOULD CAPRI DO WITH THIS?", 22, 338, 556, 18, Rose, 8f, true); Controls.Add(askLabel);
-                instruction = new TextBox(); instruction.Multiline = true; instruction.AcceptsReturn = true;
-                instruction.Bounds = Box(22, 360, 556, 42); instruction.BackColor = Field;
-                instruction.ForeColor = White; instruction.BorderStyle = BorderStyle.FixedSingle; instruction.Font = Type(9f * scale);
-                instruction.Text = ""; Controls.Add(instruction);
-                string[] names = { "Explain", "Simplify", "Translate", "Summarise", "Rewrite" };
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(520), Z(142));
+                Label title = LabelText("CAPRI · HIGHLIGHT ASSISTANCE", 16, 10, 450, 20, Cyan, 9.5f, true); Controls.Add(title);
+                Key dismiss = new Key(); dismiss.Text = "×"; dismiss.Accent = Hot; dismiss.Bounds = Box(480, 8, 26, 24);
+                dismiss.Click += delegate { Close(); }; Controls.Add(dismiss);
+
+                string[] names = { "Read text", "Explain", "Translate", "Simplify", "Summarise", "Rewrite" };
                 actions = new Key[names.Length];
                 for (int i = 0; i < names.Length; i++)
                 {
                     string action = names[i]; Key button = new Key(); button.Text = action;
-                    button.Font = Type(8f * scale); button.Accent = Cyan; button.Bounds = Box(22 + i * 112, 412, 102, 30);
-                    button.Click += delegate { AskCapri(action); }; Controls.Add(button); actions[i] = button;
+                    button.Font = Type(7.5f * scale); button.Accent = Cyan;
+                    button.Bounds = Box(16 + i * 82, 40, 76, 29);
+                    button.Click += delegate { AskCapri(action); };
+                    Controls.Add(button); actions[i] = button;
                 }
-                Label answerLabel = LabelText("CAPRI'S RESPONSE", 22, 452, 556, 18, Rose, 8f, true); Controls.Add(answerLabel);
-                response = new TextBox(); response.Multiline = true; response.ReadOnly = true;
-                response.ScrollBars = ScrollBars.Vertical; response.Bounds = Box(22, 474, 556, 82);
-                response.BackColor = Field; response.ForeColor = White; response.BorderStyle = BorderStyle.FixedSingle;
-                response.Font = Type(9f * scale); response.Text = "Choose an action or write your own instruction above."; Controls.Add(response);
-                ask = new Key(); ask.Text = "Ask Capri"; ask.Loud = true; ask.Accent = Rose;
-                ask.Bounds = Box(22, 568, 130, 28); ask.Click += delegate { AskCapri(instruction.Text); }; Controls.Add(ask);
-                close = new Key(); close.Text = "Close"; close.Bounds = Box(478, 568, 100, 28);
-                close.Click += delegate { Close(); }; Controls.Add(close);
+
+                instruction = new TextBox(); instruction.BorderStyle = BorderStyle.FixedSingle;
+                instruction.Bounds = Box(16, 82, 374, 34); instruction.BackColor = Field;
+                instruction.ForeColor = White; instruction.Font = Type(8.5f * scale);
+                instruction.Text = ""; instruction.AccessibleName = "Custom instructions for Capri";
+                instruction.PlaceholderText = "Or tell Capri what to do...";
+                Controls.Add(instruction);
+                ask = new Key(); ask.Text = "Ask Capri"; ask.Accent = Rose; ask.Loud = true;
+                ask.Bounds = Box(400, 82, 106, 34); ask.Click += delegate { AskCapri(instruction.Text); }; Controls.Add(ask);
             }
 
             private void AskCapri(string action)
             {
                 if (thinking) return;
                 string task = (action ?? "").Trim();
-                if (task.Length == 0) { MessageBox.Show(this, "Write what you want Capri to do with the selected image.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+                if (task.Length == 0) { instruction.Focus(); return; }
                 thinking = true;
-                foreach (Key button in actions) button.Enabled = false;
-                ask.Enabled = false;
-                response.Text = "Capri is looking at your selection...";
-                string prompt = task + "\n\nThe attached image is the exact screen region the user selected. Use the image itself to answer; do not assume OCR text is available.";
+                Close();
+
+                string prompt = task + "\n\nYou are looking at a user-selected screenshot region. Carefully inspect the actual image, not just an assumed OCR transcript. If asked to read or translate, transcribe all legible visible text faithfully, including profanity, insults, slurs, sexual language, and other offensive wording; do not censor, sanitize, or silently omit words. Preserve the original wording and explain/translate it accurately into English where useful. Mention uncertainty for unclear text. Describe relevant visible content as well as text when the instruction calls for it. Be natural and concise, speaking directly to the user in your usual personality.";
+                HighlightAnswerSheet answer = new HighlightAnswerSheet(owner, scale);
+                answer.Show(owner); answer.Activate();
                 System.Threading.Tasks.Task.Run(delegate
                 {
                     string result;
                     try { result = owner.capri.EnhancementSeeImage(selectedImage, prompt); }
-                    catch (Exception error) { result = "I couldn't read that image: " + Voice.Short(error.Message); }
+                    catch (Exception error) { result = "I couldn't read that selection: " + Voice.Short(error.Message); }
+                    if (string.IsNullOrWhiteSpace(result)) result = "I couldn't make out anything clear in that selection.";
                     try
                     {
-                        if (!IsDisposed && IsHandleCreated)
-                            BeginInvoke(new Action(delegate
+                        if (!answer.IsDisposed && answer.IsHandleCreated)
+                            answer.BeginInvoke(new Action(delegate
                             {
-                                response.Text = result;
-                                thinking = false;
-                                foreach (Key button in actions) button.Enabled = true;
-                                ask.Enabled = true;
+                                if (!answer.IsDisposed) answer.SetAnswer(result);
                             }));
                     }
                     catch (Exception) { }
+                    owner.capri.EnhancementSpeak(result);
                 });
             }
 
@@ -1092,13 +1089,52 @@ namespace CapriDesktop
             private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
             protected override void OnLoad(EventArgs e)
             {
-                base.OnLoad(e); Rectangle area = Screen.FromControl(owner).WorkingArea;
-                int x = owner.Left + (owner.Width - Width) / 2, y = owner.Top + (int)(48 * ScaleOf(this));
-                Location = new Point(Math.Max(area.Left, Math.Min(area.Right - Width, x)), Math.Max(area.Top, Math.Min(area.Bottom - Height, y)));
+                base.OnLoad(e);
+                Rectangle area = Screen.FromPoint(Cursor.Position).WorkingArea;
+                Point at = Cursor.Position;
+                int x = Math.Max(area.Left, Math.Min(area.Right - Width, at.X + Z(14)));
+                int y = Math.Max(area.Top, Math.Min(area.Bottom - Height, at.Y + Z(14)));
+                Location = new Point(x, y);
             }
-            protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); float s = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Backdrop(e.Graphics, this, s); Edging(e.Graphics, this, s); }
+            protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); float z = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Backdrop(e.Graphics, this, z); Edging(e.Graphics, this, z); }
             protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Escape) { Close(); e.Handled = true; return; } base.OnKeyDown(e); }
-            protected override void Dispose(bool disposing) { if (disposing && preview != null && preview.Image != null) preview.Image.Dispose(); base.Dispose(disposing); }
+        }
+
+        private sealed class HighlightAnswerSheet : Form
+        {
+            private readonly float scale;
+            private readonly TextBox response;
+            internal HighlightAnswerSheet(Mainframe owner, float zoom)
+            {
+                scale = zoom;
+                Text = "Capri · Answer"; Icon = owner.Icon;
+                ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(440), Z(206));
+                Label title = new Label { Text = "CAPRI", Bounds = Box(16, 12, 350, 22), ForeColor = Cyan, BackColor = Ground, Font = Look.Mono(9f * scale, FontStyle.Bold, GraphicsUnit.Point) };
+                Controls.Add(title);
+                Key close = new Key(); close.Text = "×"; close.Accent = Hot; close.Bounds = Box(402, 8, 26, 25);
+                close.Click += delegate { Close(); }; Controls.Add(close);
+                response = new TextBox(); response.Multiline = true; response.ReadOnly = true;
+                response.ScrollBars = ScrollBars.Vertical; response.WordWrap = true;
+                response.Bounds = Box(16, 42, 408, 148); response.BackColor = Field;
+                response.ForeColor = White; response.BorderStyle = BorderStyle.FixedSingle;
+                response.Font = Type(9f * scale); response.Text = "She's looking at your selection...";
+                Controls.Add(response);
+            }
+            internal void SetAnswer(string text) { if (!IsDisposed) response.Text = text ?? ""; }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
+            protected override void OnLoad(EventArgs e)
+            {
+                base.OnLoad(e);
+                Rectangle area = Screen.FromPoint(Cursor.Position).WorkingArea;
+                Point at = Cursor.Position;
+                int x = Math.Max(area.Left, Math.Min(area.Right - Width, at.X + Z(14)));
+                int y = Math.Max(area.Top, Math.Min(area.Bottom - Height, at.Y + Z(14)));
+                Location = new Point(x, y);
+            }
+            protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); float z = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Backdrop(e.Graphics, this, z); Edging(e.Graphics, this, z); }
         }
 
         private sealed class DashboardSheet : Form
