@@ -240,6 +240,7 @@ namespace CapriDesktop
             private readonly Label[] statuses;
             private readonly Label[] categories;
             private readonly Key[][] optionKeys;
+            private readonly Key[] actions;
             private readonly ContextMenuStrip[][] optionMenus;
             private readonly bool[] expanded;
             private bool syncing;
@@ -254,6 +255,7 @@ namespace CapriDesktop
                 statuses = new Label[features.Length];
                 categories = new Label[features.Length];
                 optionKeys = new Key[features.Length][];
+                actions = new Key[features.Length];
                 optionMenus = new ContextMenuStrip[features.Length][];
                 expanded = new bool[features.Length];
 
@@ -411,6 +413,52 @@ namespace CapriDesktop
                     }
                     optionMenus[index][optionIndex] = choices;
                 }
+
+                if (feature.Id == "memory_explorer" || feature.Id == "pc_health_monitor")
+                {
+                    Key action = new Key();
+                    action.Font = Type(8f * Zoom);
+                    action.Accent = Cyan;
+                    action.Text = feature.Id == "memory_explorer" ? "Open memory files" : "Check PC now";
+                    action.AccessibleName = action.Text;
+                    action.Click += delegate
+                    {
+                        if (!owner.capri.ExperimentalFeatureOn(feature.Id))
+                        {
+                            MessageBox.Show(this, "Turn this feature on first.", "Enhancements", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
+                        if (feature.Id == "memory_explorer") owner.capri.OpenMemories();
+                        else ShowPcHealth();
+                    };
+                    list.Controls.Add(action);
+                    actions[index] = action;
+                }
+            }
+
+            private void ShowPcHealth()
+            {
+                try
+                {
+                    PcUse use = Usage.Read();
+                    string report = "CPU: " + use.Cpu.ToString("0.0") + "%\n"
+                        + "Memory: " + Usage.Size(use.MemoryUsed) + " / " + Usage.Size(use.MemoryTotal) + "\n";
+                    if (use.Battery != null) report += "Battery: " + use.Battery + "\n";
+                    if (use.Drives.Count > 0) report += "\nDRIVES\n" + string.Join("\n", use.Drives.ToArray());
+                    use.Apps.Sort(delegate(AppUse left, AppUse right) { return right.Cpu.CompareTo(left.Cpu); });
+                    int count = Math.Min(5, use.Apps.Count);
+                    if (count > 0)
+                    {
+                        report += "\n\nTOP APPS\n";
+                        for (int i = 0; i < count; i++)
+                            report += use.Apps[i].App + "  " + use.Apps[i].Cpu.ToString("0.0") + "% CPU  " + Usage.Size(use.Apps[i].Memory) + "\n";
+                    }
+                    MessageBox.Show(this, report, "Capri · PC Health", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception)
+                {
+                    MessageBox.Show(this, "Couldn't read PC health information just now.", "Capri · PC Health", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
             }
 
             private void LayoutFeatures()
@@ -433,6 +481,13 @@ namespace CapriDesktop
                         key.Visible = expanded[i];
                         key.Location = new Point(Z(28 + j * 220), Z(y + 94));
                         key.Size = new Size(Z(205), Z(22));
+                    }
+                    if (actions[i] != null)
+                    {
+                        actions[i].Visible = expanded[i];
+                        actions[i].Enabled = owner.capri.ExperimentalFeatureOn(features[i].Id);
+                        actions[i].Location = new Point(Z(470), Z(y + 94));
+                        actions[i].Size = new Size(Z(220), Z(22));
                     }
                     y += height;
                 }
