@@ -1418,21 +1418,7 @@ namespace CapriDesktop
 
         private void CaptureHighlightedText()
         {
-            string selected = "";
-            IDataObject previous = null;
-            try
-            {
-                previous = Clipboard.GetDataObject();
-                SendKeys.SendWait("^c");
-                System.Threading.Thread.Sleep(120);
-                if (Clipboard.ContainsText()) selected = Clipboard.GetText();
-            }
-            catch (Exception) { }
-            finally
-            {
-                try { if (previous != null) Clipboard.SetDataObject(previous, true); else Clipboard.Clear(); } catch (Exception) { }
-            }
-            OpenHighlightAssistance(selected);
+            StartHighlightRegionSelection();
         }
 
         private HighlightAssistanceSheet highlightAssistance;
