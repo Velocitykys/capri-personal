@@ -1019,8 +1019,6 @@ namespace CapriDesktop
             private readonly float scale;
             private readonly byte[] selectedImage;
             private readonly TextBox instruction;
-            private readonly Key[] actions;
-            private readonly Key ask;
             private bool thinking;
 
             internal HighlightAssistanceSheet(Mainframe owner, float zoom, byte[] image)
@@ -1029,29 +1027,38 @@ namespace CapriDesktop
                 Text = "Ask Capri"; Icon = owner.Icon;
                 ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
                 StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
-                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(520), Z(142));
-                Label title = LabelText("CAPRI · HIGHLIGHT ASSISTANCE", 16, 10, 450, 20, Cyan, 9.5f, true); Controls.Add(title);
-                Key dismiss = new Key(); dismiss.Text = "×"; dismiss.Accent = Hot; dismiss.Bounds = Box(480, 8, 26, 24);
-                dismiss.Click += delegate { Close(); }; Controls.Add(dismiss);
+                BackColor = Ground; ForeColor = White;
+                // One compact action strip: no heading, decorative close button, or oversized empty padding.
+                ClientSize = new Size(Z(462), Z(88));
 
                 string[] names = { "Read text", "Explain", "Translate", "Simplify", "Summarise", "Rewrite" };
-                actions = new Key[names.Length];
                 for (int i = 0; i < names.Length; i++)
                 {
-                    string action = names[i]; Key button = new Key(); button.Text = action;
-                    button.Font = Type(7.5f * scale); button.Accent = Cyan;
-                    button.Bounds = Box(16 + i * 82, 40, 76, 29);
+                    string action = names[i];
+                    Key button = new Key();
+                    button.Text = action; button.Font = Type(7.2f * scale); button.Accent = Cyan;
+                    button.Bounds = Box(10 + i * 74, 8, 68, 28);
                     button.Click += delegate { AskCapri(action); };
-                    Controls.Add(button); actions[i] = button;
+                    Controls.Add(button);
                 }
 
-                instruction = new TextBox(); instruction.BorderStyle = BorderStyle.FixedSingle;
-                instruction.Bounds = Box(16, 82, 374, 34); instruction.BackColor = Field;
-                instruction.ForeColor = White; instruction.Font = Type(8.5f * scale);
-                instruction.Text = ""; instruction.AccessibleName = "Custom instructions for Capri";
+                instruction = new TextBox();
+                instruction.BorderStyle = BorderStyle.FixedSingle;
+                instruction.Bounds = Box(10, 46, 342, 30);
+                instruction.BackColor = Field; instruction.ForeColor = White;
+                instruction.Font = Type(8.5f * scale);
+                instruction.AccessibleName = "Custom instructions for Capri";
+                instruction.KeyDown += delegate(object sender, KeyEventArgs key)
+                {
+                    if (key.KeyCode == Keys.Enter) { key.SuppressKeyPress = true; AskCapri(instruction.Text); }
+                    else if (key.KeyCode == Keys.Escape) { key.SuppressKeyPress = true; Close(); }
+                };
                 Controls.Add(instruction);
-                ask = new Key(); ask.Text = "Ask Capri"; ask.Accent = Rose; ask.Loud = true;
-                ask.Bounds = Box(400, 82, 106, 34); ask.Click += delegate { AskCapri(instruction.Text); }; Controls.Add(ask);
+
+                Key ask = new Key(); ask.Text = "Ask Capri"; ask.Accent = Rose; ask.Loud = true;
+                ask.Bounds = Box(360, 46, 92, 30);
+                ask.Click += delegate { AskCapri(instruction.Text); };
+                Controls.Add(ask);
             }
 
             private void AskCapri(string action)
@@ -1062,9 +1069,7 @@ namespace CapriDesktop
                 thinking = true;
                 Close();
 
-                string prompt = task + "\n\nYou are looking at a user-selected screenshot region. Carefully inspect the actual image, not just an assumed OCR transcript. If asked to read or translate, transcribe all legible visible text faithfully, including profanity, insults, slurs, sexual language, and other offensive wording; do not censor, sanitize, or silently omit words. Preserve the original wording and explain/translate it accurately into English where useful. Mention uncertainty for unclear text. Describe relevant visible content as well as text when the instruction calls for it. Be natural and concise, speaking directly to the user in your usual personality.";
-                // Don't open a second blank window while the vision request is still running.
-                // Capri speaks the completed answer first; the compact transcript appears with the result.
+                string prompt = task + "\n\nYou are looking at a user-selected screenshot region. Carefully inspect the actual image, not just an assumed OCR transcript. If asked to read or translate, transcribe all legible visible text faithfully, including profanity, insults, slurs, sexual language, and other offensive wording; do not censor, sanitize, or silently omit words. Preserve the original wording and explain or translate it accurately into English where useful. Mention uncertainty for unclear text. Describe relevant visible content as well as text when the instruction calls for it. Speak directly to the user in your usual personality. Keep the answer clear and reasonably concise.";
                 System.Threading.Tasks.Task.Run(delegate
                 {
                     string result;
@@ -1072,6 +1077,8 @@ namespace CapriDesktop
                     catch (Exception error) { result = "I couldn't read that selection: " + Voice.Short(error.Message); }
                     if (string.IsNullOrWhiteSpace(result)) result = "I couldn't make out anything clear in that selection.";
 
+                    // Queue Capri's normal spoken-reply pipeline first. The transcript is a separate,
+                    // readable copy of exactly what she was asked to say.
                     owner.capri.EnhancementSpeak(result);
                     try
                     {
@@ -1089,10 +1096,6 @@ namespace CapriDesktop
                 });
             }
 
-            private Label LabelText(string text, int x, int y, int w, int h, Color colour, float size, bool bold)
-            {
-                return new Label { Text = text, Bounds = Box(x, y, w, h), ForeColor = colour, BackColor = Ground, Font = Look.Mono(size * scale, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point), AutoEllipsis = true };
-            }
             private int Z(int value) { return (int)Math.Round(value * scale); }
             private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
             protected override void OnLoad(EventArgs e)
@@ -1118,14 +1121,14 @@ namespace CapriDesktop
                 Text = "Capri · Answer"; Icon = owner.Icon;
                 ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
                 StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
-                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(440), Z(206));
-                Label title = new Label { Text = "CAPRI", Bounds = Box(16, 12, 350, 22), ForeColor = Cyan, BackColor = Ground, Font = Look.Mono(9f * scale, FontStyle.Bold, GraphicsUnit.Point) };
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(390), Z(166));
+                Label title = new Label { Text = "CAPRI · RESPONSE", Bounds = Box(16, 10, 320, 20), ForeColor = Cyan, BackColor = Ground, Font = Look.Mono(9f * scale, FontStyle.Bold, GraphicsUnit.Point) };
                 Controls.Add(title);
-                Key close = new Key(); close.Text = "×"; close.Accent = Hot; close.Bounds = Box(402, 8, 26, 25);
+                Key close = new Key(); close.Text = "×"; close.Accent = Hot; close.Bounds = Box(362, 7, 22, 23);
                 close.Click += delegate { Close(); }; Controls.Add(close);
                 response = new TextBox(); response.Multiline = true; response.ReadOnly = true;
                 response.ScrollBars = ScrollBars.Vertical; response.WordWrap = true;
-                response.Bounds = Box(16, 42, 408, 148); response.BackColor = Field;
+                response.Bounds = Box(14, 38, 362, 116); response.BackColor = Field;
                 response.ForeColor = White; response.BorderStyle = BorderStyle.FixedSingle;
                 response.Font = Type(9f * scale); response.Text = "She's looking at your selection...";
                 Controls.Add(response);
