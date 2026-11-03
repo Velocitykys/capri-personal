@@ -23,6 +23,12 @@ jobs:
         shell: pwsh
         run: ./ci/build-windows.ps1 -OutputDirectory out/windows -SmokeTest -SmokeSeconds 900
       - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: capri-windows-build
+          path: out/windows
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: smoke-windows
