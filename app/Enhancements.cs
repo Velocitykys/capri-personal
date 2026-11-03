@@ -529,8 +529,8 @@ namespace CapriDesktop
                     "Check current CPU load, memory use, running apps, drive space and battery status using Capri's local PC usage reader.",
                     "ON-DEMAND READOUT · NO BACKGROUND MONITORING"),
                 new Enhancement("conversational_continuity", "Conversational Continuity", "VOICE",
-                    "After Capri answers in hands-free voice chat, keep the conversation open briefly so natural follow-ups work without saying her name again. Uses conversational cues to reduce accidental replies to background speech.",
-                    "35-SECOND FOLLOW-UP WINDOW · HANDS-FREE VOICE")
+                    "After Capri answers in hands-free voice chat, keep the conversation open briefly so natural follow-ups work without saying her name again. Requires a clear follow-up after Capri has been addressed; ignores casual greetings and nearby conversation.",
+                    "5-SECOND FOLLOW-UP WINDOW · HANDS-FREE VOICE")
             };
 
             private readonly Panel list;
