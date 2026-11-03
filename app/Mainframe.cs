@@ -354,7 +354,10 @@ namespace CapriDesktop
             build = Caption("v" + version, 200, 20, small, Faint);
             build.AutoSize = false;
             build.TextAlign = ContentAlignment.MiddleRight;
-            build.Bounds = new Rectangle(230, 20, 62, 22);
+            build.Bounds = new Rectangle(230, 43, 62, 16);
+            Key enhancementsButton = Make("Enhance", 230, 20, 62, 22, delegate { OpenEnhancements(); });
+            enhancementsButton.Accent = Rose;
+            enhancementsButton.AccessibleName = "Enhancements: open experimental features";
             minimize = Make("", 300, 20, 26, 22, delegate { WindowState = FormWindowState.Minimized; });
             minimize.Glyph = 1;
             minimize.AccessibleName = "Minimize";
@@ -860,9 +863,6 @@ namespace CapriDesktop
                 Controls[gameRow].Top += Row + MixRows;
                 underVoice.Add(new KeyValuePair<Control, int>(Controls[gameRow], Controls[gameRow].Top));
             }
-            Section("ENHANCEMENTS >", 0, 1490);
-            Make("Open Enhancements", 28, 1514, 328, 26, delegate { OpenEnhancements(); });
-            Caption("Optional experimental modules for this build.", 28, 1544, small, Faint);
             for (int i = first; i < Controls.Count; i++)
             {
                 Control control = Controls[i];
@@ -1917,7 +1917,14 @@ namespace CapriDesktop
         {
             string page = (name ?? "main").Trim().ToLowerInvariant();
             if (page.Length == 0) page = "main";
-            if (!Regex.IsMatch(page, @"\A(main|settings|brain|voice|you|moves|keys|capri|watch|habits|games|clips|security|extras|layers|personality|memories)\z")) return false;
+            if (!Regex.IsMatch(page, @"\A(main|settings|brain|voice|you|moves|keys|capri|watch|habits|games|clips|security|extras|layers|personality|memories|enhancements)\z")) return false;
+            if (page == "enhancements")
+            {
+                ShowSettings(false);
+                Restore();
+                OpenEnhancements();
+                return true;
+            }
             bool settings = page != "main" && page != "brain" && page != "voice";
             ShowSettings(settings);
             if (settings && page != "settings" && !capri.AdvancedSettings)
