@@ -883,10 +883,10 @@ namespace CapriDesktop
                 selection.AcceptsReturn = true; selection.Bounds = Box(22, 104, 556, 190);
                 selection.BackColor = Field; selection.ForeColor = White; selection.BorderStyle = BorderStyle.FixedSingle;
                 selection.Font = Type(9f * scale); selection.Text = selected ?? ""; Controls.Add(selection);
-                Label ask = LabelText("WHAT SHOULD CAPRI DO WITH IT?", 22, 308, 550, 18, Rose, 8f, true); Controls.Add(ask);
+                Label ask = LabelText("OPTIONAL DETAILS · TARGET LANGUAGE, TONE OR LEVEL", 22, 308, 550, 18, Rose, 8f, true); Controls.Add(ask);
                 instruction = new TextBox(); instruction.Bounds = Box(22, 330, 556, 34); instruction.BackColor = Field;
                 instruction.ForeColor = White; instruction.BorderStyle = BorderStyle.FixedSingle; instruction.Font = Type(9f * scale);
-                instruction.Text = "Explain this clearly and simply."; Controls.Add(instruction);
+                instruction.Text = ""; instruction.PlaceholderText = "e.g. translate into Japanese, keep it casual"; Controls.Add(instruction);
                 string[] actions = { "Explain", "Summarise", "Rewrite", "Translate" };
                 for (int i = 0; i < actions.Length; i++)
                 {
@@ -904,7 +904,9 @@ namespace CapriDesktop
             {
                 string text = selection.Text.Trim();
                 if (text.Length == 0) { MessageBox.Show(this, "Select or paste some text first.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
-                string request = "For the following selected text, " + action.Trim() + ". Keep your response focused on the selection and follow any extra instruction: " + instruction.Text.Trim() + "\n\nSELECTED TEXT:\n" + text;
+                string request = action.Trim() + "\nKeep your response focused on the selected text below. Preserve its meaning and do not invent missing context.";
+                if (instruction.Text.Trim().Length > 0) request += "\nAdditional instruction: " + instruction.Text.Trim();
+                request += "\n\nSELECTED TEXT:\n" + text;
                 owner.capri.Hear(request);
                 Close();
             }
