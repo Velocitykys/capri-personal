@@ -34,7 +34,7 @@ namespace CapriDesktop
                 if (enhancementFlags == null) enhancementFlags = ReadEnhancementFlags();
                 bool on;
                 if (enhancementFlags.TryGetValue(id, out on)) return on;
-                return id == "custom_commands" || id == "immersive_routines" || id == "better_timers"
+                return id == "custom_commands" || id == "better_timers"
                     || id == "memory_explorer" || id == "pc_health_monitor";
             }
         }
