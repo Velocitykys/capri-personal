@@ -2,12 +2,21 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.Serialization.Json;
+using System.Runtime.Serialization;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace CapriDesktop
 {
+    [DataContract]
+    internal sealed class EnhancementActivity
+    {
+        [DataMember] internal string Kind;
+        [DataMember] internal string Detail;
+        [DataMember] internal string At;
+    }
+
     // Experimental switches and their options are kept outside settings.json, so an experiment can never damage
     // Capri's established preferences.
     internal sealed partial class Companion
@@ -15,6 +24,62 @@ namespace CapriDesktop
         private readonly object enhancementGate = new object();
         private Dictionary<string, bool> enhancementFlags;
         private Dictionary<string, string> enhancementOptions;
+        private List<EnhancementActivity> enhancementActivity;
+
+        internal bool ExperimentalFeatureOn(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return false;
+            lock (enhancementGate)
+            {
+                if (enhancementFlags == null) enhancementFlags = ReadEnhancementFlags();
+                bool on;
+                if (enhancementFlags.TryGetValue(id, out on)) return on;
+                return id == "custom_commands" || id == "immersive_routines" || id == "better_timers"
+                    || id == "memory_explorer" || id == "pc_health_monitor";
+            }
+        }
+
+        internal void RecordEnhancementActivity(string kind, string detail)
+        {
+            lock (enhancementGate)
+            {
+                if (enhancementActivity == null) enhancementActivity = ReadEnhancementActivity();
+                enhancementActivity.Add(new EnhancementActivity { Kind = kind ?? "Activity", Detail = detail ?? "", At = DateTime.Now.ToString("o") });
+                if (enhancementActivity.Count > 500) enhancementActivity.RemoveRange(0, enhancementActivity.Count - 500);
+                WriteEnhancementFile(settingsPath + ".activity.json", enhancementActivity);
+            }
+        }
+
+        internal string EnhancementActivityText(string kind)
+        {
+            lock (enhancementGate)
+            {
+                if (enhancementActivity == null) enhancementActivity = ReadEnhancementActivity();
+                List<string> lines = new List<string>();
+                for (int i = enhancementActivity.Count - 1; i >= 0 && lines.Count < 40; i--)
+                {
+                    EnhancementActivity item = enhancementActivity[i];
+                    if (kind != null && !string.Equals(item.Kind, kind, StringComparison.OrdinalIgnoreCase)) continue;
+                    DateTime at;
+                    string when = DateTime.TryParse(item.At, out at) ? at.ToString("dd MMM HH:mm") : "";
+                    lines.Add(when + "  " + item.Kind + ": " + item.Detail);
+                }
+                return lines.Count == 0 ? "Nothing recorded yet." : string.Join("\n", lines.ToArray());
+            }
+        }
+
+        private List<EnhancementActivity> ReadEnhancementActivity()
+        {
+            try
+            {
+                using (FileStream stream = File.OpenRead(settingsPath + ".activity.json"))
+                {
+                    List<EnhancementActivity> saved = (List<EnhancementActivity>)new DataContractJsonSerializer(typeof(List<EnhancementActivity>)).ReadObject(stream);
+                    return saved ?? new List<EnhancementActivity>();
+                }
+            }
+            catch (Exception) { return new List<EnhancementActivity>(); }
+        }
 
         internal bool ExperimentalFeatureOn(string id)
         {
@@ -414,12 +479,15 @@ namespace CapriDesktop
                     optionMenus[index][optionIndex] = choices;
                 }
 
-                if (feature.Id == "memory_explorer" || feature.Id == "pc_health_monitor")
+                if (feature.Id == "memory_explorer" || feature.Id == "pc_health_monitor"
+                    || feature.Id == "command_history" || feature.Id == "notification_centre")
                 {
                     Key action = new Key();
                     action.Font = Type(8f * Zoom);
                     action.Accent = Cyan;
-                    action.Text = feature.Id == "memory_explorer" ? "Open memory files" : "Check PC now";
+                    action.Text = feature.Id == "memory_explorer" ? "Open memory files"
+                        : feature.Id == "pc_health_monitor" ? "Check PC now"
+                        : feature.Id == "command_history" ? "View command history" : "View notifications";
                     action.AccessibleName = action.Text;
                     action.Click += delegate
                     {
@@ -429,11 +497,19 @@ namespace CapriDesktop
                             return;
                         }
                         if (feature.Id == "memory_explorer") owner.capri.OpenMemories();
-                        else ShowPcHealth();
+                        else if (feature.Id == "pc_health_monitor") ShowPcHealth();
+                        else ShowActivity(feature.Id == "command_history" ? "Command" : "Reminder",
+                            feature.Id == "command_history" ? "Command History" : "Notification Centre");
                     };
                     list.Controls.Add(action);
                     actions[index] = action;
                 }
+            }
+
+            private void ShowActivity(string kind, string title)
+            {
+                string content = owner.capri.EnhancementActivityText(kind);
+                MessageBox.Show(this, content, "Capri · " + title, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
 
             private void ShowPcHealth()
