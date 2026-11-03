@@ -338,7 +338,6 @@ namespace CapriDesktop
         internal Mainframe(Companion owner, Icon icon, string version)
         {
             capri = owner;
-            Hands.Activity = owner.RecordEnhancementActivity;
             Hands.FeatureOn = owner.ExperimentalFeatureOn;
             Text = "Capri Mainframe";
             Icon = icon;
