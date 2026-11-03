@@ -886,7 +886,7 @@ namespace CapriDesktop
                 Label ask = LabelText("OPTIONAL DETAILS · TARGET LANGUAGE, TONE OR LEVEL", 22, 308, 550, 18, Rose, 8f, true); Controls.Add(ask);
                 instruction = new TextBox(); instruction.Bounds = Box(22, 330, 556, 34); instruction.BackColor = Field;
                 instruction.ForeColor = White; instruction.BorderStyle = BorderStyle.FixedSingle; instruction.Font = Type(9f * scale);
-                instruction.Text = ""; instruction.PlaceholderText = "e.g. translate into Japanese, keep it casual"; Controls.Add(instruction);
+                instruction.Text = ""; Controls.Add(instruction);
                 string[] actions = { "Explain", "Summarise", "Rewrite", "Translate" };
                 for (int i = 0; i < actions.Length; i++)
                 {
