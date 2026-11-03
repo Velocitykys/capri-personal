@@ -81,17 +81,6 @@ namespace CapriDesktop
             catch (Exception) { return new List<EnhancementActivity>(); }
         }
 
-        internal bool ExperimentalFeatureOn(string id)
-        {
-            if (string.IsNullOrEmpty(id)) return false;
-            lock (enhancementGate)
-            {
-                if (enhancementFlags == null) enhancementFlags = ReadEnhancementFlags();
-                bool on;
-                return enhancementFlags.TryGetValue(id, out on) && on;
-            }
-        }
-
         internal bool SetExperimentalFeature(string id, bool on)
         {
             if (string.IsNullOrEmpty(id)) return false;
