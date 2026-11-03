@@ -3,12 +3,31 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.Serialization.Json;
 using System.Runtime.Serialization;
+using System.Globalization;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace CapriDesktop
 {
+    [DataContract]
+    internal sealed class DashboardTask
+    {
+        [DataMember] internal string Id;
+        [DataMember] internal string Text;
+        [DataMember] internal string Due;
+        [DataMember] internal bool Done;
+        internal DateTime? DueAt
+        {
+            get { DateTime value; return DateTime.TryParseExact(Due, "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out value) ? (DateTime?)value : null; }
+        }
+        public override string ToString()
+        {
+            DateTime? due = DueAt;
+            return (Done ? "✓  " : "○  ") + Text + (due.HasValue ? "    ·    " + due.Value.ToString("ddd d MMM, HH:mm") : "    ·    No due date");
+        }
+    }
+
     // Experimental switches and their options are kept outside settings.json, so an experiment can never damage
     // Capri's established preferences.
     internal sealed partial class Companion
@@ -52,6 +71,117 @@ namespace CapriDesktop
             return reminders != null && reminders.Remind(new ToolArguments { Action = "cancel", Text = reminderText }).StartsWith("Cancelled your reminder:", StringComparison.Ordinal);
         }
 
+        private readonly object dashboardGate = new object();
+        private List<DashboardTask> dashboardTasks;
+
+        private string DashboardFile
+        {
+            get
+            {
+                string folder = null;
+                try { folder = Path.GetDirectoryName(Brain.MemoriesPath); } catch (Exception) { }
+                if (string.IsNullOrEmpty(folder)) folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Capri");
+                return Path.Combine(folder, "dashboard.json");
+            }
+        }
+
+        private List<DashboardTask> ReadDashboardTasks()
+        {
+            try
+            {
+                string path = DashboardFile;
+                if (!File.Exists(path)) return new List<DashboardTask>();
+                using (FileStream stream = File.OpenRead(path))
+                {
+                    List<DashboardTask> saved = (List<DashboardTask>)new DataContractJsonSerializer(typeof(List<DashboardTask>)).ReadObject(stream);
+                    return saved ?? new List<DashboardTask>();
+                }
+            }
+            catch (Exception) { return new List<DashboardTask>(); }
+        }
+
+        private bool WriteDashboardTasks(List<DashboardTask> value)
+        {
+            string path = DashboardFile, temporary = path + ".new";
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                using (FileStream stream = File.Create(temporary)) new DataContractJsonSerializer(typeof(List<DashboardTask>)).WriteObject(stream, value);
+                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                return true;
+            }
+            catch (Exception)
+            {
+                try { if (File.Exists(temporary)) File.Delete(temporary); } catch (Exception) { }
+                return false;
+            }
+        }
+
+        internal List<DashboardTask> EnhancementTasks()
+        {
+            lock (dashboardGate)
+            {
+                if (dashboardTasks == null) dashboardTasks = ReadDashboardTasks();
+                List<DashboardTask> copy = new List<DashboardTask>();
+                foreach (DashboardTask item in dashboardTasks)
+                    if (item != null && !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Text))
+                        copy.Add(new DashboardTask { Id = item.Id, Text = item.Text, Due = item.Due, Done = item.Done });
+                copy.Sort(delegate(DashboardTask left, DashboardTask right)
+                {
+                    DateTime? a = left.DueAt, b = right.DueAt;
+                    if (!a.HasValue) return !b.HasValue ? string.Compare(left.Text, right.Text, StringComparison.CurrentCultureIgnoreCase) : 1;
+                    if (!b.HasValue) return -1;
+                    return a.Value.CompareTo(b.Value);
+                });
+                return copy;
+            }
+        }
+
+        internal bool EnhancementAddTask(string text, DateTime? due)
+        {
+            text = (text ?? "").Trim();
+            if (text.Length == 0) return false;
+            lock (dashboardGate)
+            {
+                if (dashboardTasks == null) dashboardTasks = ReadDashboardTasks();
+                List<DashboardTask> changed = new List<DashboardTask>(dashboardTasks);
+                changed.Add(new DashboardTask { Id = Guid.NewGuid().ToString("N"), Text = text, Due = due.HasValue ? due.Value.ToString("o", CultureInfo.InvariantCulture) : "", Done = false });
+                if (!WriteDashboardTasks(changed)) return false;
+                dashboardTasks = changed;
+                return true;
+            }
+        }
+
+        internal bool EnhancementSetTaskDone(string id, bool done)
+        {
+            lock (dashboardGate)
+            {
+                if (dashboardTasks == null) dashboardTasks = ReadDashboardTasks();
+                List<DashboardTask> changed = new List<DashboardTask>(dashboardTasks);
+                DashboardTask item = changed.Find(task => task.Id == id);
+                if (item == null) return false;
+                item.Done = done;
+                if (!WriteDashboardTasks(changed)) return false;
+                dashboardTasks = changed;
+                return true;
+            }
+        }
+
+        internal bool EnhancementDeleteTask(string id)
+        {
+            lock (dashboardGate)
+            {
+                if (dashboardTasks == null) dashboardTasks = ReadDashboardTasks();
+                List<DashboardTask> changed = new List<DashboardTask>(dashboardTasks);
+                DashboardTask item = changed.Find(task => task.Id == id);
+                if (item == null) return false;
+                changed.Remove(item);
+                if (!WriteDashboardTasks(changed)) return false;
+                dashboardTasks = changed;
+                return true;
+            }
+        }
+
         internal bool ExperimentalFeatureOn(string id)
         {
             if (string.IsNullOrEmpty(id)) return false;
@@ -60,8 +190,8 @@ namespace CapriDesktop
                 if (enhancementFlags == null) enhancementFlags = ReadEnhancementFlags();
                 bool on;
                 if (enhancementFlags.TryGetValue(id, out on)) return on;
-                return id == "custom_commands" || id == "better_timers"
-                    || id == "memory_explorer" || id == "pc_health_monitor";
+                return id == "custom_commands" || id == "better_timers" || id == "highlight_assistance"
+                    || id == "personal_dashboard" || id == "memory_explorer" || id == "pc_health_monitor";
             }
         }
 
@@ -135,7 +265,7 @@ namespace CapriDesktop
                 {
                     Dictionary<string, bool> saved = (Dictionary<string, bool>)new DataContractJsonSerializer(typeof(Dictionary<string, bool>)).ReadObject(stream);
                     if (saved == null) saved = new Dictionary<string, bool>();
-                    foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history", "immersive_routines", "highlight_assistance", "personal_dashboard" })
+                    foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history", "immersive_routines" })
                         saved.Remove(retired);
                     return saved;
                 }
@@ -365,18 +495,15 @@ namespace CapriDesktop
                 new Enhancement("custom_commands", "Custom Commands", "PRODUCTIVITY",
                     "Save a trigger phrase and the sequence of actions Capri should run when you say it. Create, run and forget commands here.",
                     "SAVED PHRASES · MULTI-STEP ACTIONS"),
-                new Enhancement("immersive_routines", "Immersive Routines", "AUTOMATION",
-                    "Let Capri adapt to your day with routines that can respond to time, the apps you open and your activity.",
-                    "COMING LATER · AUTOMATIC TRIGGERS"),
                 new Enhancement("better_timers", "Better Timers & Reminders", "PRODUCTIVITY",
                     "Create, review and cancel multiple timers and reminders. They are saved locally and can fire while Capri is running.",
                     "SAVED TIMERS · REMINDERS · PERSISTENT"),
                 new Enhancement("highlight_assistance", "Highlight Assistance", "PRODUCTIVITY",
-                    "Select text in an app and ask Capri to explain, summarise, translate or rewrite just that selection instead of analysing your whole screen.",
-                    "COMING LATER · TEXT SELECTION"),
+                    "Select text anywhere, press Ctrl + Alt + E, then ask Capri to explain, summarise, rewrite or translate just that selection.",
+                    "GLOBAL SHORTCUT · SELECTED TEXT → CAPRI"),
                 new Enhancement("personal_dashboard", "Personal Dashboard", "PRODUCTIVITY",
-                    "A dedicated workspace for your calendar, tasks, reminders and upcoming events. Capri will be able to add and manage events from chat.",
-                    "COMING LATER · TASKS + CALENDAR"),
+                    "A local calendar and task workspace with due dates, completion tracking and your existing reminders together.",
+                    "LOCAL TASKS · CALENDAR · REMINDERS"),
                 new Enhancement("memory_explorer", "Memory Explorer", "COMPANION",
                     "Open Capri's local memories file in your text editor so you can review or edit what she remembers. Nothing is uploaded.",
                     "LOCAL MEMORY FILES · PRIVATE TO THIS PC"),
@@ -486,7 +613,7 @@ namespace CapriDesktop
                 toggles[index] = new Toggle();
                 toggles[index].Text = feature.Name;
                 toggles[index].Font = Type(9.5f * Zoom, true);
-                toggles[index].Enabled = feature.Id != "immersive_routines" && feature.Id != "highlight_assistance" && feature.Id != "personal_dashboard";
+                toggles[index].Enabled = true;
                 toggles[index].Switch = 96;
                 toggles[index].Bounds = Box(16, 14, 450, 24);
                 toggles[index].AccessibleName = feature.Name + ". " + feature.Description;
@@ -567,12 +694,12 @@ namespace CapriDesktop
                     optionMenus[index][optionIndex] = choices;
                 }
 
-                if (feature.Id == "custom_commands" || feature.Id == "better_timers" || feature.Id == "memory_explorer" || feature.Id == "pc_health_monitor")
+                if (feature.Id == "custom_commands" || feature.Id == "better_timers" || feature.Id == "highlight_assistance" || feature.Id == "personal_dashboard" || feature.Id == "memory_explorer" || feature.Id == "pc_health_monitor")
                 {
                     Key action = new Key();
                     action.Font = Type(8f * Zoom);
                     action.Accent = Cyan;
-                    action.Text = feature.Id == "custom_commands" ? "Manage saved commands" : feature.Id == "better_timers" ? "Manage timers & reminders" : feature.Id == "memory_explorer" ? "Open memory files" : "Check PC now";
+                    action.Text = feature.Id == "custom_commands" ? "Manage saved commands" : feature.Id == "better_timers" ? "Manage timers & reminders" : feature.Id == "highlight_assistance" ? "Open text assistant" : feature.Id == "personal_dashboard" ? "Open dashboard" : feature.Id == "memory_explorer" ? "Open memory files" : "Check PC now";
                     action.AccessibleName = action.Text;
                     action.Click += delegate
                     {
@@ -583,6 +710,8 @@ namespace CapriDesktop
                         }
                         if (feature.Id == "custom_commands") owner.OpenSavedManager(true);
                         else if (feature.Id == "better_timers") owner.OpenSavedManager(false);
+                        else if (feature.Id == "highlight_assistance") owner.OpenHighlightAssistance("");
+                        else if (feature.Id == "personal_dashboard") owner.OpenDashboard();
                         else if (feature.Id == "memory_explorer") owner.capri.OpenMemories();
                         else ShowPcHealth();
                     };
