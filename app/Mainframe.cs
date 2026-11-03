@@ -356,7 +356,8 @@ namespace CapriDesktop
             build.TextAlign = ContentAlignment.MiddleRight;
             build.Bounds = new Rectangle(230, 43, 62, 14);
             Key enhancementsButton = Make("Enhance", 230, 20, 62, 22, delegate { OpenEnhancements(); });
-            enhancementsButton.Accent = Rose;
+            enhancementsButton.Accent = Cyan;
+            enhancementsButton.Loud = true;
             enhancementsButton.AccessibleName = "Enhancements: open experimental features";
             minimize = Make("", 300, 20, 26, 22, delegate { WindowState = FormWindowState.Minimized; });
             minimize.Glyph = 1;
