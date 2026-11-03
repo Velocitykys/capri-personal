@@ -933,6 +933,7 @@ namespace CapriDesktop
             private readonly Label summary;
             private List<DashboardTask> shownTasks = new List<DashboardTask>();
             private List<Reminder> shownReminders = new List<Reminder>();
+            private bool allTasksShown;
             internal DashboardSheet(Mainframe owner, float zoom)
             {
                 this.owner = owner; Zoom = zoom; Text = "Personal Dashboard"; Icon = owner.Icon;
@@ -965,6 +966,7 @@ namespace CapriDesktop
             private float scale { get { return Zoom; } }
             internal void RefreshDashboard(bool allTasks = false)
             {
+                allTasksShown = allTasks;
                 shownTasks = owner.capri.EnhancementTasks();
                 tasks.Items.Clear();
                 DateTime selected = calendar.SelectionStart.Date;
@@ -993,7 +995,7 @@ namespace CapriDesktop
                 int index = tasks.SelectedIndex;
                 if (index < 0 || index >= shownTasks.Count) return null;
                 DateTime selected = calendar.SelectionStart.Date;
-                List<DashboardTask> visible = shownTasks.FindAll(item => !item.DueAt.HasValue || item.DueAt.Value.Date == selected || (!item.Done && item.DueAt.Value.Date < DateTime.Today));
+                List<DashboardTask> visible = shownTasks.FindAll(item => allTasksShown || !item.DueAt.HasValue || item.DueAt.Value.Date == selected || (!item.Done && item.DueAt.Value.Date < DateTime.Today));
                 return index < visible.Count ? visible[index] : null;
             }
             private void ToggleTask() { DashboardTask item = SelectedTask(); if (item == null) return; owner.capri.EnhancementSetTaskDone(item.Id, !item.Done); RefreshDashboard(); }
