@@ -527,7 +527,10 @@ namespace CapriDesktop
                     "LOCAL TASKS · CALENDAR · TIMERS · REMINDERS"),
                 new Enhancement("pc_health_monitor", "PC Health Monitor", "SYSTEM",
                     "Check current CPU load, memory use, running apps, drive space and battery status using Capri's local PC usage reader.",
-                    "ON-DEMAND READOUT · NO BACKGROUND MONITORING")
+                    "ON-DEMAND READOUT · NO BACKGROUND MONITORING"),
+                new Enhancement("conversational_continuity", "Conversational Continuity", "VOICE",
+                    "After Capri answers in hands-free voice chat, keep the conversation open briefly so natural follow-ups work without saying her name again. Uses conversational cues to reduce accidental replies to background speech.",
+                    "35-SECOND FOLLOW-UP WINDOW · HANDS-FREE VOICE")
             };
 
             private readonly Panel list;
