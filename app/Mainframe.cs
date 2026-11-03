@@ -860,6 +860,9 @@ namespace CapriDesktop
                 Controls[gameRow].Top += Row + MixRows;
                 underVoice.Add(new KeyValuePair<Control, int>(Controls[gameRow], Controls[gameRow].Top));
             }
+            Section("ENHANCEMENTS >", 0, 1490);
+            Make("Open Enhancements", 28, 1514, 328, 26, delegate { OpenEnhancements(); });
+            Caption("Optional experimental modules for this build.", 28, 1544, small, Faint);
             for (int i = first; i < Controls.Count; i++)
             {
                 Control control = Controls[i];
