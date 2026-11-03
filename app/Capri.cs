@@ -1727,6 +1727,9 @@ namespace CapriDesktop
         private System.Collections.Generic.List<short[]> utterance;
         private int quietRun;
         private double voiceUntil;
+        // A short, cue-filtered window after her reply lets the next thing they say stay in the same conversation.
+        private double continuityUntil;
+        private const double ContinuityWindow = 35;
         private bool spoke;
         private bool checkedIn;
         private const string BlackScreen = "The screen capture is black. Try borderless or windowed mode.";
@@ -10606,10 +10609,23 @@ namespace CapriDesktop
 
         internal const string CableDefault = "Windows speech only hears your default mic, CABLE Output, which has her voice in it. She hears your real mic offline instead.";
 
+        // After Capri answers, a follow-up can arrive without saying her name again. Keep the window short and
+        // require a conversational opening so nearby speech is less likely to become a turn by accident.
+        private bool ContinuityFollowUp(string text)
+        {
+            if (!ExperimentalFeatureOn("conversational_continuity") || !chatting || !local || !preferences.ListenCapri
+                || clock.Elapsed.TotalSeconds > continuityUntil) return false;
+            string clean = (Hearing.Clean(text ?? "") ?? "").Trim();
+            if (clean.Length < 2 || clean.Length > 240) return false;
+            return Regex.IsMatch(clean,
+                @"^(?:yeah|yes|yep|no|nope|nah|okay|ok|alright|right|well|but|and|so|wait|actually|exactly|true|fair|maybe|because|i think|i mean|i guess|i don't|i do|i would|i want|i need|i have|i've|ive|i was|i'm|im|we|you said|you mean|that's|that is|this|it|there|what about|how about|what|why|how|when|where|who|which|can you|could you|would you|should i|do you|tell me|explain|elaborate|go on|continue|hang on|hold on|look|listen)\b",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+
         private bool VoiceForHer(string text)
         {
             if (watchAlong != null && (WatchAlong.Request(text) == "stop" || VoiceStop(text))) return true;
-            if (!preferences.ListenCapri || pushing || Hands.HeardName(text)) return true;
+            if (!preferences.ListenCapri || pushing || Hands.HeardName(text) || ContinuityFollowUp(text)) return true;
             return (MidJob(job) || PcEars.Active || talkState == TalkState.Talking || clock.Elapsed.TotalSeconds < voiceUntil || speaker.Busy)
                 && (VoiceStop(text) || PcEars.Active && StopWords(text));
         }
@@ -11266,6 +11282,7 @@ namespace CapriDesktop
             bool wasLocal = local;
             chatting = false;
             local = false;
+            continuityUntil = 0;
             earsReady = false;
             earsAwaited = false;
             earsRetryAt = -1;
@@ -11691,6 +11708,8 @@ namespace CapriDesktop
         private void Begin(int ticket, string said, TalkState state, byte[] wav)
         {
             if (ticket != asking || IsDisposed || !FollowDelivery(ticket)) return;
+            if (local && preferences.ListenCapri && ExperimentalFeatureOn("conversational_continuity"))
+                continuityUntil = clock.Elapsed.TotalSeconds + ContinuityWindow;
             if (ticket == followTicket && !followLogged) { brain.Followed(said); followLogged = true; }
             if (slowWarned && brain.Remote != null && state != TalkState.Dormant) mainframe.ShowCloud(brain.Remote, cloudModels);
             reply = said;
@@ -11713,6 +11732,8 @@ namespace CapriDesktop
         {
             double seconds = wav == null ? 0 : Voice.Seconds(wav);
             voiceUntil = seconds < 0.2 ? 0 : clock.Elapsed.TotalSeconds + seconds + 0.6;
+            if (local && preferences.ListenCapri && ExperimentalFeatureOn("conversational_continuity"))
+                continuityUntil = Math.Max(continuityUntil, voiceUntil + ContinuityWindow);
             CheckEars(clock.Elapsed.TotalSeconds);
             if (seconds < 0.2) return;
             Say(said);
