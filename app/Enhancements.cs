@@ -31,7 +31,9 @@ namespace CapriDesktop
             lock (enhancementGate)
             {
                 if (enhancementFlags == null) enhancementFlags = ReadEnhancementFlags();
-                bool existed, previous = enhancementFlags.TryGetValue(id, out existed) && existed;
+                bool existed = enhancementFlags.ContainsKey(id);
+                bool previous;
+                enhancementFlags.TryGetValue(id, out previous);
                 enhancementFlags[id] = on;
                 if (WriteEnhancementFlags()) return true;
                 if (existed) enhancementFlags[id] = previous;
