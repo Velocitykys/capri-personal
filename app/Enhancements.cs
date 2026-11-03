@@ -17,6 +17,26 @@ namespace CapriDesktop
         private Dictionary<string, bool> enhancementFlags;
         private Dictionary<string, string> enhancementOptions;
 
+        internal List<Reminder> EnhancementReminders()
+        {
+            return reminders == null ? new List<Reminder>() : reminders.SnapshotReminders();
+        }
+
+        internal List<Routine> EnhancementRoutines()
+        {
+            return reminders == null ? new List<Routine>() : reminders.SnapshotRoutines();
+        }
+
+        internal bool EnhancementForgetRoutine(string phrase)
+        {
+            return reminders != null && reminders.Routine(new ToolArguments { Action = "forget", Phrase = phrase }).StartsWith("Forgot your routine:", StringComparison.Ordinal);
+        }
+
+        internal bool EnhancementCancelReminder(string reminderText)
+        {
+            return reminders != null && reminders.Remind(new ToolArguments { Action = "cancel", Text = reminderText }).StartsWith("Cancelled your reminder:", StringComparison.Ordinal);
+        }
+
         internal bool ExperimentalFeatureOn(string id)
         {
             if (string.IsNullOrEmpty(id)) return false;
