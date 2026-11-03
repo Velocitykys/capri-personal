@@ -1415,11 +1415,11 @@ namespace CapriDesktop
 
         private void CaptureHighlightedText()
         {
-            string previous = null, selected = "";
-            bool hadText = false;
+            string selected = "";
+            IDataObject previous = null;
             try
             {
-                if (Clipboard.ContainsText()) { previous = Clipboard.GetText(); hadText = true; }
+                previous = Clipboard.GetDataObject();
                 SendKeys.SendWait("^c");
                 System.Threading.Thread.Sleep(120);
                 if (Clipboard.ContainsText()) selected = Clipboard.GetText();
@@ -1427,7 +1427,7 @@ namespace CapriDesktop
             catch (Exception) { }
             finally
             {
-                try { if (hadText) Clipboard.SetText(previous); else Clipboard.Clear(); } catch (Exception) { }
+                try { if (previous != null) Clipboard.SetDataObject(previous, true); } catch (Exception) { }
             }
             OpenHighlightAssistance(selected);
         }
