@@ -10628,7 +10628,7 @@ namespace CapriDesktop
             // Exclude generic social openers and casual remarks: a follow-up must sound like
             // a continuation of Capri's answer or an explicit request/question to her.
             return Regex.IsMatch(clean,
-                @"^(?:yeah|yes|yep|no|nope|nah|okay|ok|alright|right|wait|actually|exactly|true|fair|maybe|because|i think|i mean|i guess|i don't|i do|i would|i want|i need|i have|i've|ive|i was|i'm|im|we|you said|you mean|that's|that is|this|it|there|what about|how about|what|why|how|when|where|who|which|can you|could you|would you|should i|do you|tell me|explain|elaborate|go on|continue|hang on|hold on)\b",
+                @"^(?:yeah|yes|yep|no|nope|nah|okay|ok|alright|right|wait|actually|exactly|true|fair|maybe|because|i think|i mean|i guess|i don't|i do|i would|i want|i need|i have|i've|ive|i was|i'm|im|we|you said|you mean|that's|that is|this|it|there|what about|how about|why|how|when|where|who|which|can you|could you|would you|should i|do you|tell me|explain|elaborate|go on|continue|hang on|hold on)\b",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
 
