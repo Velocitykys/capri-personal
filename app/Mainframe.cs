@@ -1430,7 +1430,7 @@ namespace CapriDesktop
             catch (Exception) { }
             finally
             {
-                try { if (previous != null) Clipboard.SetDataObject(previous, true); } catch (Exception) { }
+                try { if (previous != null) Clipboard.SetDataObject(previous, true); else Clipboard.Clear(); } catch (Exception) { }
             }
             OpenHighlightAssistance(selected);
         }
