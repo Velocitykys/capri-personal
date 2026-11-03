@@ -1394,8 +1394,71 @@ namespace CapriDesktop
             }
         }
 
+        private const int HighlightHotkeyId = 0xCA71;
+        private const int WmHotkey = 0x0312;
+        private bool highlightHotkeyRegistered;
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(IntPtr window, int id);
+
+        private void RegisterHighlightHotkey()
+        {
+            if (highlightHotkeyRegistered || !IsHandleCreated) return;
+            highlightHotkeyRegistered = RegisterHotKey(Handle, HighlightHotkeyId, 0x0001 | 0x0002, (uint)Keys.E);
+        }
+
+        private void UnregisterHighlightHotkey()
+        {
+            if (!highlightHotkeyRegistered || !IsHandleCreated) return;
+            UnregisterHotKey(Handle, HighlightHotkeyId);
+            highlightHotkeyRegistered = false;
+        }
+
+        private void CaptureHighlightedText()
+        {
+            string previous = null, selected = "";
+            bool hadText = false;
+            try
+            {
+                if (Clipboard.ContainsText()) { previous = Clipboard.GetText(); hadText = true; }
+                SendKeys.SendWait("^c");
+                System.Threading.Thread.Sleep(120);
+                if (Clipboard.ContainsText()) selected = Clipboard.GetText();
+            }
+            catch (Exception) { }
+            finally
+            {
+                try { if (hadText) Clipboard.SetText(previous); else Clipboard.Clear(); } catch (Exception) { }
+            }
+            OpenHighlightAssistance(selected);
+        }
+
+        private HighlightAssistanceSheet highlightAssistance;
+        private void OpenHighlightAssistance(string selected)
+        {
+            if (highlightAssistance != null && !highlightAssistance.IsDisposed) highlightAssistance.Close();
+            highlightAssistance = new HighlightAssistanceSheet(this, zoom, selected);
+            highlightAssistance.Show(this);
+            highlightAssistance.Activate();
+        }
+
+        private DashboardSheet dashboard;
+        private void OpenDashboard()
+        {
+            if (dashboard != null && !dashboard.IsDisposed && dashboard.Zoom != zoom) dashboard.Close();
+            if (dashboard == null || dashboard.IsDisposed) dashboard = new DashboardSheet(this, zoom);
+            dashboard.RefreshDashboard();
+            if (!dashboard.Visible) dashboard.Show(this);
+            dashboard.Activate();
+        }
+
         protected override void WndProc(ref Message message)
         {
+            if (message.Msg == WmHotkey && message.WParam.ToInt32() == HighlightHotkeyId)
+            {
+                CaptureHighlightedText();
+                message.Result = IntPtr.Zero;
+                return;
+            }
             if (message.Msg == 0x007E || message.Msg == 0x02E0) Panels.Forget();
             if (message.Msg == 0x02E0 && loaded)
             {
@@ -1420,6 +1483,7 @@ namespace CapriDesktop
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
+            RegisterHighlightHotkey();
             monitorDpi = (int)Math.Round(DeviceScale() * 96);
             loaded = true;
             Rezoom(Wanted());
@@ -1892,6 +1956,7 @@ namespace CapriDesktop
 
         protected override void Dispose(bool disposing)
         {
+            if (disposing) UnregisterHighlightHotkey();
             if (disposing) DisposeHints();
             if (disposing) { Application.RemoveMessageFilter(this); modelMenu.Dispose(); freeKeyMenu.Dispose(); voiceMenu.Dispose(); speechModelMenu.Dispose(); micMenu.Dispose(); languageMenu.Dispose(); freeMenu.Dispose(); careMenu.Dispose(); hearingMenu.Dispose(); }
             base.Dispose(disposing);
