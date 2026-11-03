@@ -1402,9 +1402,12 @@ namespace CapriDesktop
 
         private void RegisterHighlightHotkey()
         {
+            if (!capri.ExperimentalFeatureOn("highlight_assistance")) { UnregisterHighlightHotkey(); return; }
             if (highlightHotkeyRegistered || !IsHandleCreated) return;
             highlightHotkeyRegistered = RegisterHotKey(Handle, HighlightHotkeyId, 0x0001 | 0x0002, (uint)Keys.E);
         }
+
+        private void RefreshHighlightHotkey() { RegisterHighlightHotkey(); }
 
         private void UnregisterHighlightHotkey()
         {
@@ -1455,7 +1458,7 @@ namespace CapriDesktop
         {
             if (message.Msg == WmHotkey && message.WParam.ToInt32() == HighlightHotkeyId)
             {
-                CaptureHighlightedText();
+                if (capri.ExperimentalFeatureOn("highlight_assistance")) CaptureHighlightedText();
                 message.Result = IntPtr.Zero;
                 return;
             }
