@@ -42,11 +42,15 @@ namespace CapriDesktop
             return brain.See(image, Brain.Persona + Brain.Speech() + Brain.Remembered(), instruction, 1200);
         }
 
-        // Highlight assistance speaks through Capri's normal voice and animation pipeline, on her UI thread.
+        // Highlight assistance uses the same spoken-remark path as Capri's other replies.
+        // Pass bubbleOnly=false explicitly: this answer must be spoken, not just shown as text.
         internal void EnhancementSpeak(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return;
-            Post(delegate { if (!IsDisposed) Remark("highlight assistance", text); });
+            Post(delegate
+            {
+                if (!IsDisposed) Remark("highlight assistance", text, false);
+            });
         }
         private Dictionary<string, string> enhancementOptions;
 
