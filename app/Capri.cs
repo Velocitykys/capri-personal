@@ -10614,8 +10614,15 @@ namespace CapriDesktop
         // require a conversational opening so nearby speech is less likely to become a turn by accident.
         private bool ContinuityFollowUp(string text)
         {
+            double now = clock.Elapsed.TotalSeconds;
+            // Expiry ends the engagement too: a later unrelated reply must not reopen the follow-up window.
+            if (continuityEngaged && continuityUntil > 0 && now > continuityUntil)
+            {
+                continuityEngaged = false;
+                continuityUntil = 0;
+            }
             if (!ExperimentalFeatureOn("conversational_continuity") || !continuityEngaged || !chatting || !local || !preferences.ListenCapri
-                || clock.Elapsed.TotalSeconds > continuityUntil) return false;
+                || now > continuityUntil) return false;
             string clean = (Hearing.Clean(text ?? "") ?? "").Trim();
             if (clean.Length < 2 || clean.Length > 240) return false;
             return Regex.IsMatch(clean,
@@ -10628,7 +10635,7 @@ namespace CapriDesktop
             if (watchAlong != null && (WatchAlong.Request(text) == "stop" || VoiceStop(text))) return true;
             if (!preferences.ListenCapri || pushing) return true;
             // Hearing her wake phrase starts a conversation; nearby speech alone must never open continuity.
-            if (Hands.HeardName(text)) { continuityEngaged = true; return true; }
+            if (Hands.HeardName(text)) { continuityEngaged = true; continuityUntil = 0; return true; }
             if (ContinuityFollowUp(text)) return true;
             return (MidJob(job) || PcEars.Active || talkState == TalkState.Talking || clock.Elapsed.TotalSeconds < voiceUntil || speaker.Busy)
                 && (VoiceStop(text) || PcEars.Active && StopWords(text));
@@ -11713,8 +11720,14 @@ namespace CapriDesktop
         private void Begin(int ticket, string said, TalkState state, byte[] wav)
         {
             if (ticket != asking || IsDisposed || !FollowDelivery(ticket)) return;
+            double now = clock.Elapsed.TotalSeconds;
+            if (continuityEngaged && continuityUntil > 0 && now > continuityUntil)
+            {
+                continuityEngaged = false;
+                continuityUntil = 0;
+            }
             if (continuityEngaged && local && preferences.ListenCapri && ExperimentalFeatureOn("conversational_continuity"))
-                continuityUntil = clock.Elapsed.TotalSeconds + ContinuityWindow;
+                continuityUntil = now + ContinuityWindow;
             if (ticket == followTicket && !followLogged) { brain.Followed(said); followLogged = true; }
             if (slowWarned && brain.Remote != null && state != TalkState.Dormant) mainframe.ShowCloud(brain.Remote, cloudModels);
             reply = said;
