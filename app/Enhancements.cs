@@ -27,6 +27,21 @@ namespace CapriDesktop
             return reminders == null ? new List<Routine>() : reminders.SnapshotRoutines();
         }
 
+        internal string EnhancementSaveRoutine(string phrase, string steps)
+        {
+            return reminders == null ? "Couldn't access saved commands." : reminders.Routine(new ToolArguments { Phrase = phrase, Steps = steps });
+        }
+
+        internal string EnhancementSaveReminder(string text, string when)
+        {
+            return reminders == null ? "Couldn't access reminders." : reminders.Remind(new ToolArguments { Text = text, When = when });
+        }
+
+        internal string EnhancementRunRoutine(string phrase)
+        {
+            return RoutineTool(new ToolArguments { Action = "run", Phrase = phrase });
+        }
+
         internal bool EnhancementForgetRoutine(string phrase)
         {
             return reminders != null && reminders.Routine(new ToolArguments { Action = "forget", Phrase = phrase }).StartsWith("Forgot your routine:", StringComparison.Ordinal);
@@ -201,6 +216,8 @@ namespace CapriDesktop
             private readonly ListBox items;
             private readonly Note description;
             private readonly Key remove;
+            private readonly Key add;
+            private readonly Key run;
 
             internal SavedManagerSheet(Mainframe owner, float zoom, bool routines)
             {
@@ -218,9 +235,13 @@ namespace CapriDesktop
                 items.Bounds = Box(22, 88, 476, 270); items.BackColor = Field; items.ForeColor = White;
                 items.BorderStyle = BorderStyle.FixedSingle; items.Font = Type(9f * zoom); items.IntegralHeight = false;
                 items.SelectedIndexChanged += delegate { UpdateSelection(); }; Controls.Add(items);
-                remove = new Key(); remove.Text = routines ? "Forget command" : "Cancel reminder";
-                remove.Accent = Hot; remove.Bounds = Box(22, 374, 150, 28); remove.Click += delegate { RemoveSelected(); }; Controls.Add(remove);
-                Key refresh = new Key(); refresh.Text = "Refresh"; refresh.Bounds = Box(182, 374, 100, 28);
+                add = new Key(); add.Text = routines ? "New command" : "New reminder"; add.Accent = Cyan;
+                add.Bounds = Box(22, 374, 112, 28); add.Click += delegate { AddItem(); }; Controls.Add(add);
+                run = new Key(); run.Text = "Run"; run.Bounds = Box(142, 374, 70, 28);
+                run.Click += delegate { RunSelected(); }; Controls.Add(run);
+                remove = new Key(); remove.Text = routines ? "Forget" : "Cancel"; remove.Accent = Hot;
+                remove.Bounds = Box(220, 374, 82, 28); remove.Click += delegate { RemoveSelected(); }; Controls.Add(remove);
+                Key refresh = new Key(); refresh.Text = "Refresh"; refresh.Bounds = Box(310, 374, 78, 28);
                 refresh.Click += delegate { RefreshItems(); }; Controls.Add(refresh);
                 Key close = new Key(); close.Text = "Done"; close.Accent = Cyan; close.Loud = true;
                 close.Bounds = Box(398, 374, 100, 28); close.Click += delegate { Close(); }; Controls.Add(close);
@@ -248,8 +269,32 @@ namespace CapriDesktop
                     && !items.Items[items.SelectedIndex].ToString().StartsWith("No saved", StringComparison.Ordinal)
                     && !items.Items[items.SelectedIndex].ToString().StartsWith("No upcoming", StringComparison.Ordinal);
                 remove.Enabled = valid;
+                run.Enabled = valid && Routines;
                 description.Text = valid ? items.Items[items.SelectedIndex].ToString()
-                    : Routines ? "Choose a phrase to inspect or remove its saved action." : "Your saved reminders and timers stay on this PC.";
+                    : Routines ? "Create a command Capri can run when you say its trigger phrase." : "Add a reminder using a time like in 20 minutes or tomorrow at 9.";
+            }
+
+            private void AddItem()
+            {
+                using (SavedItemEditorSheet editor = new SavedItemEditorSheet(Zoom, Routines))
+                {
+                    if (editor.ShowDialog(this) != DialogResult.OK) return;
+                    string result = Routines ? owner.capri.EnhancementSaveRoutine(editor.First, editor.Second)
+                        : owner.capri.EnhancementSaveReminder(editor.First, editor.Second);
+                    MessageBox.Show(this, result, Routines ? "Saved command" : "Reminder", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshItems();
+                }
+            }
+
+            private void RunSelected()
+            {
+                if (!Routines || items.SelectedIndex < 0) return;
+                string selected = items.SelectedItem.ToString();
+                if (selected.StartsWith("No saved", StringComparison.Ordinal)) return;
+                string phrase = selected.Split(new string[] { "  —  " }, StringSplitOptions.None)[0];
+                string result = owner.capri.EnhancementRunRoutine(phrase);
+                MessageBox.Show(this, result, "Run command", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                RefreshItems();
             }
 
             private void RemoveSelected()
@@ -687,6 +732,52 @@ namespace CapriDesktop
                         if (menus != null) foreach (ContextMenuStrip menu in menus) if (menu != null) menu.Dispose();
                 base.Dispose(disposing);
             }
+        }
+
+        private sealed class SavedItemEditorSheet : Form
+        {
+            internal string First { get { return first.Text.Trim(); } }
+            internal string Second { get { return second.Text.Trim(); } }
+            private readonly TextBox first;
+            private readonly TextBox second;
+            private readonly bool routines;
+            private readonly float scale;
+
+            internal SavedItemEditorSheet(float zoom, bool routines)
+            {
+                this.routines = routines; scale = zoom;
+                Text = routines ? "New command" : "New reminder";
+                FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent;
+                ShowInTaskbar = false; MinimizeBox = false; MaximizeBox = false; BackColor = Ground; ForeColor = White;
+                ClientSize = new Size(Z(440), Z(routines ? 260 : 210));
+                Label heading = new Note(); heading.Text = routines ? "TRIGGER PHRASE" : "REMIND ME ABOUT";
+                heading.ForeColor = Cyan; heading.BackColor = Ground; heading.Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point);
+                heading.Bounds = Box(18, 16, 400, 18); Controls.Add(heading);
+                first = new TextBox(); first.Bounds = Box(18, 38, 404, 28); first.Font = Type(9f * zoom);
+                first.BackColor = Field; first.ForeColor = White; first.BorderStyle = BorderStyle.FixedSingle; Controls.Add(first);
+                Label secondLabel = new Note(); secondLabel.Text = routines ? "WHAT SHOULD CAPRI DO?" : "WHEN?  (e.g. IN 20 MINUTES / TOMORROW AT 9)";
+                secondLabel.ForeColor = Cyan; secondLabel.BackColor = Ground; secondLabel.Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point);
+                secondLabel.Bounds = Box(18, 78, 404, 18); Controls.Add(secondLabel);
+                if (routines)
+                {
+                    second = new TextBox(); second.Multiline = true; second.ScrollBars = ScrollBars.Vertical;
+                    second.Bounds = Box(18, 100, 404, 92); second.Font = Type(9f * zoom); second.BackColor = Field;
+                    second.ForeColor = White; second.BorderStyle = BorderStyle.FixedSingle; Controls.Add(second);
+                }
+                else
+                {
+                    second = new TextBox(); second.Bounds = Box(18, 100, 404, 28); second.Font = Type(9f * zoom);
+                    second.BackColor = Field; second.ForeColor = White; second.BorderStyle = BorderStyle.FixedSingle; Controls.Add(second);
+                }
+                Button save = new Button(); save.Text = "Save"; save.DialogResult = DialogResult.OK; save.Bounds = Box(322, routines ? 210 : 156, 100, 28);
+                save.Enabled = false; first.TextChanged += delegate { save.Enabled = First.Length > 0 && Second.Length > 0; };
+                second.TextChanged += delegate { save.Enabled = First.Length > 0 && Second.Length > 0; };
+                Controls.Add(save); AcceptButton = save;
+                Button cancel = new Button(); cancel.Text = "Cancel"; cancel.DialogResult = DialogResult.Cancel;
+                cancel.Bounds = Box(212, routines ? 210 : 156, 100, 28); Controls.Add(cancel); CancelButton = cancel;
+            }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int width, int height) { return new Rectangle(Z(x), Z(y), Z(width), Z(height)); }
         }
     }
 }
