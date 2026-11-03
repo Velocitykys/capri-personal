@@ -363,13 +363,13 @@ namespace CapriDesktop
             private readonly Enhancement[] features =
             {
                 new Enhancement("custom_commands", "Custom Commands", "PRODUCTIVITY",
-                    "Save your own trigger phrases and have Capri run a sequence of actions. Her existing routine engine is the starting point.",
+                    "Save a trigger phrase and the sequence of actions Capri should run when you say it. Create, run and forget commands here.",
                     "SAVED PHRASES · MULTI-STEP ACTIONS"),
                 new Enhancement("immersive_routines", "Immersive Routines", "AUTOMATION",
                     "Let Capri adapt to your day with routines that can respond to time, the apps you open and your activity.",
                     "COMING LATER · AUTOMATIC TRIGGERS"),
                 new Enhancement("better_timers", "Better Timers & Reminders", "PRODUCTIVITY",
-                    "Manage multiple timers, recurring reminders, snooze and rescheduling. Existing reminders are being extended rather than replaced.",
+                    "Create, review and cancel multiple timers and reminders. They are saved locally and can fire while Capri is running.",
                     "SAVED TIMERS · REMINDERS · PERSISTENT"),
                 new Enhancement("highlight_assistance", "Highlight Assistance", "PRODUCTIVITY",
                     "Select text in an app and ask Capri to explain, summarise, translate or rewrite just that selection instead of analysing your whole screen.",
@@ -378,11 +378,11 @@ namespace CapriDesktop
                     "A dedicated workspace for your calendar, tasks, reminders and upcoming events. Capri will be able to add and manage events from chat.",
                     "COMING LATER · TASKS + CALENDAR"),
                 new Enhancement("memory_explorer", "Memory Explorer", "COMPANION",
-                    "Browse, search and manage what Capri remembers, including her notes and older chat transcripts. Nothing is uploaded by this panel.",
+                    "Open Capri's local memories file in your text editor so you can review or edit what she remembers. Nothing is uploaded.",
                     "LOCAL MEMORY FILES · PRIVATE TO THIS PC"),
                 new Enhancement("pc_health_monitor", "PC Health Monitor", "SYSTEM",
-                    "See CPU load, memory use, running apps, drive space and battery status. Capri already has a PC usage reader and status tool.",
-                    "LIVE CPU · MEMORY · DRIVE · BATTERY READOUT")
+                    "Check current CPU load, memory use, running apps, drive space and battery status using Capri's local PC usage reader.",
+                    "ON-DEMAND READOUT · NO BACKGROUND MONITORING")
             };
 
             private readonly Panel list;
