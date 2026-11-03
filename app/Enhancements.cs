@@ -1063,24 +1063,29 @@ namespace CapriDesktop
                 Close();
 
                 string prompt = task + "\n\nYou are looking at a user-selected screenshot region. Carefully inspect the actual image, not just an assumed OCR transcript. If asked to read or translate, transcribe all legible visible text faithfully, including profanity, insults, slurs, sexual language, and other offensive wording; do not censor, sanitize, or silently omit words. Preserve the original wording and explain/translate it accurately into English where useful. Mention uncertainty for unclear text. Describe relevant visible content as well as text when the instruction calls for it. Be natural and concise, speaking directly to the user in your usual personality.";
-                HighlightAnswerSheet answer = new HighlightAnswerSheet(owner, scale);
-                answer.Show(owner); answer.Activate();
+                // Don't open a second blank window while the vision request is still running.
+                // Capri speaks the completed answer first; the compact transcript appears with the result.
                 System.Threading.Tasks.Task.Run(delegate
                 {
                     string result;
                     try { result = owner.capri.EnhancementSeeImage(selectedImage, prompt); }
                     catch (Exception error) { result = "I couldn't read that selection: " + Voice.Short(error.Message); }
                     if (string.IsNullOrWhiteSpace(result)) result = "I couldn't make out anything clear in that selection.";
+
+                    owner.capri.EnhancementSpeak(result);
                     try
                     {
-                        if (!answer.IsDisposed && answer.IsHandleCreated)
-                            answer.BeginInvoke(new Action(delegate
+                        if (!owner.IsDisposed && owner.IsHandleCreated)
+                            owner.BeginInvoke(new Action(delegate
                             {
-                                if (!answer.IsDisposed) answer.SetAnswer(result);
+                                if (owner.IsDisposed) return;
+                                HighlightAnswerSheet answer = new HighlightAnswerSheet(owner, scale);
+                                answer.SetAnswer(result);
+                                answer.Show(owner);
+                                answer.Activate();
                             }));
                     }
                     catch (Exception) { }
-                    owner.capri.EnhancementSpeak(result);
                 });
             }
 
