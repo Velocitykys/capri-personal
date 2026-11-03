@@ -265,9 +265,12 @@ namespace CapriDesktop
                 {
                     Dictionary<string, bool> saved = (Dictionary<string, bool>)new DataContractJsonSerializer(typeof(Dictionary<string, bool>)).ReadObject(stream);
                     if (saved == null) saved = new Dictionary<string, bool>();
-                    bool oldTimers;
-                    if (saved.TryGetValue("better_timers", out oldTimers) && !saved.ContainsKey("personal_dashboard"))
-                        saved["personal_dashboard"] = oldTimers;
+                    bool oldTimers, dashboardEnabled;
+                    if (saved.TryGetValue("better_timers", out oldTimers) && oldTimers)
+                    {
+                        saved.TryGetValue("personal_dashboard", out dashboardEnabled);
+                        saved["personal_dashboard"] = dashboardEnabled || oldTimers;
+                    }
                     foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history", "immersive_routines", "better_timers", "memory_explorer" })
                         saved.Remove(retired);
                     return saved;
