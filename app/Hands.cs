@@ -1434,7 +1434,7 @@ namespace CapriDesktop
             string result = DoCore(tool, args);
             Action<string, string> log = Activity;
             Func<string, bool> enabled = FeatureOn;
-            if (log != null && enabled != null && enabled("command_history") && !string.IsNullOrEmpty(tool) && !string.IsNullOrEmpty(result))
+            if (log != null && enabled != null && (enabled("command_history") || enabled("notification_centre")) && !string.IsNullOrEmpty(tool) && !string.IsNullOrEmpty(result))
             {
                 try { log("Command", tool + " · " + (result.StartsWith("That didn't work", StringComparison.Ordinal) ? "failed" : "completed")); }
                 catch (Exception) { }
