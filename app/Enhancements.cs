@@ -487,7 +487,7 @@ namespace CapriDesktop
                         }
                         if (feature.Id == "memory_explorer") owner.capri.OpenMemories();
                         else if (feature.Id == "pc_health_monitor") ShowPcHealth();
-                        else ShowActivity(feature.Id == "command_history" ? "Command" : "Reminder",
+                        else ShowActivity(feature.Id == "command_history" ? "Command" : null,
                             feature.Id == "command_history" ? "Command History" : "Notification Centre");
                     };
                     list.Controls.Add(action);
