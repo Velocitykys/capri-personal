@@ -863,6 +863,182 @@ namespace CapriDesktop
             }
         }
 
+        private sealed class HighlightAssistanceSheet : Form
+        {
+            private readonly Mainframe owner;
+            private readonly float scale;
+            private readonly TextBox selection;
+            private readonly TextBox instruction;
+            internal HighlightAssistanceSheet(Mainframe owner, float zoom, string selected)
+            {
+                this.owner = owner; scale = zoom; Text = "Highlight Assistance"; Icon = owner.Icon;
+                ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(600), Z(480));
+                Label title = LabelText("HIGHLIGHT ASSISTANCE", 22, 18, 550, 24, Cyan, 12f, true); Controls.Add(title);
+                Label hint = LabelText("Ctrl + Alt + E captures selected text from the active app.", 22, 48, 550, 20, Faint, 8.5f, false); Controls.Add(hint);
+                Label source = LabelText("SELECTED TEXT", 22, 82, 550, 18, Rose, 8f, true); Controls.Add(source);
+                selection = new TextBox(); selection.Multiline = true; selection.ScrollBars = ScrollBars.Vertical;
+                selection.AcceptsReturn = true; selection.Bounds = Box(22, 104, 556, 190);
+                selection.BackColor = Field; selection.ForeColor = White; selection.BorderStyle = BorderStyle.FixedSingle;
+                selection.Font = Type(9f * scale); selection.Text = selected ?? ""; Controls.Add(selection);
+                Label ask = LabelText("WHAT SHOULD CAPRI DO WITH IT?", 22, 308, 550, 18, Rose, 8f, true); Controls.Add(ask);
+                instruction = new TextBox(); instruction.Bounds = Box(22, 330, 556, 34); instruction.BackColor = Field;
+                instruction.ForeColor = White; instruction.BorderStyle = BorderStyle.FixedSingle; instruction.Font = Type(9f * scale);
+                instruction.Text = "Explain this clearly and simply."; Controls.Add(instruction);
+                string[] actions = { "Explain", "Summarise", "Rewrite", "Translate" };
+                for (int i = 0; i < actions.Length; i++)
+                {
+                    string action = actions[i]; Key button = new Key(); button.Text = action; button.Font = Type(8f * scale);
+                    button.Accent = Cyan; button.Bounds = Box(22 + i * 112, 382, 102, 30);
+                    button.Click += delegate { Send(action); }; Controls.Add(button);
+                }
+                Key custom = new Key(); custom.Text = "Ask Capri"; custom.Loud = true; custom.Accent = Rose;
+                custom.Bounds = Box(22, 426, 130, 28); custom.Click += delegate { Send(instruction.Text); }; Controls.Add(custom);
+                Key close = new Key(); close.Text = "Close"; close.Bounds = Box(478, 426, 100, 28);
+                close.Click += delegate { Close(); }; Controls.Add(close);
+                if (string.IsNullOrWhiteSpace(selected)) hint.Text = "No text was captured. Paste or type text below, then choose an action.";
+            }
+            private void Send(string action)
+            {
+                string text = selection.Text.Trim();
+                if (text.Length == 0) { MessageBox.Show(this, "Select or paste some text first.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
+                string request = "For the following selected text, " + action.Trim() + ". Keep your response focused on the selection and follow any extra instruction: " + instruction.Text.Trim() + "\n\nSELECTED TEXT:\n" + text;
+                owner.capri.Hear(request);
+                Close();
+            }
+            private Label LabelText(string text, int x, int y, int w, int h, Color colour, float size, bool bold)
+            {
+                return new Label { Text = text, Bounds = Box(x, y, w, h), ForeColor = colour, BackColor = Ground, Font = Look.Mono(size * scale, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point), AutoEllipsis = true };
+            }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
+            protected override void OnLoad(EventArgs e)
+            {
+                base.OnLoad(e); Rectangle area = Screen.FromControl(owner).WorkingArea;
+                int x = owner.Left + (owner.Width - Width) / 2, y = owner.Top + (int)(48 * ScaleOf(this));
+                Location = new Point(Math.Max(area.Left, Math.Min(area.Right - Width, x)), Math.Max(area.Top, Math.Min(area.Bottom - Height, y)));
+            }
+            protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); float s = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Backdrop(e.Graphics, this, s); Edging(e.Graphics, this, s); }
+            protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Escape) { Close(); e.Handled = true; return; } base.OnKeyDown(e); }
+        }
+
+        private sealed class DashboardSheet : Form
+        {
+            internal readonly float Zoom;
+            private readonly Mainframe owner;
+            private readonly MonthCalendar calendar;
+            private readonly ListBox tasks;
+            private readonly ListBox reminders;
+            private readonly Label summary;
+            private List<DashboardTask> shownTasks = new List<DashboardTask>();
+            private List<Reminder> shownReminders = new List<Reminder>();
+            internal DashboardSheet(Mainframe owner, float zoom)
+            {
+                this.owner = owner; Zoom = zoom; Text = "Personal Dashboard"; Icon = owner.Icon;
+                ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(760), Z(620));
+                Label title = Head("PERSONAL DASHBOARD", 22, 18, 15f, Cyan); Controls.Add(title);
+                summary = new Note(); summary.Text = ""; summary.Bounds = Box(24, 48, 710, 22);
+                summary.ForeColor = Faint; summary.BackColor = Ground; summary.Font = Type(8.5f * scale); Controls.Add(summary);
+                Label day = Head("CALENDAR", 22, 82, 8f, Rose); Controls.Add(day);
+                calendar = new MonthCalendar(); calendar.Bounds = Box(22, 108, 230, 190);
+                calendar.MaxSelectionCount = 1; calendar.DateSelected += delegate { RefreshDashboard(); }; Controls.Add(calendar);
+                Label taskHead = Head("TASKS", 278, 82, 8f, Rose); Controls.Add(taskHead);
+                tasks = new ListBox(); tasks.Bounds = Box(278, 108, 456, 190); tasks.BackColor = Field;
+                tasks.ForeColor = White; tasks.BorderStyle = BorderStyle.FixedSingle; tasks.Font = Type(8.5f * scale);
+                tasks.IntegralHeight = false; Controls.Add(tasks);
+                Key add = new Key(); add.Text = "Add task"; add.Accent = Cyan; add.Bounds = Box(278, 310, 104, 28); add.Click += delegate { AddTask(); }; Controls.Add(add);
+                Key done = new Key(); done.Text = "Complete / undo"; done.Bounds = Box(392, 310, 132, 28); done.Click += delegate { ToggleTask(); }; Controls.Add(done);
+                Key delete = new Key(); delete.Text = "Delete"; delete.Accent = Hot; delete.Bounds = Box(534, 310, 90, 28); delete.Click += delegate { DeleteTask(); }; Controls.Add(delete);
+                Key all = new Key(); all.Text = "Show all"; all.Bounds = Box(634, 310, 100, 28); all.Click += delegate { calendar.SetDate(DateTime.Today); RefreshDashboard(true); }; Controls.Add(all);
+                Label reminderHead = Head("UPCOMING REMINDERS", 22, 366, 8f, Rose); Controls.Add(reminderHead);
+                reminders = new ListBox(); reminders.Bounds = Box(22, 392, 712, 154); reminders.BackColor = Field;
+                reminders.ForeColor = White; reminders.BorderStyle = BorderStyle.FixedSingle; reminders.Font = Type(8.5f * scale);
+                reminders.IntegralHeight = false; Controls.Add(reminders);
+                Key refresh = new Key(); refresh.Text = "Refresh"; refresh.Bounds = Box(22, 562, 100, 28); refresh.Click += delegate { RefreshDashboard(); }; Controls.Add(refresh);
+                Key close = new Key(); close.Text = "Done"; close.Accent = Cyan; close.Loud = true;
+                close.Bounds = Box(634, 562, 100, 28); close.Click += delegate { Close(); }; Controls.Add(close);
+                RefreshDashboard();
+            }
+            private float scale { get { return Zoom; } }
+            internal void RefreshDashboard(bool allTasks = false)
+            {
+                shownTasks = owner.capri.EnhancementTasks();
+                tasks.Items.Clear();
+                DateTime selected = calendar.SelectionStart.Date;
+                List<DashboardTask> visible = shownTasks.FindAll(item => allTasks || !item.DueAt.HasValue || item.DueAt.Value.Date == selected || (!item.Done && item.DueAt.Value.Date < DateTime.Today));
+                int done = shownTasks.FindAll(item => item.Done).Count;
+                summary.Text = DateTime.Today.ToString("dddd, d MMMM yyyy") + "   ·   " + done + " / " + shownTasks.Count + " tasks complete   ·   " + (shownTasks.Count - done) + " remaining";
+                foreach (DashboardTask item in visible) tasks.Items.Add(item.ToString());
+                if (visible.Count == 0) tasks.Items.Add("No tasks for this day. Add one when you're ready.");
+                shownReminders = owner.capri.EnhancementReminders().FindAll(item => !item.Said);
+                reminders.Items.Clear();
+                foreach (Reminder item in shownReminders) reminders.Items.Add(item.Due.ToString("ddd d MMM  ·  HH:mm") + "    " + item.Text);
+                if (shownReminders.Count == 0) reminders.Items.Add("No upcoming reminders.");
+            }
+            private void AddTask()
+            {
+                using (DashboardTaskEditor editor = new DashboardTaskEditor(Zoom))
+                {
+                    if (editor.ShowDialog(this) != DialogResult.OK) return;
+                    if (!owner.capri.EnhancementAddTask(editor.TaskText, editor.HasDue ? (DateTime?)editor.Due : null))
+                        MessageBox.Show(this, "Couldn't save that task. Check the local dashboard file permissions.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshDashboard();
+                }
+            }
+            private DashboardTask SelectedTask()
+            {
+                int index = tasks.SelectedIndex;
+                if (index < 0 || index >= shownTasks.Count) return null;
+                DateTime selected = calendar.SelectionStart.Date;
+                List<DashboardTask> visible = shownTasks.FindAll(item => !item.DueAt.HasValue || item.DueAt.Value.Date == selected || (!item.Done && item.DueAt.Value.Date < DateTime.Today));
+                return index < visible.Count ? visible[index] : null;
+            }
+            private void ToggleTask() { DashboardTask item = SelectedTask(); if (item == null) return; owner.capri.EnhancementSetTaskDone(item.Id, !item.Done); RefreshDashboard(); }
+            private void DeleteTask() { DashboardTask item = SelectedTask(); if (item == null) return; if (MessageBox.Show(this, "Delete “" + item.Text + "”?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) { owner.capri.EnhancementDeleteTask(item.Id); RefreshDashboard(); } }
+            private Label Head(string text, int x, int y, float size, Color colour) { return new Label { Text = text, Bounds = Box(x, y, 500, 18), ForeColor = colour, BackColor = Ground, Font = Look.Mono(size * scale, FontStyle.Bold, GraphicsUnit.Point) }; }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
+            protected override void OnLoad(EventArgs e)
+            {
+                base.OnLoad(e); Rectangle area = Screen.FromControl(owner).WorkingArea;
+                int x = owner.Left + (owner.Width - Width) / 2, y = owner.Top + (int)(48 * ScaleOf(this));
+                Location = new Point(Math.Max(area.Left, Math.Min(area.Right - Width, x)), Math.Max(area.Top, Math.Min(area.Bottom - Height, y)));
+            }
+            protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); float s = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Backdrop(e.Graphics, this, s); Edging(e.Graphics, this, s); }
+            protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Escape) { Close(); e.Handled = true; return; } base.OnKeyDown(e); }
+        }
+
+        private sealed class DashboardTaskEditor : Form
+        {
+            private readonly float scale;
+            private readonly TextBox task;
+            private readonly CheckBox useDue;
+            private readonly DateTimePicker due;
+            internal string TaskText { get { return task.Text.Trim(); } }
+            internal bool HasDue { get { return useDue.Checked; } }
+            internal DateTime Due { get { return due.Value; } }
+            internal DashboardTaskEditor(float zoom)
+            {
+                scale = zoom; Text = "Add task"; FormBorderStyle = FormBorderStyle.FixedDialog;
+                StartPosition = FormStartPosition.CenterParent; ShowInTaskbar = false; MinimizeBox = false; MaximizeBox = false;
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(420), Z(190));
+                Label label = new Label { Text = "TASK", Bounds = Box(18, 16, 380, 18), ForeColor = Cyan, BackColor = Ground, Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point) }; Controls.Add(label);
+                task = new TextBox(); task.Bounds = Box(18, 38, 384, 28); task.BackColor = Field; task.ForeColor = White; task.BorderStyle = BorderStyle.FixedSingle; task.Font = Type(9f * zoom); Controls.Add(task);
+                useDue = new CheckBox(); useDue.Text = "Add a due date"; useDue.Bounds = Box(18, 78, 130, 24); useDue.ForeColor = White; useDue.BackColor = Ground; Controls.Add(useDue);
+                due = new DateTimePicker(); due.Format = DateTimePickerFormat.Custom; due.CustomFormat = "ddd, d MMM yyyy  HH:mm"; due.Bounds = Box(158, 78, 244, 24); due.Value = DateTime.Now.AddHours(1); Controls.Add(due);
+                useDue.CheckedChanged += delegate { due.Enabled = useDue.Checked; }; due.Enabled = false;
+                Button save = new Button { Text = "SAVE", DialogResult = DialogResult.OK, Bounds = Box(302, 138, 100, 28), Enabled = false, FlatStyle = FlatStyle.Flat, BackColor = Field, ForeColor = Cyan, Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point) };
+                save.FlatAppearance.BorderColor = Edge; task.TextChanged += delegate { save.Enabled = TaskText.Length > 0; }; Controls.Add(save); AcceptButton = save;
+                Button cancel = new Button { Text = "CANCEL", DialogResult = DialogResult.Cancel, Bounds = Box(192, 138, 100, 28), FlatStyle = FlatStyle.Flat, BackColor = Field, ForeColor = White, Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point) };
+                cancel.FlatAppearance.BorderColor = Edge; Controls.Add(cancel); CancelButton = cancel;
+            }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
+        }
+
         private sealed class SavedItemEditorSheet : Form
         {
             internal string First { get { return first.Text.Trim(); } }
