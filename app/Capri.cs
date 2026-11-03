@@ -1727,9 +1727,10 @@ namespace CapriDesktop
         private System.Collections.Generic.List<short[]> utterance;
         private int quietRun;
         private double voiceUntil;
-        // A short, cue-filtered window after her reply lets the next thing they say stay in the same conversation.
+        // Follow-ups are allowed only after someone deliberately addresses Capri, and only briefly after her reply.
         private double continuityUntil;
-        private const double ContinuityWindow = 35;
+        private bool continuityEngaged;
+        private const double ContinuityWindow = 5;
         private bool spoke;
         private bool checkedIn;
         private const string BlackScreen = "The screen capture is black. Try borderless or windowed mode.";
@@ -10613,7 +10614,7 @@ namespace CapriDesktop
         // require a conversational opening so nearby speech is less likely to become a turn by accident.
         private bool ContinuityFollowUp(string text)
         {
-            if (!ExperimentalFeatureOn("conversational_continuity") || !chatting || !local || !preferences.ListenCapri
+            if (!ExperimentalFeatureOn("conversational_continuity") || !continuityEngaged || !chatting || !local || !preferences.ListenCapri
                 || clock.Elapsed.TotalSeconds > continuityUntil) return false;
             string clean = (Hearing.Clean(text ?? "") ?? "").Trim();
             if (clean.Length < 2 || clean.Length > 240) return false;
@@ -10625,7 +10626,10 @@ namespace CapriDesktop
         private bool VoiceForHer(string text)
         {
             if (watchAlong != null && (WatchAlong.Request(text) == "stop" || VoiceStop(text))) return true;
-            if (!preferences.ListenCapri || pushing || Hands.HeardName(text) || ContinuityFollowUp(text)) return true;
+            if (!preferences.ListenCapri || pushing) return true;
+            // Hearing her wake phrase starts a conversation; nearby speech alone must never open continuity.
+            if (Hands.HeardName(text)) { continuityEngaged = true; return true; }
+            if (ContinuityFollowUp(text)) return true;
             return (MidJob(job) || PcEars.Active || talkState == TalkState.Talking || clock.Elapsed.TotalSeconds < voiceUntil || speaker.Busy)
                 && (VoiceStop(text) || PcEars.Active && StopWords(text));
         }
@@ -11283,6 +11287,7 @@ namespace CapriDesktop
             chatting = false;
             local = false;
             continuityUntil = 0;
+            continuityEngaged = false;
             earsReady = false;
             earsAwaited = false;
             earsRetryAt = -1;
@@ -11708,7 +11713,7 @@ namespace CapriDesktop
         private void Begin(int ticket, string said, TalkState state, byte[] wav)
         {
             if (ticket != asking || IsDisposed || !FollowDelivery(ticket)) return;
-            if (local && preferences.ListenCapri && ExperimentalFeatureOn("conversational_continuity"))
+            if (continuityEngaged && local && preferences.ListenCapri && ExperimentalFeatureOn("conversational_continuity"))
                 continuityUntil = clock.Elapsed.TotalSeconds + ContinuityWindow;
             if (ticket == followTicket && !followLogged) { brain.Followed(said); followLogged = true; }
             if (slowWarned && brain.Remote != null && state != TalkState.Dormant) mainframe.ShowCloud(brain.Remote, cloudModels);
@@ -11732,7 +11737,7 @@ namespace CapriDesktop
         {
             double seconds = wav == null ? 0 : Voice.Seconds(wav);
             voiceUntil = seconds < 0.2 ? 0 : clock.Elapsed.TotalSeconds + seconds + 0.6;
-            if (local && preferences.ListenCapri && ExperimentalFeatureOn("conversational_continuity"))
+            if (continuityEngaged && local && preferences.ListenCapri && ExperimentalFeatureOn("conversational_continuity"))
                 continuityUntil = Math.Max(continuityUntil, voiceUntil + ContinuityWindow);
             CheckEars(clock.Elapsed.TotalSeconds);
             if (seconds < 0.2) return;
