@@ -453,7 +453,7 @@ namespace CapriDesktop
                     list.Controls.Add(pick);
                     optionKeys[index][optionIndex] = pick;
 
-                    ContextMenuStrip choices = Dropdown();
+                    ContextMenuStrip choices = owner.Dropdown();
                     choices.AccessibleName = feature.Name + ": " + option.Name;
                     foreach (string value in option.Choices)
                     {
