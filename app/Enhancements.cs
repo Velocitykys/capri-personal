@@ -134,7 +134,10 @@ namespace CapriDesktop
                 using (FileStream stream = File.OpenRead(settingsPath + ".enhancements.json"))
                 {
                     Dictionary<string, bool> saved = (Dictionary<string, bool>)new DataContractJsonSerializer(typeof(Dictionary<string, bool>)).ReadObject(stream);
-                    return saved ?? new Dictionary<string, bool>();
+                    if (saved == null) saved = new Dictionary<string, bool>();
+                    foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history" })
+                        saved.Remove(retired);
+                    return saved;
                 }
             }
             catch (Exception) { return new Dictionary<string, bool>(); }
