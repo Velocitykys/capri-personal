@@ -769,11 +769,15 @@ namespace CapriDesktop
                     second = new TextBox(); second.Bounds = Box(18, 100, 404, 28); second.Font = Type(9f * zoom);
                     second.BackColor = Field; second.ForeColor = White; second.BorderStyle = BorderStyle.FixedSingle; Controls.Add(second);
                 }
-                Button save = new Button(); save.Text = "Save"; save.DialogResult = DialogResult.OK; save.Bounds = Box(322, routines ? 210 : 156, 100, 28);
+                Button save = new Button(); save.Text = "SAVE"; save.DialogResult = DialogResult.OK; save.Bounds = Box(322, routines ? 210 : 156, 100, 28);
+                save.FlatStyle = FlatStyle.Flat; save.BackColor = Field; save.ForeColor = Cyan; save.FlatAppearance.BorderColor = Edge;
+                save.Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point);
                 save.Enabled = false; first.TextChanged += delegate { save.Enabled = First.Length > 0 && Second.Length > 0; };
                 second.TextChanged += delegate { save.Enabled = First.Length > 0 && Second.Length > 0; };
                 Controls.Add(save); AcceptButton = save;
-                Button cancel = new Button(); cancel.Text = "Cancel"; cancel.DialogResult = DialogResult.Cancel;
+                Button cancel = new Button(); cancel.Text = "CANCEL"; cancel.DialogResult = DialogResult.Cancel;
+                cancel.FlatStyle = FlatStyle.Flat; cancel.BackColor = Field; cancel.ForeColor = White; cancel.FlatAppearance.BorderColor = Edge;
+                cancel.Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point);
                 cancel.Bounds = Box(212, routines ? 210 : 156, 100, 28); Controls.Add(cancel); CancelButton = cancel;
             }
             private int Z(int value) { return (int)Math.Round(value * scale); }
