@@ -119,6 +119,30 @@ namespace CapriDesktop
             }
         }
 
+        internal List<Reminder> SnapshotReminders()
+        {
+            lock (gate)
+            {
+                List<Reminder> copy = new List<Reminder>();
+                foreach (Reminder item in reminders)
+                    if (item != null) copy.Add(new Reminder { Text = item.Text, When = item.When, Said = item.Said, Late = item.Late });
+                copy.Sort(delegate(Reminder left, Reminder right) { return left.Due.CompareTo(right.Due); });
+                return copy;
+            }
+        }
+
+        internal List<Routine> SnapshotRoutines()
+        {
+            lock (gate)
+            {
+                List<Routine> copy = new List<Routine>();
+                foreach (Routine item in routines)
+                    if (item != null) copy.Add(new Routine { Phrase = item.Phrase, Steps = item.Steps });
+                copy.Sort(delegate(Routine left, Routine right) { return string.Compare(left.Phrase, right.Phrase, StringComparison.CurrentCultureIgnoreCase); });
+                return copy;
+            }
+        }
+
         internal string Take(DateTime now)
         {
             lock (gate)
