@@ -190,8 +190,8 @@ namespace CapriDesktop
                 if (enhancementFlags == null) enhancementFlags = ReadEnhancementFlags();
                 bool on;
                 if (enhancementFlags.TryGetValue(id, out on)) return on;
-                return id == "custom_commands" || id == "better_timers" || id == "highlight_assistance"
-                    || id == "personal_dashboard" || id == "memory_explorer" || id == "pc_health_monitor";
+                return id == "custom_commands" || id == "highlight_assistance"
+                    || id == "personal_dashboard" || id == "pc_health_monitor";
             }
         }
 
@@ -265,7 +265,10 @@ namespace CapriDesktop
                 {
                     Dictionary<string, bool> saved = (Dictionary<string, bool>)new DataContractJsonSerializer(typeof(Dictionary<string, bool>)).ReadObject(stream);
                     if (saved == null) saved = new Dictionary<string, bool>();
-                    foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history", "immersive_routines" })
+                    bool oldTimers;
+                    if (saved.TryGetValue("better_timers", out oldTimers) && !saved.ContainsKey("personal_dashboard"))
+                        saved["personal_dashboard"] = oldTimers;
+                    foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history", "immersive_routines", "better_timers", "memory_explorer" })
                         saved.Remove(retired);
                     return saved;
                 }
@@ -495,18 +498,12 @@ namespace CapriDesktop
                 new Enhancement("custom_commands", "Custom Commands", "PRODUCTIVITY",
                     "Save a trigger phrase and the sequence of actions Capri should run when you say it. Create, run and forget commands here.",
                     "SAVED PHRASES · MULTI-STEP ACTIONS"),
-                new Enhancement("better_timers", "Better Timers & Reminders", "PRODUCTIVITY",
-                    "Create, review and cancel multiple timers and reminders. They are saved locally and can fire while Capri is running.",
-                    "SAVED TIMERS · REMINDERS · PERSISTENT"),
                 new Enhancement("highlight_assistance", "Highlight Assistance", "PRODUCTIVITY",
-                    "Select text anywhere, press Ctrl + Alt + E, then ask Capri to explain, summarise, rewrite or translate just that selection.",
-                    "GLOBAL SHORTCUT · SELECTED TEXT → CAPRI"),
+                    "Press Ctrl + Alt + E, drag over any on-screen area, then ask Capri to explain, simplify, translate, summarise or follow your own instruction.",
+                    "SCREEN REGION · WINDOWS OCR · CAPRI"),
                 new Enhancement("personal_dashboard", "Personal Dashboard", "PRODUCTIVITY",
-                    "A local calendar and task workspace with due dates, completion tracking and your existing reminders together.",
-                    "LOCAL TASKS · CALENDAR · REMINDERS"),
-                new Enhancement("memory_explorer", "Memory Explorer", "COMPANION",
-                    "Open Capri's local memories file in your text editor so you can review or edit what she remembers. Nothing is uploaded.",
-                    "LOCAL MEMORY FILES · PRIVATE TO THIS PC"),
+                    "One workspace for your calendar, tasks, timers and reminders. Add, review, complete or cancel everything from the dashboard.",
+                    "LOCAL TASKS · CALENDAR · TIMERS · REMINDERS"),
                 new Enhancement("pc_health_monitor", "PC Health Monitor", "SYSTEM",
                     "Check current CPU load, memory use, running apps, drive space and battery status using Capri's local PC usage reader.",
                     "ON-DEMAND READOUT · NO BACKGROUND MONITORING")
@@ -694,12 +691,12 @@ namespace CapriDesktop
                     optionMenus[index][optionIndex] = choices;
                 }
 
-                if (feature.Id == "custom_commands" || feature.Id == "better_timers" || feature.Id == "highlight_assistance" || feature.Id == "personal_dashboard" || feature.Id == "memory_explorer" || feature.Id == "pc_health_monitor")
+                if (feature.Id == "custom_commands" || feature.Id == "highlight_assistance" || feature.Id == "personal_dashboard" || feature.Id == "pc_health_monitor")
                 {
                     Key action = new Key();
                     action.Font = Type(8f * Zoom);
                     action.Accent = Cyan;
-                    action.Text = feature.Id == "custom_commands" ? "Manage saved commands" : feature.Id == "better_timers" ? "Manage timers & reminders" : feature.Id == "highlight_assistance" ? "Open text assistant" : feature.Id == "personal_dashboard" ? "Open dashboard" : feature.Id == "memory_explorer" ? "Open memory files" : "Check PC now";
+                    action.Text = feature.Id == "custom_commands" ? "Manage saved commands" : feature.Id == "highlight_assistance" ? "Select screen area" : feature.Id == "personal_dashboard" ? "Open dashboard" : "Check PC now";
                     action.AccessibleName = action.Text;
                     action.Click += delegate
                     {
@@ -709,10 +706,8 @@ namespace CapriDesktop
                             return;
                         }
                         if (feature.Id == "custom_commands") owner.OpenSavedManager(true);
-                        else if (feature.Id == "better_timers") owner.OpenSavedManager(false);
-                        else if (feature.Id == "highlight_assistance") owner.OpenHighlightAssistance("");
+                        else if (feature.Id == "highlight_assistance") owner.StartHighlightRegionSelection();
                         else if (feature.Id == "personal_dashboard") owner.OpenDashboard();
-                        else if (feature.Id == "memory_explorer") owner.capri.OpenMemories();
                         else ShowPcHealth();
                     };
                     list.Controls.Add(action);
@@ -864,6 +859,138 @@ namespace CapriDesktop
             }
         }
 
+        private ScreenRegionSelector regionSelector;
+
+        internal void StartHighlightRegionSelection()
+        {
+            if (regionSelector != null && !regionSelector.IsDisposed) regionSelector.Close();
+            regionSelector = new ScreenRegionSelector(this);
+            regionSelector.Show(this);
+            regionSelector.Activate();
+        }
+
+        internal void CaptureHighlightRegion(Rectangle region)
+        {
+            if (region.Width < 6 || region.Height < 6) return;
+            System.Threading.Tasks.Task.Run(delegate
+            {
+                string selected = "";
+                try
+                {
+                    System.Threading.Thread.Sleep(140);
+                    using (Bitmap frame = new Bitmap(region.Width, region.Height))
+                    using (Graphics graphics = Graphics.FromImage(frame))
+                    {
+                        graphics.CopyFromScreen(region.Location, Point.Empty, region.Size, CopyPixelOperation.SourceCopy);
+                        List<string> lines = Ocr.Lines(frame, 2, 6000);
+                        selected = string.Join(Environment.NewLine, lines.ToArray()).Trim();
+                    }
+                }
+                catch (Exception) { selected = ""; }
+                try
+                {
+                    if (!IsDisposed && IsHandleCreated)
+                        BeginInvoke(new Action(delegate { OpenHighlightAssistance(selected); }));
+                }
+                catch (Exception) { }
+            });
+        }
+
+        private sealed class ScreenRegionSelector : Form
+        {
+            private readonly Mainframe owner;
+            private Point anchor, current;
+            private bool dragging;
+
+            internal ScreenRegionSelector(Mainframe owner)
+            {
+                this.owner = owner;
+                Rectangle virtualScreen = SystemInformation.VirtualScreen;
+                Bounds = virtualScreen;
+                Text = "Select an area for Capri";
+                ShowInTaskbar = false;
+                TopMost = true;
+                FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual;
+                AutoScaleMode = AutoScaleMode.None;
+                BackColor = Color.Black;
+                Opacity = 0.28;
+                DoubleBuffered = true;
+                KeyPreview = true;
+                Cursor = Cursors.Cross;
+            }
+
+            private Rectangle Selection
+            {
+                get
+                {
+                    return Rectangle.FromLTRB(Math.Min(anchor.X, current.X), Math.Min(anchor.Y, current.Y),
+                        Math.Max(anchor.X, current.X), Math.Max(anchor.Y, current.Y));
+                }
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                if (e.Button != MouseButtons.Left) { Close(); return; }
+                anchor = current = PointToScreen(e.Location);
+                dragging = true;
+                Capture = true;
+                Invalidate();
+                base.OnMouseDown(e);
+            }
+
+            protected override void OnMouseMove(MouseEventArgs e)
+            {
+                if (dragging)
+                {
+                    current = PointToScreen(e.Location);
+                    Invalidate();
+                }
+                base.OnMouseMove(e);
+            }
+
+            protected override void OnMouseUp(MouseEventArgs e)
+            {
+                if (dragging && e.Button == MouseButtons.Left)
+                {
+                    current = PointToScreen(e.Location);
+                    Rectangle selected = Selection;
+                    dragging = false;
+                    Capture = false;
+                    Hide();
+                    Close();
+                    if (selected.Width >= 6 && selected.Height >= 6) owner.CaptureHighlightRegion(selected);
+                }
+                base.OnMouseUp(e);
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Escape) { e.Handled = true; Close(); return; }
+                base.OnKeyDown(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                base.OnPaint(e);
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (Font hint = new Font("Segoe UI", 12f, FontStyle.Bold))
+                using (SolidBrush brush = new SolidBrush(Color.FromArgb(230, 255, 255, 255)))
+                    e.Graphics.DrawString("DRAG TO SELECT AN AREA  ·  ESC TO CANCEL", hint, brush, new PointF(24, 22));
+                if (dragging)
+                {
+                    Rectangle area = Selection;
+                    area.Offset(-Bounds.Left, -Bounds.Top);
+                    using (SolidBrush fill = new SolidBrush(Color.FromArgb(35, 0, 210, 230)))
+                    using (Pen edge = new Pen(Color.FromArgb(245, 0, 220, 245), 2f))
+                    {
+                        e.Graphics.FillRectangle(fill, area);
+                        e.Graphics.DrawRectangle(edge, area);
+                    }
+                }
+            }
+        }
+
         private sealed class HighlightAssistanceSheet : Form
         {
             private readonly Mainframe owner;
@@ -877,8 +1004,8 @@ namespace CapriDesktop
                 StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
                 BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(600), Z(480));
                 Label title = LabelText("HIGHLIGHT ASSISTANCE", 22, 18, 550, 24, Cyan, 12f, true); Controls.Add(title);
-                Label hint = LabelText("Ctrl + Alt + E captures selected text from the active app.", 22, 48, 550, 20, Faint, 8.5f, false); Controls.Add(hint);
-                Label source = LabelText("SELECTED TEXT", 22, 82, 550, 18, Rose, 8f, true); Controls.Add(source);
+                Label hint = LabelText("Drag over an on-screen area. Capri reads text there with Windows OCR.", 22, 48, 550, 20, Faint, 8.5f, false); Controls.Add(hint);
+                Label source = LabelText("TEXT READ FROM SELECTED AREA", 22, 82, 550, 18, Rose, 8f, true); Controls.Add(source);
                 selection = new TextBox(); selection.Multiline = true; selection.ScrollBars = ScrollBars.Vertical;
                 selection.AcceptsReturn = true; selection.Bounds = Box(22, 104, 556, 190);
                 selection.BackColor = Field; selection.ForeColor = White; selection.BorderStyle = BorderStyle.FixedSingle;
@@ -887,7 +1014,7 @@ namespace CapriDesktop
                 instruction = new TextBox(); instruction.Bounds = Box(22, 330, 556, 34); instruction.BackColor = Field;
                 instruction.ForeColor = White; instruction.BorderStyle = BorderStyle.FixedSingle; instruction.Font = Type(9f * scale);
                 instruction.Text = ""; Controls.Add(instruction);
-                string[] actions = { "Explain", "Summarise", "Rewrite", "Translate" };
+                string[] actions = { "Explain", "Simplify", "Translate", "Summarise", "Rewrite" };
                 for (int i = 0; i < actions.Length; i++)
                 {
                     string action = actions[i]; Key button = new Key(); button.Text = action; button.Font = Type(8f * scale);
@@ -898,7 +1025,7 @@ namespace CapriDesktop
                 custom.Bounds = Box(22, 426, 130, 28); custom.Click += delegate { Send(instruction.Text); }; Controls.Add(custom);
                 Key close = new Key(); close.Text = "Close"; close.Bounds = Box(478, 426, 100, 28);
                 close.Click += delegate { Close(); }; Controls.Add(close);
-                if (string.IsNullOrWhiteSpace(selected)) hint.Text = "No text was captured. Paste or type text below, then choose an action.";
+                if (string.IsNullOrWhiteSpace(selected)) hint.Text = "No readable text was detected. You can still type or paste text below.";
             }
             private void Send(string action)
             {
@@ -906,7 +1033,7 @@ namespace CapriDesktop
                 if (text.Length == 0) { MessageBox.Show(this, "Select or paste some text first.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
                 string request = action.Trim() + "\nKeep your response focused on the selected text below. Preserve its meaning and do not invent missing context.";
                 if (instruction.Text.Trim().Length > 0) request += "\nAdditional instruction: " + instruction.Text.Trim();
-                request += "\n\nSELECTED TEXT:\n" + text;
+                request += "\n\nTEXT FROM THE SELECTED SCREEN AREA:\n" + text;
                 owner.capri.Hear(request);
                 Close();
             }
@@ -957,11 +1084,15 @@ namespace CapriDesktop
                 Key done = new Key(); done.Text = "Complete / undo"; done.Bounds = Box(392, 310, 132, 28); done.Click += delegate { ToggleTask(); }; Controls.Add(done);
                 Key delete = new Key(); delete.Text = "Delete"; delete.Accent = Hot; delete.Bounds = Box(534, 310, 90, 28); delete.Click += delegate { DeleteTask(); }; Controls.Add(delete);
                 Key all = new Key(); all.Text = "Show all"; all.Bounds = Box(634, 310, 100, 28); all.Click += delegate { calendar.SetDate(DateTime.Today); RefreshDashboard(true); }; Controls.Add(all);
-                Label reminderHead = Head("UPCOMING REMINDERS", 22, 366, 8f, Rose); Controls.Add(reminderHead);
+                Label reminderHead = Head("TIMERS & REMINDERS", 22, 366, 8f, Rose); Controls.Add(reminderHead);
                 reminders = new ListBox(); reminders.Bounds = Box(22, 392, 712, 154); reminders.BackColor = Field;
                 reminders.ForeColor = White; reminders.BorderStyle = BorderStyle.FixedSingle; reminders.Font = Type(8.5f * scale);
                 reminders.IntegralHeight = false; Controls.Add(reminders);
-                Key refresh = new Key(); refresh.Text = "Refresh"; refresh.Bounds = Box(22, 562, 100, 28); refresh.Click += delegate { RefreshDashboard(); }; Controls.Add(refresh);
+                Key addReminder = new Key(); addReminder.Text = "Add timer / reminder"; addReminder.Accent = Cyan;
+                addReminder.Bounds = Box(22, 562, 164, 28); addReminder.Click += delegate { AddReminder(); }; Controls.Add(addReminder);
+                Key cancelReminder = new Key(); cancelReminder.Text = "Cancel selected"; cancelReminder.Accent = Hot;
+                cancelReminder.Bounds = Box(196, 562, 132, 28); cancelReminder.Click += delegate { CancelSelectedReminder(); }; Controls.Add(cancelReminder);
+                Key refresh = new Key(); refresh.Text = "Refresh"; refresh.Bounds = Box(338, 562, 90, 28); refresh.Click += delegate { RefreshDashboard(); }; Controls.Add(refresh);
                 Key close = new Key(); close.Text = "Done"; close.Accent = Cyan; close.Loud = true;
                 close.Bounds = Box(634, 562, 100, 28); close.Click += delegate { Close(); }; Controls.Add(close);
                 RefreshDashboard();
@@ -992,6 +1123,26 @@ namespace CapriDesktop
                         MessageBox.Show(this, "Couldn't save that task. Check the local dashboard file permissions.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
                     RefreshDashboard();
                 }
+            }
+            private void AddReminder()
+            {
+                using (SavedItemEditorSheet editor = new SavedItemEditorSheet(Zoom, false))
+                {
+                    if (editor.ShowDialog(this) != DialogResult.OK) return;
+                    string result = owner.capri.EnhancementSaveReminder(editor.First, editor.Second);
+                    if (string.IsNullOrEmpty(result) || !result.StartsWith("I'll remind you ", StringComparison.Ordinal))
+                        MessageBox.Show(this, result ?? "Couldn't save that reminder.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshDashboard();
+                }
+            }
+            private void CancelSelectedReminder()
+            {
+                int index = reminders.SelectedIndex;
+                if (index < 0 || index >= shownReminders.Count) return;
+                Reminder item = shownReminders[index];
+                if (!owner.capri.EnhancementCancelReminder(item.Text))
+                    MessageBox.Show(this, "Couldn't cancel that timer or reminder. Refresh and try again.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                RefreshDashboard();
             }
             private DashboardTask SelectedTask()
             {
