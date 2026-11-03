@@ -625,7 +625,7 @@ namespace CapriDesktop
                         MessageBox.Show(this, "Couldn't save that switch. Its previous value has been restored.", "Enhancements", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         Sync();
                     }
-                    else Sync();
+                    else { owner.RefreshHighlightHotkey(); Sync(); }
                 };
                 list.Controls.Add(toggles[index]);
 
@@ -808,6 +808,7 @@ namespace CapriDesktop
 
             internal void Sync()
             {
+                owner.RefreshHighlightHotkey();
                 syncing = true;
                 for (int i = 0; i < features.Length; i++)
                     toggles[i].Checked = owner.capri.ExperimentalFeatureOn(features[i].Id);
