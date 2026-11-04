@@ -103,7 +103,16 @@ namespace CapriDesktop
             preferences.CallDiscordOff = !preferences.CallDiscordOff;
             SavePreferences();
             UpdateCallEars();
-            mainframe.VoiceNote(preferences.CallDiscordOff ? "On calls she hears only your mic now." : "On calls she hears Discord too.", false);
+            mainframe.VoiceNote(preferences.CallDiscordOff ? "On calls she hears only your mic now." : "On calls she hears " + CallEars.SourceName + " too.", false);
+        }
+
+        private void SelectCallAudioSource(string processName, string displayName)
+        {
+            CallEars.SelectSource(processName, displayName);
+            callEars.Stop();
+            UpdateCallEars();
+            mainframe.VoiceNote("Call audio source set to " + displayName + ".", false);
+            ShowCallPanel();
         }
 
         // The call panel shows while call mode is on, top right of her screen the first time, and stays where it's dragged.
@@ -116,6 +125,7 @@ namespace CapriDesktop
                 callPanel = new CallPanel(Takeover.Face, CallViewNow);
                 callPanel.MicPressed += delegate { if (!chatting) ToggleChat(); else ToggleMic(); };
                 callPanel.DiscordPressed += ToggleCallDiscord;
+                callPanel.SourceSelected += SelectCallAudioSource;
                 callPanel.EndPressed += delegate { if (CallModeOn) ToggleCallMode(); };
                 Rectangle work = Screen.FromControl(this).WorkingArea;
                 callPanel.Location = new Point(work.Right - callPanel.Width - 40, work.Top + 80);
@@ -134,6 +144,7 @@ namespace CapriDesktop
                 Listening = chatting && local,
                 Muted = ears.Muted,
                 Discord = !preferences.CallDiscordOff,
+                Source = CallEars.SourceName,
                 DiscordNote = preferences.CallDiscordOff ? null : CallDiscordNote,
                 Talking = StillSaying,
                 You = callYou,
@@ -148,7 +159,7 @@ namespace CapriDesktop
             get
             {
                 if (callEars.Problem != null) return callEars.Problem;
-                if (chatting && local && dictation != null) return "Windows speech can't hear Discord. Pick her own ears under VOICE.";
+                if (chatting && local && dictation != null) return "Windows speech can't hear the selected app. Pick her own ears under VOICE.";
                 return null;
             }
         }
