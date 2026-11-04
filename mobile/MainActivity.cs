@@ -87,7 +87,8 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
 
     private Button ActionButton(string text, EventHandler click)
     {
-        var button = new Button(this) { Text = text, AllCaps = false };
+        var button = new Button(this) { Text = text };
+        button.SetAllCaps(false);
         button.Click += click;
         return button;
     }
@@ -98,7 +99,8 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         root.SetBackgroundColor(Color.ParseColor("#0B1020"));
         root.SetPadding(Dp(14), Dp(10), Dp(14), Dp(10));
 
-        var header = new LinearLayout(this) { Orientation = Orientation.Horizontal, Gravity = GravityFlags.CenterVertical };
+        var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        header.SetGravity(GravityFlags.CenterVertical);
         var avatar = new ImageView(this);
         avatar.SetImageResource(Resource.Drawable.capri);
         avatar.SetScaleType(ImageView.ScaleType.CenterCrop);
@@ -123,15 +125,16 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         chatScroll.AddView(messageList);
         root.AddView(chatScroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        var composerRow = new LinearLayout(this) { Orientation = Orientation.Horizontal, Gravity = GravityFlags.CenterVertical };
+        var composerRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        composerRow.SetGravity(GravityFlags.CenterVertical);
         composer = new EditText(this)
         {
             Hint = "Message Capri…",
             TextSize = 15,
-            SingleLine = false,
-            MaxLines = 4,
             InputType = Android.Text.InputTypes.ClassText | Android.Text.InputTypes.TextFlagCapSentences
         };
+        composer.SetSingleLine(false);
+        composer.SetMaxLines(4);
         composer.SetTextColor(Color.ParseColor("#F2F5FF"));
         composer.SetHintTextColor(Color.ParseColor("#8290A8"));
         composer.SetBackgroundColor(Color.ParseColor("#182238"));
@@ -142,7 +145,8 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         composerRow.AddView(sendButton, new LinearLayout.LayoutParams(Dp(70), Dp(52)));
         root.AddView(composerRow);
 
-        var nav = new LinearLayout(this) { Orientation = Orientation.Horizontal, Gravity = GravityFlags.Center };
+        var nav = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        nav.SetGravity(GravityFlags.Center);
         nav.AddView(ActionButton("Memory", (_, _) => ShowMemory()), new LinearLayout.LayoutParams(0, Dp(46), 1));
         nav.AddView(ActionButton("Reminders", (_, _) => ShowReminders()), new LinearLayout.LayoutParams(0, Dp(46), 1));
         nav.AddView(ActionButton("Share", (_, _) => ShareLastReply()), new LinearLayout.LayoutParams(0, Dp(46), 1));
@@ -168,7 +172,7 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         bubble.SetPadding(Dp(13), Dp(10), Dp(13), Dp(10));
         bubble.SetBackgroundColor(Color.ParseColor(capri ? "#1B2A43" : "#23466B"));
         var line = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        line.Gravity = capri ? GravityFlags.Left : GravityFlags.Right;
+        line.SetGravity(capri ? GravityFlags.Left : GravityFlags.Right);
         var lp = new LinearLayout.LayoutParams(-2, -2);
         lp.SetMargins(0, Dp(4), 0, Dp(4));
         bubble.SetMaxWidth(Dp(310));
@@ -258,10 +262,13 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
     {
         var panel = new LinearLayout(this) { Orientation = Orientation.Vertical };
         panel.SetPadding(Dp(18), Dp(8), Dp(18), Dp(4));
-        var key = new EditText(this) { Hint = "NVIDIA API key", SingleLine = true, Text = brain.Settings.ApiKey };
+        var key = new EditText(this) { Hint = "NVIDIA API key", Text = brain.Settings.ApiKey };
+        key.SetSingleLine(true);
         key.InputType = Android.Text.InputTypes.ClassText | Android.Text.InputTypes.TextVariationPassword;
-        var endpoint = new EditText(this) { Hint = "API endpoint", SingleLine = true, Text = brain.Settings.Endpoint };
-        var model = new EditText(this) { Hint = "Model ID", SingleLine = true, Text = brain.Settings.Model };
+        var endpoint = new EditText(this) { Hint = "API endpoint", Text = brain.Settings.Endpoint };
+        endpoint.SetSingleLine(true);
+        var model = new EditText(this) { Hint = "Model ID", Text = brain.Settings.Model };
+        model.SetSingleLine(true);
         var speak = new CheckBox(this) { Text = "Speak Capri's replies aloud", Checked = brain.Settings.SpeakReplies };
         panel.AddView(key);
         panel.AddView(endpoint);
@@ -299,7 +306,8 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         var list = new LinearLayout(this) { Orientation = Orientation.Vertical };
         foreach (var memory in brain.Memories.OrderByDescending(m => m.CreatedAt))
         {
-            var row = new LinearLayout(this) { Orientation = Orientation.Horizontal, Gravity = GravityFlags.CenterVertical };
+            var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            row.SetGravity(GravityFlags.CenterVertical);
             var label = Label(memory.Text, 13);
             row.AddView(label, new LinearLayout.LayoutParams(0, -2, 1));
             var remove = ActionButton("×", (_, _) => { brain.RemoveMemory(memory.Id); ShowMemory(); });
@@ -355,11 +363,14 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
             .SetPositiveButton("Choose time", (s, e) =>
             {
                 DateTime now = DateTime.Now.AddMinutes(5);
-                new DatePickerDialog(this, (sender, year, month, day) =>
+                new DatePickerDialog(this, (sender, dateArgs) =>
                 {
-                    new TimePickerDialog(this, (timeSender, hour, minute) =>
+                    int year = dateArgs.Year;
+                    int month = dateArgs.Month;
+                    int day = dateArgs.DayOfMonth;
+                    new TimePickerDialog(this, (timeSender, timeArgs) =>
                     {
-                        var due = new DateTime(year, month + 1, day, hour, minute, 0);
+                        var due = new DateTime(year, month + 1, day, timeArgs.HourOfDay, timeArgs.Minute, 0);
                         if (due <= DateTime.Now)
                         {
                             AddMessage("assistant", "That time's already passed, choom. Pick a future time.");
