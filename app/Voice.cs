@@ -2978,22 +2978,6 @@ namespace CapriDesktop
             return null;
         }
 
-        private static string Argument(string value)
-        {
-            StringBuilder quoted = new StringBuilder("\\\"");
-            int slashes = 0;
-            foreach (char c in value ?? "")
-            {
-                if (c == '\\\\') { slashes++; continue; }
-                if (c == '"') quoted.Append('\\\\', slashes * 2 + 1);
-                else quoted.Append('\\\\', slashes);
-                quoted.Append(c);
-                slashes = 0;
-            }
-            quoted.Append('\\\\', slashes * 2).Append('"');
-            return quoted.ToString();
-        }
-
         private static short[] PocketProfile(string profile, string text, out int rate)
         {
             string cli = PocketCli();
@@ -3001,10 +2985,18 @@ namespace CapriDesktop
             string output = Path.Combine(Path.GetTempPath(), "capri-pocket-" + Guid.NewGuid().ToString("N") + ".wav");
             try
             {
-                ProcessStartInfo start = new ProcessStartInfo(cli,
-                    "generate --voice " + Argument(profile) +
-                    " --sampler-decode-steps 5 --temperature 0.3 --text " + Argument(text) +
-                    " --output-path " + Argument(output));
+                ProcessStartInfo start = new ProcessStartInfo(cli);
+                start.ArgumentList.Add("generate");
+                start.ArgumentList.Add("--voice");
+                start.ArgumentList.Add(profile);
+                start.ArgumentList.Add("--sampler-decode-steps");
+                start.ArgumentList.Add("5");
+                start.ArgumentList.Add("--temperature");
+                start.ArgumentList.Add("0.3");
+                start.ArgumentList.Add("--text");
+                start.ArgumentList.Add(text);
+                start.ArgumentList.Add("--output-path");
+                start.ArgumentList.Add(output);
                 start.UseShellExecute = false;
                 start.CreateNoWindow = true;
                 using (Process process = Process.Start(start))
