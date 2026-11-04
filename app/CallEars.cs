@@ -18,6 +18,9 @@ namespace CapriDesktop
     internal sealed class CallEars : IDisposable
     {
         internal const string NotOpen = "The selected application isn't open.";
+        internal const string MasterOutput = "__MASTER_OUTPUT__";
+        internal const string MasterOutputName = "PC Master Audio";
+        internal const string MasterUnavailable = "Windows' default output audio isn't available.";
         private static string selectedProcess = "Discord";
         private static string selectedName = "Discord";
         private static readonly string[] DiscordNames = { "Discord", "DiscordPTB", "DiscordCanary" };
@@ -27,7 +30,8 @@ namespace CapriDesktop
         {
             if (string.IsNullOrWhiteSpace(processName)) return;
             lock (typeof(CallEars)) { selectedProcess = processName.Trim(); selectedName = string.IsNullOrWhiteSpace(displayName) ? selectedProcess : displayName.Trim(); }
-            Find = delegate { return FindProcess(selectedProcess); };
+            string selected = processName.Trim();
+            Find = selected == MasterOutput ? (Func<int>)delegate { return 0; } : delegate { return FindProcess(selected); };
         }
 
         // Show running desktop apps with a visible window. Windows' process-loopback capture includes child processes.
@@ -89,7 +93,9 @@ namespace CapriDesktop
             running = true;
             problem = NotOpen;
             int mine = Interlocked.Increment(ref generation);
-            new Thread(delegate() { Listen(mine); }) { IsBackground = true, Name = "Capri call ears" }.Start();
+            Thread listener = new Thread(delegate() { Listen(mine); }) { IsBackground = true, Name = "Capri call ears" };
+            listener.SetApartmentState(ApartmentState.MTA);
+            listener.Start();
         }
 
         // Her thread sees this within 10 ms, or once Windows answers a capture it's opening, and closes the capture itself.
@@ -110,6 +116,9 @@ namespace CapriDesktop
             string told = null;
             while (Live(mine))
             {
+                string source;
+                lock (typeof(CallEars)) source = selectedProcess;
+                if (source == MasterOutput) { ListenMasterOutput(mine); break; }
                 int pid = 0;
                 try { pid = Find(); }
                 catch (Exception) { }
@@ -148,6 +157,85 @@ namespace CapriDesktop
                     Rest(mine, 5000);
                 }
                 finally { if (tap != null) tap.Dispose(); }
+            }
+        }
+
+        // Captures the default Windows render endpoint, including every app routed through the PC's speakers/headphones.
+        private void ListenMasterOutput(int mine)
+        {
+            bool initialized = false;
+            SoundTap tap = null;
+            try
+            {
+                ClipMedia.Check(ClipMedia.CoInitializeEx(IntPtr.Zero, 0));
+                initialized = true;
+                while (Live(mine))
+                {
+                    tap = SoundTap.Open(true);
+                    if (tap == null)
+                    {
+                        Say(mine, MasterUnavailable);
+                        Brain.Log("call ears", -1, MasterUnavailable);
+                        Rest(mine, 2000);
+                        continue;
+                    }
+                    Say(mine, null);
+                    Brain.Log("call ears", -1, "Hearing PC Master Audio: the Windows default output mix (" + tap.Format + "), converted to 16000 Hz mono.");
+                    long phase = 0;
+                    double weighted = 0;
+                    Action<byte[], long, int> pcm = delegate(byte[] packet, long timestamp, int rate)
+                    {
+                        if (!Live(mine) || packet == null || rate <= 0) return;
+                        List<short> converted = new List<short>();
+                        for (int at = 0; at + 3 < packet.Length; at += 4)
+                        {
+                            short left = (short)(packet[at] | (packet[at + 1] << 8));
+                            short right = (short)(packet[at + 2] | (packet[at + 3] << 8));
+                            int mono = (left + right) / 2;
+                            long remaining = Ears.Rate;
+                            while (remaining > 0)
+                            {
+                                long take = Math.Min((long)rate - phase, remaining);
+                                weighted += mono * (double)take;
+                                phase += take;
+                                remaining -= take;
+                                if (phase >= rate)
+                                {
+                                    converted.Add((short)Math.Max(short.MinValue, Math.Min(short.MaxValue, Math.Round(weighted / rate))));
+                                    weighted = 0;
+                                    phase = 0;
+                                }
+                            }
+                        }
+                        if (converted.Count > 0) Add(converted.ToArray(), converted.Count, mine);
+                    };
+                    bool alive = true;
+                    while (Live(mine) && alive)
+                    {
+                        long newest;
+                        alive = tap.Read(null, null, out newest, pcm);
+                        if (SoundTap.DefaultDevice() != tap.Device) break;
+                        if (alive) Thread.Sleep(10);
+                    }
+                    tap.Dispose();
+                    tap = null;
+                    if (Live(mine))
+                    {
+                        Say(mine, MasterUnavailable);
+                        Brain.Log("call ears", -1, "PC Master Audio stopped; reopening the Windows default output capture.");
+                        Rest(mine, 500);
+                    }
+                }
+            }
+            catch (Exception error)
+            {
+                Say(mine, MasterUnavailable + " " + Voice.Short(error.Message));
+                Brain.Log("call ears", -1, "PC Master Audio: " + error.Message);
+            }
+            finally
+            {
+                if (tap != null) tap.Dispose();
+                if (initialized) ClipMedia.CoUninitialize();
             }
         }
 
@@ -492,37 +580,25 @@ namespace CapriDesktop
         }
     }
 
-    // Someone on the call talking over her. While she talks her ears get your mic alone, and the selected app's sound waits here: once five
-    // of its last seven chunks are a voice's level, half a second of them inside 0.7 s, she stops, and once she has her ears get
-    // its newest second, the start of their line included. A laugh or a "yeah" is shorter, so it lets her finish (Lachy, 3 Nov:
-    // "maybe we need some interruption and stuff like that when someone talks over as well").
+    // Keeps the last second of call audio while Capri speaks. It is replayed only after the explicit wake phrase fires.
+    // Ordinary speech, laughter and background noise never stop her.
     internal sealed class CallOver
     {
-        internal const int Window = 7, Needs = 5, Kept = 10;
-        private readonly bool[] loud = new bool[Window];
+        internal const int Kept = 10;
         private readonly List<short[]> held = new List<short[]>();
-        private int at;
         internal bool Fired { get; private set; }
 
-        // One chunk of Discord while she talks, with its loudness. True the once it's time to stop her.
-        internal bool Heard(short[] call, double level, double wake)
+        internal void Hold(short[] audio)
         {
-            held.Add(call);
+            if (audio == null) return;
+            held.Add((short[])audio.Clone());
             if (held.Count > Kept) held.RemoveAt(0);
-            loud[at] = level >= wake;
-            at = (at + 1) % Window;
-            if (Fired) return false;
-            int count = 0;
-            foreach (bool each in loud) if (each) count++;
-            if (count < Needs) return false;
-            Fired = true;
-            return true;
         }
 
-        // A stop her newer answer ignored: being talked over still can stop that one.
-        internal void Rearm() { Fired = false; }
+        internal void Trigger() { Fired = true; }
 
-        // She's stopped talking: what was held if someone talked over her, else nothing, and it starts again.
+        internal void Rearm() { Reset(); }
+
         internal List<short[]> Release()
         {
             List<short[]> line = Fired ? new List<short[]>(held) : new List<short[]>();
@@ -533,8 +609,6 @@ namespace CapriDesktop
         internal void Reset()
         {
             held.Clear();
-            Array.Clear(loud, 0, Window);
-            at = 0;
             Fired = false;
         }
     }
