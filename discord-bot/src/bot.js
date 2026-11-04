@@ -155,11 +155,8 @@ async function askCapri(message, isDm, content) {
     messages,
     temperature: 0.75,
     max_tokens: 700,
-    // Nemotron 3.5 separates internal reasoning from user-facing content.
-    // Disable thinking so the OpenAI-compatible response contains a normal reply.
-    extra_body: {
-      chat_template_kwargs: { enable_thinking: false }
-    }
+    // NVIDIA's OpenAI-compatible endpoint expects this at the top level.
+    chat_template_kwargs: { enable_thinking: false }
   });
   const responseMessage = result.choices?.[0]?.message;
   const answer = responseMessage?.content;
