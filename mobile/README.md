@@ -1,27 +1,39 @@
 # Capri Mobile (Android)
 
-This is a separate Android app project. It does not connect to the Windows Capri installation and does not share its settings, API keys, conversations, or memory.
+A standalone Android Capri. It does not connect to the Windows Capri installation and does not share its API key, settings, conversations, or memory.
 
-## Current status
+## Implemented so far
 
-The first Android host and Avalonia UI shell are in place. The next implementation stages are:
+- Separate .NET 10 / Avalonia 12 Android application.
+- Android application and activity bootstrap.
+- Capri chat screen with a mobile-friendly layout.
+- NVIDIA-compatible OpenAI chat-completions client.
+- User-supplied API key, endpoint, and model settings.
+- Persistent conversation history in the app's private local data directory.
+- Capri's personality and safety guidance carried into the mobile prompt.
+- Android app backup disabled so private app data is not included in Android backup.
 
-1. Port Capri's personality and NVIDIA-compatible AI client into mobile-owned code.
-2. Add private on-device conversation history and memory storage.
-3. Add Android microphone permission, speech input, and spoken replies.
-4. Add the mobile avatar/animation layer.
-5. Add optional screen capture and overlay features using Android's permission APIs.
+The API key is currently stored in the app's private local settings file. It is not committed to GitHub, but this first implementation does not yet encrypt it with Android Keystore. Do not share the app's private data.
 
-Desktop-only controls and the desktop cross project are intentionally not referenced by this project.
+## Not implemented yet
 
-## Build prerequisites
+- Long-term memory extraction/retrieval equivalent to desktop Capri's memory system.
+- Microphone input, speech-to-text, and spoken replies.
+- Animated avatar and reactions.
+- Android screen capture and floating overlay.
+- Phone actions / accessibility integration.
 
+These are separate Android-native features and will be added after the first APK builds and runs.
+
+## Build on Windows
+
+Prerequisites:
 - .NET 10 SDK
 - .NET Android workload
 - Android SDK / platform tools
 - JDK 17 or later
 
-Install the workload in PowerShell:
+Install the workload:
 
 ```powershell
 dotnet workload install android
@@ -34,16 +46,22 @@ dotnet restore .\mobile\Capri.Mobile.csproj
 dotnet build .\mobile\Capri.Mobile.csproj -c Debug
 ```
 
-For a connected phone, enable Developer options and USB debugging, connect it by USB, then check:
+## GitHub Actions build
+
+A workflow at `.github/workflows/capri-mobile-android.yml` builds a debug APK whenever files under `mobile/` change on this branch. The APK is uploaded as the `capri-mobile-debug-apk` workflow artifact.
+
+## Install on a phone
+
+Enable Developer options and USB debugging on the phone, connect it by USB, then check:
 
 ```powershell
 adb devices
 ```
 
-If the device is listed, install/run with:
+Once the Android workload is installed locally, you can deploy directly with:
 
 ```powershell
 dotnet build .\mobile\Capri.Mobile.csproj -t:Install -f net10.0-android
 ```
 
-The Samsung Galaxy S9 on Android 9 is below Avalonia's currently listed supported Android versions (Android 11+). Android 9 may still be testable depending on the .NET Android runtime and device image, but it is not an officially supported target and must be verified on the actual phone before investing in advanced features.
+The Galaxy S9 runs Android 9 (API 28). Avalonia supports Android as a platform, but current Avalonia/.NET platform guidance places Android 11 and earlier in its lowest support tier. We will need to verify the actual APK on the S9; compatibility is not guaranteed by setting the minimum SDK alone.
