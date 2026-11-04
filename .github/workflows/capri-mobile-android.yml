@@ -1,0 +1,50 @@
+name: Capri Mobile Android build
+
+on:
+  push:
+    branches:
+      - capri/android-mobile
+    paths:
+      - "mobile/**"
+      - ".github/workflows/capri-mobile-android.yml"
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install .NET Android workload
+        run: dotnet workload install android
+
+      - name: Restore
+        run: dotnet restore mobile/Capri.Mobile.csproj
+
+      - name: Build debug APK
+        run: dotnet build mobile/Capri.Mobile.csproj -c Debug --no-restore
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: capri-mobile-debug-apk
+          path: mobile/bin/Debug/net10.0-android/**/*.apk
+          if-no-files-found: error
