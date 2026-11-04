@@ -42,10 +42,50 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         base.OnCreate(savedInstanceState);
         Window?.SetStatusBarColor(Color.ParseColor("#0B1020"));
         Window?.SetNavigationBarColor(Color.ParseColor("#0B1020"));
-        brain = new MobileBrain(this);
-        speech = new TextToSpeech(this, this);
-        BuildChat();
-        HandleSharedText(Intent);
+        try
+        {
+            brain = new MobileBrain(this);
+            speech = new TextToSpeech(this, this);
+            BuildChat();
+            HandleSharedText(Intent);
+        }
+        catch (Exception error)
+        {
+            ShowStartupFailure(error);
+        }
+    }
+
+    private void ShowStartupFailure(Exception error)
+    {
+        try
+        {
+            System.IO.File.WriteAllText(
+                System.IO.Path.Combine(FilesDir.AbsolutePath, "capri-startup-error.txt"),
+                error.ToString());
+        }
+        catch { }
+
+        var page = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        page.SetPadding(Dp(20), Dp(28), Dp(20), Dp(20));
+        page.SetBackgroundColor(Color.ParseColor("#0B1020"));
+        var heading = Label("CAPRI COULDN'T START", 22, "#8CB8FF");
+        page.AddView(heading);
+        var details = new TextView(this)
+        {
+            Text = error.ToString(),
+            TextSize = 12
+        };
+        details.SetTextColor(Color.ParseColor("#F2F5FF"));
+        var scroll = new ScrollView(this);
+        scroll.AddView(details);
+        page.AddView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        page.AddView(ActionButton("Copy error details", (_, _) =>
+        {
+            var clipboard = (Android.Content.ClipboardManager)GetSystemService(ClipboardService);
+            clipboard.PrimaryClip = ClipData.NewPlainText("Capri startup error", error.ToString());
+            Toast.MakeText(this, "Error copied. You can paste it into ChatGPT.", ToastLength.Long).Show();
+        }));
+        SetContentView(page);
     }
 
     public void OnInit(OperationResult status)
