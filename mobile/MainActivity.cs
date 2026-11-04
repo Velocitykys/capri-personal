@@ -149,6 +149,7 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         nav.SetGravity(GravityFlags.Center);
         nav.AddView(ActionButton("Memory", (_, _) => ShowMemory()), new LinearLayout.LayoutParams(0, Dp(46), 1));
         nav.AddView(ActionButton("Reminders", (_, _) => ShowReminders()), new LinearLayout.LayoutParams(0, Dp(46), 1));
+        nav.AddView(ActionButton("Phone", (_, _) => ShowPhoneTools()), new LinearLayout.LayoutParams(0, Dp(46), 1));
         nav.AddView(ActionButton("Share", (_, _) => ShareLastReply()), new LinearLayout.LayoutParams(0, Dp(46), 1));
         root.AddView(nav);
 
@@ -351,7 +352,37 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
             .SetTitle("Reminders")
             .SetView(panel)
             .SetNegativeButton("Close", (s, e) => { })
+            .SetNeutralButton("Quick timer", (s, e) => CreateTimer())
             .SetPositiveButton("Add reminder", (s, e) => CreateReminder())
+            .Show();
+    }
+
+    private void CreateTimer()
+    {
+        var input = new EditText(this) { Hint = "Minutes", InputType = Android.Text.InputTypes.ClassNumber };
+        new AlertDialog.Builder(this)
+            .SetTitle("Quick timer")
+            .SetMessage("How many minutes?")
+            .SetView(input)
+            .SetNegativeButton("Cancel", (s, e) => { })
+            .SetPositiveButton("Start", (s, e) =>
+            {
+                if (!int.TryParse(input.Text, out int minutes) || minutes < 1 || minutes > 10080)
+                {
+                    AddMessage("assistant", "Give me a timer between 1 minute and 7 days, choom.");
+                    return;
+                }
+                int id = (int)(DateTimeOffset.UtcNow.ToUnixTimeSeconds() % int.MaxValue);
+                var reminder = new MobileReminder
+                {
+                    Id = id,
+                    Title = "Your " + minutes + "-minute timer is up",
+                    DueLocal = DateTime.Now.AddMinutes(minutes)
+                };
+                brain.AddReminder(reminder);
+                ScheduleReminder(reminder);
+                AddMessage("assistant", "Timer's running. I'll give you a nudge in " + minutes + " minutes.");
+            })
             .Show();
     }
 
@@ -406,6 +437,63 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         var alarm = (AlarmManager)GetSystemService(AlarmService);
         alarm.Cancel(pending);
         pending.Cancel();
+    }
+
+    private void ShowPhoneTools()
+    {
+        string[] options = { "Open browser", "Open camera", "Open device settings", "Search the web", "Copy last Capri reply", "Share last Capri reply" };
+        new AlertDialog.Builder(this)
+            .SetTitle("Phone tools")
+            .SetItems(options, (sender, args) =>
+            {
+                switch (args.Which)
+                {
+                    case 0:
+                        StartActivity(new Intent(Intent.ActionView, Android.Net.Uri.Parse("https://www.google.com")));
+                        break;
+                    case 1:
+                        try { StartActivity(new Intent(Android.Provider.MediaStore.ActionImageCapture)); }
+                        catch { AddMessage("assistant", "This phone doesn't have a camera app I can open."); }
+                        break;
+                    case 2:
+                        StartActivity(new Intent(Android.Provider.Settings.ActionSettings));
+                        break;
+                    case 3:
+                        SearchWeb();
+                        break;
+                    case 4:
+                        CopyLastReply();
+                        break;
+                    case 5:
+                        ShareLastReply();
+                        break;
+                }
+            })
+            .Show();
+    }
+
+    private void SearchWeb()
+    {
+        var input = new EditText(this) { Hint = "What should I search for?" };
+        new AlertDialog.Builder(this)
+            .SetTitle("Search the web")
+            .SetView(input)
+            .SetNegativeButton("Cancel", (s, e) => { })
+            .SetPositiveButton("Search", (s, e) =>
+            {
+                string query = input.Text?.Trim() ?? "";
+                if (query.Length > 0)
+                    StartActivity(new Intent(Intent.ActionView, Android.Net.Uri.Parse("https://www.google.com/search?q=" + Uri.EscapeDataString(query))));
+            })
+            .Show();
+    }
+
+    private void CopyLastReply()
+    {
+        if (string.IsNullOrWhiteSpace(lastCapriReply)) return;
+        var clipboard = (Android.Content.ClipboardManager)GetSystemService(ClipboardService);
+        clipboard.PrimaryClip = ClipData.NewPlainText("Capri", lastCapriReply);
+        Toast.MakeText(this, "Copied Capri's reply", ToastLength.Short).Show();
     }
 
     private void ShareLastReply()

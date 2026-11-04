@@ -13,8 +13,11 @@ A standalone Android companion built specifically for phones. It does not connec
 - Speech-to-text using Android's speech recognizer.
 - Spoken replies using Android TextToSpeech.
 - Capri artwork in the chat header.
-- Local scheduled reminders delivered as Android notifications.
+- Local scheduled reminders delivered as Android notifications and restored after device reboot.
+- Quick timers that use the same notification scheduler.
+- Basic phone tools to open the browser, camera and device settings, search the web, and copy/share Capri replies.
 - Android share-sheet integration: share text from another app into Capri, or share a Capri reply out.
+- A small offline fallback for saved memories, reminders, date and time; full AI replies still need internet.
 - Private app storage and Android backup disabled.
 
 ## Important boundaries
