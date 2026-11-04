@@ -28,7 +28,7 @@ public sealed class App : Application
 
 internal sealed class MainView : UserControl
 {
-    private readonly MobileBrain brain = new MobileBrain();
+    private MobileBrain brain;
     private readonly StackPanel messages = new StackPanel { Spacing = 10 };
     private readonly TextBox composer = new TextBox { Watermark = "Message Capri…", MinHeight = 48, AcceptsReturn = false };
     private readonly Border settingsPanel = new Border
@@ -43,9 +43,29 @@ internal sealed class MainView : UserControl
     private readonly TextBox endpointInput = new TextBox { Watermark = "API endpoint" };
     private readonly TextBox modelInput = new TextBox { Watermark = "Model ID" };
     private readonly Button sendButton = new Button { Content = "Send", MinWidth = 76 };
-    private readonly ScrollViewer chatScroll;
+    private ScrollViewer chatScroll;
 
     internal MainView()
+    {
+        try
+        {
+            brain = new MobileBrain();
+            InitializeChat();
+        }
+        catch (Exception error)
+        {
+            System.Diagnostics.Debug.WriteLine("CAPRI MOBILE STARTUP FAILURE: " + error);
+            Content = new TextBlock
+            {
+                Text = "Capri couldn't finish starting.\n\nPlease send this error to the developer:\n\n" + error,
+                Margin = new Thickness(20),
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 14
+            };
+        }
+    }
+
+    private void InitializeChat()
     {
         Background = new SolidColorBrush(Color.Parse("#10131C"));
         endpointInput.Text = brain.Settings.Endpoint;
