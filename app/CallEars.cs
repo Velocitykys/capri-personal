@@ -136,6 +136,12 @@ namespace CapriDesktop
                     {
                         Thread.Sleep(10);
                         if (!tap.Read(this, mine)) { Brain.Log("call ears", -1, "the selected app's sound stopped coming. Opening it again."); break; }
+                        if (tap.DiagnosticWritten && !tap.HasSignal)
+                        {
+                            Brain.Log("call ears", -1, "The selected app's process capture is effectively silent. Falling back to the default Windows output mix; this can include audio from other apps.");
+                            ListenDefaultOutput(mine);
+                            break;
+                        }
                         if (Environment.TickCount - lookedAt < 1000) continue;
                         lookedAt = Environment.TickCount;
                         if (Gone(pid)) break;
@@ -148,6 +154,73 @@ namespace CapriDesktop
                     Rest(mine, 5000);
                 }
                 finally { if (tap != null) tap.Dispose(); }
+            }
+        }
+
+        // Fallback for apps whose audio is hosted outside their process tree (for example, packaged WebView call audio).
+        // This uses the default Windows output mix, so it may include sound from other applications too.
+        private void ListenDefaultOutput(int mine)
+        {
+            bool initialized = false;
+            SoundTap output = null;
+            try
+            {
+                ClipMedia.Check(ClipMedia.CoInitializeEx(IntPtr.Zero, 0));
+                initialized = true;
+                output = SoundTap.Open(true);
+                if (output == null) throw new InvalidOperationException("Couldn't open the default Windows output device.");
+                int weight = 0;
+                double sum = 0;
+                Brain.Log("call ears", -1, "Listening to the default Windows output mix as a fallback.");
+                Action<byte[], long, int> receive = delegate(byte[] pcm, long at, int rate)
+                {
+                    try
+                    {
+                        List<short> converted = new List<short>();
+                        for (int i = 0; i + 3 < pcm.Length; i += 4)
+                        {
+                            short left = (short)(pcm[i] | pcm[i + 1] << 8);
+                            short right = (short)(pcm[i + 2] | pcm[i + 3] << 8);
+                            double mono = (left + (double)right) / 2.0;
+                            int remaining = Ears.Rate;
+                            while (remaining > 0)
+                            {
+                                int take = Math.Min(rate - weight, remaining);
+                                sum += mono * take;
+                                weight += take;
+                                remaining -= take;
+                                if (weight == rate)
+                                {
+                                    converted.Add((short)Math.Max(short.MinValue, Math.Min(short.MaxValue, Math.Round(sum / rate))));
+                                    sum = 0;
+                                    weight = 0;
+                                }
+                            }
+                        }
+                        if (converted.Count > 0) Add(converted.ToArray(), converted.Count, mine);
+                    }
+                    finally { Array.Clear(pcm, 0, pcm.Length); }
+                };
+                while (Live(mine))
+                {
+                    long newest;
+                    if (!output.Read(null, null, out newest, receive))
+                        throw new InvalidOperationException("Windows stopped providing audio from the default output device.");
+                    Thread.Sleep(10);
+                }
+            }
+            catch (Exception error)
+            {
+                if (Live(mine))
+                {
+                    Say(mine, "Couldn't hear the selected app: " + Voice.Short(error.Message));
+                    Brain.Log("call ears", -1, "Default-output fallback failed: " + error.Message);
+                }
+            }
+            finally
+            {
+                if (output != null) output.Dispose();
+                if (initialized) ClipMedia.CoUninitialize();
             }
         }
 
@@ -280,6 +353,8 @@ namespace CapriDesktop
             private long diagnosticSamples;
             private int diagnosticPeak;
             private bool diagnosticWritten;
+            internal bool DiagnosticWritten { get { return diagnosticWritten; } }
+            internal bool HasSignal { get { return diagnosticSamples > 0 && Math.Sqrt(diagnosticSquares / diagnosticSamples) > 40.0; } }
 
             internal static Tap Open(int pid, out string failed)
             {
