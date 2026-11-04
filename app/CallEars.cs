@@ -6,15 +6,62 @@ using System.Threading;
 
 namespace CapriDesktop
 {
-    // The people on your call: Discord's own sound, which Windows hands her apart from everything else the PC plays (the
-    // per-app capture OBS's Application Audio Capture uses), so in call mode she hears them as well as you (Lachy, 3 Nov:
-    // "I don't think what they say is picked up rn"). Her voice reaches the call through your mic, and Discord never plays
-    // your own mic back to you, so she doesn't hear herself in it.
+    // A running desktop application whose own audio Capri can capture for call mode.
+    internal sealed class CallAudioApp
+    {
+        internal readonly string Name, ProcessName;
+        internal CallAudioApp(string name, string processName) { Name = name; ProcessName = processName; }
+        public override string ToString() { return Name; }
+    }
+
+    // Captures one application's audio separately from the rest of Windows.
     internal sealed class CallEars : IDisposable
     {
-        internal const string NotOpen = "Discord isn't open.";
-        // Discord and its test builds.
-        private static readonly string[] Names = { "Discord", "DiscordPTB", "DiscordCanary" };
+        internal const string NotOpen = "The selected application isn't open.";
+        private static string selectedProcess = "Discord";
+        private static string selectedName = "Discord";
+        private static readonly string[] DiscordNames = { "Discord", "DiscordPTB", "DiscordCanary" };
+        internal static string SourceName { get { lock (typeof(CallEars)) return selectedName; } }
+
+        internal static void SelectSource(string processName, string displayName)
+        {
+            if (string.IsNullOrWhiteSpace(processName)) return;
+            lock (typeof(CallEars)) { selectedProcess = processName.Trim(); selectedName = string.IsNullOrWhiteSpace(displayName) ? selectedProcess : displayName.Trim(); }
+            Find = delegate { return FindProcess(selectedProcess); };
+        }
+
+        // Show running desktop apps with a visible window. Windows' process-loopback capture includes child processes.
+        internal static List<CallAudioApp> Applications()
+        {
+            Dictionary<string, CallAudioApp> found = new Dictionary<string, CallAudioApp>(StringComparer.OrdinalIgnoreCase);
+            foreach (Process process in Process.GetProcesses())
+            using (process)
+            {
+                try
+                {
+                    string name = process.ProcessName;
+                    if (process.MainWindowHandle == IntPtr.Zero || string.IsNullOrWhiteSpace(process.MainWindowTitle)) continue;
+                    if (name.Equals("Capri", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!found.ContainsKey(name)) found.Add(name, new CallAudioApp(Friendly(name), name));
+                }
+                catch (Exception) { }
+            }
+            List<CallAudioApp> apps = new List<CallAudioApp>(found.Values);
+            apps.Sort(delegate(CallAudioApp a, CallAudioApp b) { return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase); });
+            return apps;
+        }
+
+        private static string Friendly(string name)
+        {
+            if (name.Equals("WhatsApp", StringComparison.OrdinalIgnoreCase) || name.Equals("WhatsAppRoot", StringComparison.OrdinalIgnoreCase)) return "WhatsApp";
+            if (name.StartsWith("Discord", StringComparison.OrdinalIgnoreCase)) return "Discord";
+            if (name.Equals("ms-teams", StringComparison.OrdinalIgnoreCase) || name.Equals("Teams", StringComparison.OrdinalIgnoreCase)) return "Microsoft Teams";
+            if (name.Equals("Zoom", StringComparison.OrdinalIgnoreCase)) return "Zoom";
+            if (name.Equals("Skype", StringComparison.OrdinalIgnoreCase)) return "Skype";
+            if (name.Equals("chrome", StringComparison.OrdinalIgnoreCase)) return "Google Chrome";
+            if (name.Equals("msedge", StringComparison.OrdinalIgnoreCase)) return "Microsoft Edge";
+            return name;
+        }
         private readonly object gate = new object();
         // Two seconds of Discord at her ears' rate. Only the newest two chunks of it are ever mixed in.
         private readonly short[] ring = new short[Ears.Rate * 2];
@@ -83,12 +130,12 @@ namespace CapriDesktop
                     }
                     told = null;
                     Say(mine, null);
-                    Brain.Log("call ears", -1, "Hearing Discord: process " + pid + " and the ones it started, as 16000 Hz mono 16-bit PCM.");
+                    Brain.Log("call ears", -1, "Hearing selected app: process " + pid + " and the ones it started, as 16000 Hz mono 16-bit PCM.");
                     int lookedAt = Environment.TickCount;
                     while (Live(mine))
                     {
                         Thread.Sleep(10);
-                        if (!tap.Read(this, mine)) { Brain.Log("call ears", -1, "Discord's sound stopped coming. Opening it again."); break; }
+                        if (!tap.Read(this, mine)) { Brain.Log("call ears", -1, "the selected app's sound stopped coming. Opening it again."); break; }
                         if (Environment.TickCount - lookedAt < 1000) continue;
                         lookedAt = Environment.TickCount;
                         if (Gone(pid)) break;
@@ -123,7 +170,7 @@ namespace CapriDesktop
         {
             int found = 0;
             DateTime first = DateTime.MaxValue;
-            foreach (string name in Names)
+            foreach (string name in DiscordNames)
                 foreach (Process process in Process.GetProcessesByName(name))
                     using (process)
                     {
@@ -133,7 +180,20 @@ namespace CapriDesktop
             return found;
         }
 
-        // What Discord played, onto the end of her ring, with its loudness kept every tenth of a second.
+        private static int FindProcess(string name)
+        {
+            int found = 0;
+            DateTime first = DateTime.MaxValue;
+            foreach (Process process in Process.GetProcessesByName(name))
+                using (process)
+                {
+                    try { if (process.StartTime < first) { first = process.StartTime; found = process.Id; } }
+                    catch (Exception) { }
+                }
+            return found;
+        }
+
+        // What the selected app played, onto the end of her ring, with its loudness kept every tenth of a second.
         internal void Add(short[] samples, int length, int? mine = null)
         {
             lock (gate)
@@ -228,7 +288,7 @@ namespace CapriDesktop
                     try { result = ActivateAudioInterfaceAsync(@"VAD\Process_Loopback", ref clientId, blob, done, out operation); }
                     catch (EntryPointNotFoundException) { failed = Refused(-1); return null; }
                     if (result != 0) { failed = Refused(result); return null; }
-                    if (!done.Finished.WaitOne(5000)) { failed = "Windows took too long to hand over Discord's sound."; return null; }
+                    if (!done.Finished.WaitOne(5000)) { failed = "Windows took too long to hand over the selected app's sound."; return null; }
                     int activated;
                     object found;
                     result = operation.GetActivateResult(out activated, out found);
@@ -261,7 +321,7 @@ namespace CapriDesktop
 
             private static string Refused(int result)
             {
-                return "Windows wouldn't hand her Discord's sound" + (result == -1 ? "" : " (0x" + result.ToString("X8") + ")") + ". It needs Windows 11 or an up-to-date Windows 10.";
+                return "Windows wouldn't hand her the selected app's sound" + (result == -1 ? "" : " (0x" + result.ToString("X8") + ")") + ". It needs Windows 11 or an up-to-date Windows 10.";
             }
 
             // Everything Windows has for her since the last read, into her ring. False when the capture broke.
@@ -299,7 +359,7 @@ namespace CapriDesktop
             }
         }
 
-        // Discord's sound mixed into a mic, the mix's loudness, whose lines are whose, and Discord's absence, without a real Discord.
+        // the selected app's sound mixed into a mic, the mix's loudness, whose lines are whose, and Discord's absence, without a real Discord.
         internal static void Smoke(List<string> checks)
         {
             CallEars ears = new CallEars();
@@ -311,18 +371,18 @@ namespace CapriDesktop
             for (int i = 0; i < mic.Length; i++) mic[i] = 30000;
             double mine, theirs;
             short[] mixed = ears.Mix(mic, out mine, out theirs);
-            if (mixed[0] != short.MaxValue || mixed[1] != 22000 || Math.Abs(mine - 30000 / 32768.0) > 0.001 || Math.Abs(theirs - 8000 / 32768.0) > 0.001) throw new Exception("Discord's sound didn't mix into the mic's chunk.");
+            if (mixed[0] != short.MaxValue || mixed[1] != 22000 || Math.Abs(mine - 30000 / 32768.0) > 0.001 || Math.Abs(theirs - 8000 / 32768.0) > 0.001) throw new Exception("the selected app's sound didn't mix into the mic's chunk.");
             ears.Mix(mic, out mine, out theirs);
             short[] after = ears.Mix(mic, out mine, out theirs);
             if (after[0] != 30000 || theirs != 0) throw new Exception("More than Discord's newest two chunks were mixed in.");
-            checks.Add("PASS call ears: Discord's sound adds into the mic's chunks and clips instead of wrapping, only its newest 0.2 s is mixed in, and its loudness is measured");
+            checks.Add("PASS call ears: the selected app's sound adds into the mic's chunks and clips instead of wrapping, only its newest 0.2 s is mixed in, and its loudness is measured");
 
             double[] own = new double[10], call = new double[10];
             for (int i = 0; i < 6; i++) { own[i] = 0.05; call[i] = 0.001; }
             for (int i = 6; i < 10; i++) { own[i] = 0.004; call[i] = 0.03; }
             if (!FromCall(own, call, 10, 4) || FromCall(own, call, 10, 10) || FromCall(own, call, 6, 3)) throw new Exception("A line's speaker came out wrong.");
             if (!FromCall(own, call, 20, 2) || FromCall(own, call, 13, 2) || FromCall(own, call, 0, 4)) throw new Exception("Whose line it is broke once her chunk count wrapped.");
-            checks.Add("PASS call lines: a line that's mostly Discord's sound counts as someone else on the call, and one that's mostly the mic's as the user's");
+            checks.Add("PASS call lines: a line that's mostly the selected app's sound counts as someone else on the call, and one that's mostly the mic's as the user's");
 
             Func<int> findWas = Find;
             try
@@ -390,7 +450,7 @@ namespace CapriDesktop
         }
     }
 
-    // Someone on the call talking over her. While she talks her ears get your mic alone, and Discord's sound waits here: once five
+    // Someone on the call talking over her. While she talks her ears get your mic alone, and the selected app's sound waits here: once five
     // of its last seven chunks are a voice's level, half a second of them inside 0.7 s, she stops, and once she has her ears get
     // its newest second, the start of their line included. A laugh or a "yeah" is shorter, so it lets her finish (Lachy, 3 Nov:
     // "maybe we need some interruption and stuff like that when someone talks over as well").
