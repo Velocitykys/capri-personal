@@ -477,25 +477,18 @@ namespace CapriDesktop
             for (int i = 0; i < loud.Length; i++) loud[i] = (short)(i % 2 == 0 ? 3000 : -3000);
             Func<short[], double> level = delegate(short[] chunk) { return chunk[0] == 0 ? 0 : 0.09; };
             CallOver over = new CallOver();
-            // A laugh: three loud chunks, then quiet. She talks on, and nothing of it is kept for her ears.
-            bool fired = false;
-            foreach (short[] chunk in new[] { loud, loud, loud, quiet, quiet, quiet, quiet, quiet }) fired |= over.Heard(chunk, level(chunk), 0.02);
-            if (fired || over.Release().Count != 0) throw new Exception("A laugh on the call stopped her or was kept as a line.");
-            // A line: the fifth loud chunk of seven stops her, once, and her ears get the newest second of it from its start.
-            int firedAt = -1;
-            bool[] talking = { false, true, true, false, true, true, true, true, true, true, true, true };
-            short[][] line = new short[talking.Length][];
-            for (int i = 0; i < line.Length; i++) line[i] = (short[])(talking[i] ? loud : quiet).Clone();
-            for (int i = 0; i < line.Length; i++) if (over.Heard(line[i], level(line[i]), 0.02)) { if (firedAt >= 0) throw new Exception("Talking over her stopped her twice."); firedAt = i; }
+            for (int i = 0; i < 14; i++) over.Hold(loud);
+            if (over.Fired || over.Release().Count != 0) throw new Exception("Ordinary call speech stopped her or leaked into her ears.");
+            over.Hold(loud);
+            over.Hold(quiet);
+            over.Trigger();
             List<short[]> kept = over.Release();
-            if (firedAt != 6 || kept.Count != CallOver.Kept || kept[0] != line[line.Length - CallOver.Kept] || kept[kept.Count - 1] != line[line.Length - 1] || over.Release().Count != 0)
-                throw new Exception("Talking over her came out wrong: stopped at chunk " + firedAt + ", " + kept.Count + " chunks kept.");
-            // Her newer answer ignored the stop: still talked over, it stops that one too.
-            for (int i = 0; i < 5; i++) over.Heard(loud, 0.09, 0.02);
+            if (kept.Count != 2 || kept[0][0] != loud[0] || kept[1][0] != quiet[0] || over.Fired || over.Release().Count != 0)
+                throw new Exception("An explicit wake-word interruption didn't preserve its buffered audio.");
+            over.Hold(loud);
             over.Rearm();
-            if (!over.Heard(loud, 0.09, 0.02)) throw new Exception("Being talked over again didn't stop her newer answer.");
-            over.Reset();
-            checks.Add("PASS call talk-over: half a second of someone on the call talking over her stops her once and hands her ears their line from its start, a laugh doesn't, and a newer answer can be stopped too");
+            if (over.Fired || over.Release().Count != 0) throw new Exception("A new answer inherited an old interruption.");
+            checks.Add("PASS call interruption buffer: ordinary speech never triggers a stop; only an explicit wake-word trigger releases the buffered lead-in, and a new answer clears stale audio");
         }
     }
 
