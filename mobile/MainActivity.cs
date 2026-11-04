@@ -335,7 +335,8 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         panel.SetPadding(Dp(18), Dp(8), Dp(18), Dp(8));
         foreach (var reminder in brain.Reminders.Where(r => !r.Completed).OrderBy(r => r.DueLocal))
         {
-            var row = new LinearLayout(this) { Orientation = Orientation.Horizontal, Gravity = GravityFlags.CenterVertical };
+            var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+            row.SetGravity(GravityFlags.CenterVertical);
             row.AddView(Label(reminder.Title + "\n" + reminder.DueLocal.ToString("dd MMM, HH:mm"), 13), new LinearLayout.LayoutParams(0, -2, 1));
             row.AddView(ActionButton("Done", (_, _) =>
             {
