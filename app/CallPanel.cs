@@ -73,6 +73,10 @@ namespace CapriDesktop
             sourceMenu.Opening += delegate
             {
                 sourceMenu.Items.Clear();
+                ToolStripMenuItem master = new ToolStripMenuItem(CallEars.MasterOutputName);
+                master.Click += delegate { if (SourceSelected != null) SourceSelected(CallEars.MasterOutput, CallEars.MasterOutputName); };
+                sourceMenu.Items.Add(master);
+                sourceMenu.Items.Add(new ToolStripSeparator());
                 foreach (CallAudioApp app in CallEars.Applications())
                 {
                     CallAudioApp picked = app;
