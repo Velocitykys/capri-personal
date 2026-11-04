@@ -182,15 +182,26 @@ namespace CapriDesktop
 
         private static int FindProcess(string name)
         {
-            int found = 0;
-            DateTime first = DateTime.MaxValue;
+            int visible = 0, found = 0;
+            DateTime visibleFirst = DateTime.MaxValue, first = DateTime.MaxValue;
             foreach (Process process in Process.GetProcessesByName(name))
                 using (process)
                 {
-                    try { if (process.StartTime < first) { first = process.StartTime; found = process.Id; } }
+                    try
+                    {
+                        DateTime started = process.StartTime;
+                        if (started < first) { first = started; found = process.Id; }
+                        // Packaged apps can leave background instances running. Capture the instance
+                        // that owns the visible app window first, not an older headless instance.
+                        if (process.MainWindowHandle != IntPtr.Zero && started < visibleFirst)
+                        {
+                            visibleFirst = started;
+                            visible = process.Id;
+                        }
+                    }
                     catch (Exception) { }
                 }
-            return found;
+            return visible != 0 ? visible : found;
         }
 
         // What the selected app played, onto the end of her ring, with its loudness kept every tenth of a second.
