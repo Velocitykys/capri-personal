@@ -2982,6 +2982,28 @@ namespace CapriDesktop
             return null;
         }
 
+        // .NET Framework's ProcessStartInfo has no ArgumentList, so quote each argument using
+        // the Windows command-line rules before joining them into Arguments.
+        private static string PocketArgument(string value)
+        {
+            StringBuilder quoted = new StringBuilder("\\\"");
+            int slashes = 0;
+            foreach (char c in value ?? "")
+            {
+                if (c == '\\\\') { slashes++; continue; }
+                if (c == '\\"')
+                {
+                    quoted.Append('\\\\', slashes * 2 + 1).Append(c);
+                    slashes = 0;
+                    continue;
+                }
+                quoted.Append('\\\\', slashes).Append(c);
+                slashes = 0;
+            }
+            quoted.Append('\\\\', slashes * 2).Append('\\\"');
+            return quoted.ToString();
+        }
+
         private static short[] PocketProfile(string profile, string text, out int rate)
         {
             string cli = PocketCli();
@@ -2990,17 +3012,14 @@ namespace CapriDesktop
             try
             {
                 ProcessStartInfo start = new ProcessStartInfo(cli);
-                start.ArgumentList.Add("generate");
-                start.ArgumentList.Add("--voice");
-                start.ArgumentList.Add(profile);
-                start.ArgumentList.Add("--sampler-decode-steps");
-                start.ArgumentList.Add("5");
-                start.ArgumentList.Add("--temperature");
-                start.ArgumentList.Add("0.3");
-                start.ArgumentList.Add("--text");
-                start.ArgumentList.Add(text);
-                start.ArgumentList.Add("--output-path");
-                start.ArgumentList.Add(output);
+                start.Arguments = String.Join(" ", new string[]
+                {
+                    PocketArgument("generate"), PocketArgument("--voice"), PocketArgument(profile),
+                    PocketArgument("--sampler-decode-steps"), PocketArgument("5"),
+                    PocketArgument("--temperature"), PocketArgument("0.3"),
+                    PocketArgument("--text"), PocketArgument(text),
+                    PocketArgument("--output-path"), PocketArgument(output)
+                });
                 start.UseShellExecute = false;
                 start.CreateNoWindow = true;
                 using (Process process = Process.Start(start))
