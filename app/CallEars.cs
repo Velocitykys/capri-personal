@@ -275,6 +275,8 @@ namespace CapriDesktop
             private ISoundClient client;
             private ISoundCapture capture;
             private short[] samples = new short[0];
+            private int packets, packetsWithAudio, lastDiagnostic = Environment.TickCount;
+            private bool diagnosticWritten;
 
             internal static Tap Open(int pid, out string failed)
             {
@@ -342,17 +344,39 @@ namespace CapriDesktop
                 {
                     if (!into.Live(mine)) return true;
                     int waiting;
-                    if (capture.GetNextPacketSize(out waiting) != 0) return false;
-                    if (waiting == 0) return true;
+                    int result = capture.GetNextPacketSize(out waiting);
+                    if (result != 0)
+                    {
+                        Brain.Log("call ears", -1, "Process-loopback GetNextPacketSize failed (0x" + result.ToString("X8") + ").");
+                        return false;
+                    }
+                    if (waiting == 0)
+                    {
+                        if (!diagnosticWritten && Environment.TickCount - lastDiagnostic >= 3000)
+                        {
+                            diagnosticWritten = true;
+                            Brain.Log("call ears", -1, "Process-loopback diagnostic after 3 seconds: " + packets + " audio packets received; " + packetsWithAudio + " contained non-zero samples. A zero-packet result means Windows opened the capture but did not route this app's call audio to it.");
+                        }
+                        return true;
+                    }
                     IntPtr data;
                     int frames, flags;
                     long position, time;
-                    if (capture.GetBuffer(out data, out frames, out flags, out position, out time) != 0) return false;
+                    result = capture.GetBuffer(out data, out frames, out flags, out position, out time);
+                    if (result != 0)
+                    {
+                        Brain.Log("call ears", -1, "Process-loopback GetBuffer failed (0x" + result.ToString("X8") + ").");
+                        return false;
+                    }
                     try
                     {
                         if (samples.Length < frames) samples = new short[frames];
                         if ((flags & 2) != 0 || data == IntPtr.Zero) Array.Clear(samples, 0, frames);
                         else Marshal.Copy(data, samples, 0, frames);
+                        packets++;
+                        bool hasAudio = false;
+                        for (int i = 0; i < frames; i++) if (samples[i] != 0) { hasAudio = true; break; }
+                        if (hasAudio) packetsWithAudio++;
                         into.Add(samples, frames, mine);
                     }
                     finally { capture.ReleaseBuffer(frames); }
