@@ -276,6 +276,9 @@ namespace CapriDesktop
             private ISoundCapture capture;
             private short[] samples = new short[0];
             private int packets, packetsWithAudio, lastDiagnostic = Environment.TickCount;
+            private double diagnosticSquares;
+            private long diagnosticSamples;
+            private int diagnosticPeak;
             private bool diagnosticWritten;
 
             internal static Tap Open(int pid, out string failed)
@@ -355,7 +358,10 @@ namespace CapriDesktop
                         if (!diagnosticWritten && Environment.TickCount - lastDiagnostic >= 3000)
                         {
                             diagnosticWritten = true;
-                            Brain.Log("call ears", -1, "Process-loopback diagnostic after 3 seconds: " + packets + " audio packets received; " + packetsWithAudio + " contained non-zero samples. A zero-packet result means Windows opened the capture but did not route this app's call audio to it.");
+                            double rms = diagnosticSamples == 0 ? 0 : Math.Sqrt(diagnosticSquares / diagnosticSamples);
+                            double rmsDb = rms <= 0 ? -120 : 20 * Math.Log10(rms / 32768.0);
+                            double peakDb = diagnosticPeak <= 0 ? -120 : 20 * Math.Log10(diagnosticPeak / 32768.0);
+                            Brain.Log("call ears", -1, "Process-loopback diagnostic after 3 seconds: " + packets + " packets; " + packetsWithAudio + " non-zero packets; RMS " + rms.ToString("F1") + " (" + rmsDb.ToString("F1") + " dBFS); peak " + diagnosticPeak + " (" + peakDb.ToString("F1") + " dBFS).");
                         }
                         return true;
                     }
@@ -377,6 +383,14 @@ namespace CapriDesktop
                         bool hasAudio = false;
                         for (int i = 0; i < frames; i++) if (samples[i] != 0) { hasAudio = true; break; }
                         if (hasAudio) packetsWithAudio++;
+                        for (int i = 0; i < frames; i++)
+                        {
+                            double sample = samples[i];
+                            diagnosticSquares += sample * sample;
+                            diagnosticSamples++;
+                            int magnitude = samples[i] == short.MinValue ? 32768 : Math.Abs(samples[i]);
+                            if (magnitude > diagnosticPeak) diagnosticPeak = magnitude;
+                        }
                         into.Add(samples, frames, mine);
                     }
                     finally { capture.ReleaseBuffer(frames); }
