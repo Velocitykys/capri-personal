@@ -66,6 +66,7 @@ namespace CapriDesktop
             end.Location = new Point(ClientSize.Width - Px(Inset) - end.Width, Px(RowY));
             discord.Location = new Point(end.Left - Px(8) - discord.Width, Px(RowY));
             mic.Location = new Point(discord.Left - Px(8) - mic.Width, Px(RowY));
+            end.Click += delegate { if (EndPressed != null) EndPressed(); };
             mic.Click += delegate { if (MicPressed != null) MicPressed(); };
             discord.Click += delegate { if (DiscordPressed != null) DiscordPressed(); };
             ContextMenuStrip sourceMenu = new ContextMenuStrip();
