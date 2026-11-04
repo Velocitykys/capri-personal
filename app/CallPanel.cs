@@ -138,7 +138,7 @@ namespace CapriDesktop
             Mark(mic, !next.Listening ? "LISTEN" : next.Muted ? "UNMUTE" : "MUTE", next.Listening ? Neon.Rose : Neon.Cyan);
             string source = string.IsNullOrWhiteSpace(next.Source) ? "DISCORD" : next.Source.ToUpperInvariant();
             Mark(discord, (source.Length > 10 ? source.Substring(0, 9) + "…" : source) + (next.Discord ? ": ON" : ": OFF"), Neon.Rose);
-            string state = youLit + "|" + callLit + "|" + next.Talking + "|" + next.Listening + "|" + next.Muted + "|" + next.Discord + "|" + next.DiscordNote + "|" + Clock(next.Length);
+            string state = youLit + "|" + callLit + "|" + next.Talking + "|" + next.Listening + "|" + next.Muted + "|" + next.Discord + "|" + next.Source + "|" + next.DiscordNote + "|" + Clock(next.Length);
             if (state == drawn) return;
             drawn = state;
             Invalidate();
