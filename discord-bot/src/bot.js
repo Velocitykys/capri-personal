@@ -154,10 +154,22 @@ async function askCapri(message, isDm, content) {
     model,
     messages,
     temperature: 0.75,
-    max_tokens: 220
+    max_tokens: 700,
+    // Nemotron 3.5 separates internal reasoning from user-facing content.
+    // Disable thinking so the OpenAI-compatible response contains a normal reply.
+    extra_body: {
+      chat_template_kwargs: { enable_thinking: false }
+    }
   });
-  const answer = result.choices?.[0]?.message?.content;
+  const responseMessage = result.choices?.[0]?.message;
+  const answer = responseMessage?.content;
   if (typeof answer !== "string" || !answer.trim()) {
+    console.error("NVIDIA returned no visible text:", {
+      finishReason: result.choices?.[0]?.finish_reason,
+      hasReasoningContent: typeof responseMessage?.reasoning_content === "string",
+      reasoningCharacters: responseMessage?.reasoning_content?.length || 0,
+      usage: result.usage
+    });
     throw new Error("The AI provider returned an empty reply.");
   }
 
