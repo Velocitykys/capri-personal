@@ -1,6 +1,6 @@
 # Capri Discord Bot (early version)
 
-A separate Discord gateway service that reuses Capri's character prompt without changing the Windows desktop build.
+A separate Discord gateway service. Its character file has been aligned with the current desktop personality text, but it still runs a separate AI session and is not yet connected to the C# desktop brain.
 
 ## Requirements
 
@@ -55,7 +55,8 @@ The Discord bot uses its own provider connection. It does not automatically inhe
 - This first version does not execute desktop/PC commands, see screens, or access desktop files.
 - Memory is stored in `data/memory.json` on the machine running the bot. Back up this folder. For hosting, use a persistent disk; ephemeral server filesystems will lose memory on restart/redeploy.
 - The bot must stay running to receive Discord messages. A Windows PC can host it for initial testing; later it can be moved to a persistent Node host.
-- This service uses the same character instructions but a separate API session from the desktop app. A later integration can route requests through Capri's actual C# brain and desktop tools.
+- Although `personality.md` is aligned with the desktop character, this service still has its own provider call, conversation store and memory implementation. It does **not** yet share the desktop brain, selected model, recall or long-term memory.
+- The intended architecture and safe integration sequence are documented in [SHARED-BRAIN-PLAN.md](./SHARED-BRAIN-PLAN.md). Discord must not inherit PC-control or local-file capabilities by default.
 
 ## Safety and secrets
 
