@@ -2811,6 +2811,7 @@ namespace CapriDesktop
         internal static string Language(string folder, string language)
         {
             folder = Clean(folder);
+            if (IsPocketProfile(folder)) return "en";
             string kind = Kind(folder);
             if (kind == null) return "";
             if (kind == "kokoro")
@@ -2945,10 +2946,99 @@ namespace CapriDesktop
             return target;
         }
 
+        // Pocket TTS CLI voice profiles are independent .safetensors files. Keep the chosen path per voice;
+        // never bake a particular profile into Capri. The CLI can be installed in any Python environment.
+        private static bool IsPocketProfile(string path)
+        {
+            return !string.IsNullOrEmpty(path) && path.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase) && File.Exists(path);
+        }
+
+        private static string PocketCli()
+        {
+            string configured = Environment.GetEnvironmentVariable("POCKET_TTS_CLI");
+            if (!string.IsNullOrEmpty(configured) && File.Exists(configured)) return configured;
+            string[] names = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator);
+            foreach (string directory in names)
+            {
+                try
+                {
+                    string candidate = Path.Combine(directory.Trim().Trim('"'), "pocket-tts.exe");
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch (ArgumentException) { }
+            }
+            string python = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Python");
+            try
+            {
+                if (Directory.Exists(python))
+                    foreach (string install in Directory.GetDirectories(python, "Python*"))
+                    {
+                        string candidate = Path.Combine(install, "Scripts", "pocket-tts.exe");
+                        if (File.Exists(candidate)) return candidate;
+                    }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return null;
+        }
+
+        private static short[] PocketProfile(string profile, string text, out int rate)
+        {
+            string cli = PocketCli();
+            if (cli == null) throw new VoiceException("Install Pocket TTS on this PC, or set POCKET_TTS_CLI to its pocket-tts.exe path.");
+            string output = Path.Combine(Path.GetTempPath(), "capri-pocket-" + Guid.NewGuid().ToString("N") + ".wav");
+            try
+            {
+                ProcessStartInfo start = new ProcessStartInfo(cli);
+                start.ArgumentList.Add("generate");
+                start.ArgumentList.Add("--voice");
+                start.ArgumentList.Add(profile);
+                start.ArgumentList.Add("--sampler-decode-steps");
+                start.ArgumentList.Add("5");
+                start.ArgumentList.Add("--temperature");
+                start.ArgumentList.Add("0.3");
+                start.ArgumentList.Add("--text");
+                start.ArgumentList.Add(text);
+                start.ArgumentList.Add("--output-path");
+                start.ArgumentList.Add(output);
+                start.UseShellExecute = false;
+                start.CreateNoWindow = true;
+                using (Process process = Process.Start(start))
+                {
+                    if (process == null) throw new VoiceException("Pocket TTS couldn't start.");
+                    if (!process.WaitForExit(180000))
+                    {
+                        try { process.Kill(); process.WaitForExit(5000); } catch (Exception) { }
+                        throw new VoiceException("Pocket TTS took too long to make her reply.");
+                    }
+                    if (process.ExitCode != 0 || !File.Exists(output))
+                        throw new VoiceException("Pocket TTS couldn't generate speech from that .safetensors profile. Check the profile and Pocket TTS installation.");
+                }
+                short[] samples = YourVoice.Read(output);
+                rate = YourVoice.Rate;
+                if (samples.Length == 0) throw new VoiceException("Pocket TTS returned an empty voice clip.");
+                return samples;
+            }
+            catch (VoiceException) { throw; }
+            catch (System.ComponentModel.Win32Exception) { throw new VoiceException("Pocket TTS couldn't start. Check its installation."); }
+            catch (IOException) { throw new VoiceException("Pocket TTS couldn't read its generated voice clip."); }
+            finally
+            {
+                try { if (File.Exists(output)) File.Delete(output); } catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
         // Its sound for the words at its own rate. `lang` is a Kokoro model's language, like en-us or es. `voice` is a speaker
         // number, where one past its last speaker gets its first, or for Pocket TTS the clip whose voice it copies.
         internal static short[] Speak(string folder, string lang, string voice, string text, out int rate)
         {
+            folder = Clean(folder);
+            if (IsPocketProfile(folder))
+            {
+                if (!VoiceLanguage.Reads(text, "en")) throw new VoiceException(VoiceLanguage.Missing(VoiceLanguage.Tongue(text, Brain.Language), Brain.Language));
+                return PocketProfile(folder, text, out rate);
+            }
             if (!VoiceLanguage.Reads(text, Language(folder, lang))) throw new VoiceException(VoiceLanguage.Missing(VoiceLanguage.Tongue(text, Brain.Language), Brain.Language));
             if (Run != null) return Run(folder, lang, voice, text, out rate);
             lock (gate)

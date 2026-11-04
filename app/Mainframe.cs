@@ -4674,8 +4674,8 @@ namespace CapriDesktop
             {
                 using (OpenFileDialog dialog = new OpenFileDialog())
                 {
-                    dialog.Title = "Pick a voice model: its .tar.bz2, or the .onnx in its folder";
-                    dialog.Filter = "Voice models (*.tar.bz2;*.zip;*.onnx)|*.tar.bz2;*.zip;*.onnx|All files (*.*)|*.*";
+                    dialog.Title = "Pick a local voice: .safetensors, a model archive, or an .onnx folder";
+                    dialog.Filter = "Local voices (*.safetensors;*.tar.bz2;*.zip;*.onnx)|*.safetensors;*.tar.bz2;*.zip;*.onnx|All files (*.*)|*.*";
                     if (dialog.ShowDialog(this) == DialogResult.OK) Take(dialog.FileName);
                 }
             }
@@ -4683,6 +4683,12 @@ namespace CapriDesktop
             // An .onnx is used where it is. An archive is unpacked into her models folder first, off the UI thread.
             internal void Take(string path)
             {
+                if (path.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
+                {
+                    url.Box.Text = path;
+                    Say(System.IO.File.Exists(path) ? "Pocket TTS voice profile selected. Press Test to hear it." : "That voice profile could not be found.", !System.IO.File.Exists(path));
+                    return;
+                }
                 if (path.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
                 {
                     url.Box.Text = System.IO.Path.GetDirectoryName(path);
