@@ -486,6 +486,8 @@ namespace CapriDesktop
         [DataMember] public bool NvidiaGlm;
         [DataMember] public string VoiceKey;
         [DataMember] public bool CallMode;
+        // Switched off on the call panel: in call mode she hears only your mic, not Discord.
+        [DataMember] public bool CallDiscordOff;
         [DataMember] public string VoiceId;
         [DataMember] public string VoiceModel;
         [DataMember] public string AgentId;
@@ -617,6 +619,10 @@ namespace CapriDesktop
         [DataMember] public bool HdGameRest;
         // Her voice in your mic (F66): their mic and her voice go into VB-CABLE's input for Discord or Roblox. Off out of the box.
         [DataMember] public bool VoiceInMic;
+        // Her voice in your mic's Input and Output on Settings: the mic it hears, null for the one her ears use, and the cable it
+        // plays into, null for VB-CABLE's before Steam's. Endpoint ids.
+        [DataMember] public string MixMic;
+        [DataMember] public string MixCable;
         [DataMember] public int VoicePitch;
         [DataMember] public int VoiceSpeed = 100;
         [DataMember] public int VoiceRobot;
@@ -1466,6 +1472,8 @@ namespace CapriDesktop
         private bool hotkey;
         private double leanAngle;
         private Ledge seat;
+        // Where she was stood up beside something full screen, like to doze or by a display change, until she moves.
+        private Point? asideAt;
         private bool falling;
         private Ledge fallTo;
         private double fallSpeed;
@@ -1638,7 +1646,7 @@ namespace CapriDesktop
         internal Func<string, byte[]> FreeSpeak;
         private int voiceLanguageNoted;
         private volatile bool voiceBroke;
-        private readonly Voice voice = new Voice();
+        private readonly Voice voice;
         private readonly LocalVoice kokoro;
         private readonly QwenVoice qwen;
         private readonly VoiceServer server = new VoiceServer();
@@ -1883,6 +1891,7 @@ namespace CapriDesktop
             dance = new Clip(idle);
             Takeover.Face = LoadArt("Capri.Sprite.face.png");
             testing = smoke;
+            voice = new Voice(new Speaker(smoke));
             AllowDrop = true;
             instant = smoke;
             speaker = new Speaker(smoke);
@@ -2214,12 +2223,14 @@ namespace CapriDesktop
                 double signalNow = clock.Elapsed.TotalSeconds;
                 long signalIdle = Native.IdleMilliseconds();
                 if (!testing) CheckForeground(signalNow);
+                if (!testing) CheckKeyAccess();
                 if (!testing) CheckExplore(signalNow);
                 if (preferences.ExploreAway) signalIdle = awayInput.Quiet();
                 // Showing herself sends the new launch away. While she's quitting it waits, and takes her place once she's gone.
                 if (restore.WaitOne(0)) { RestoreAtCursor(); mainframe.Restore(); if (!quitting) shown.Set(); }
                 if (startMarker != null && clock.Elapsed.TotalSeconds >= 15) Settled();
                 CheckVoiceReady();
+                CheckNextLine();
                 if (!testing) CheckFollowUp(signalNow);
                 if (!testing) CheckWatchAlong(signalNow);
                 if (!testing) CheckIdle(signalIdle);
@@ -2319,6 +2330,8 @@ namespace CapriDesktop
             listenAt = clock.Elapsed.TotalSeconds + (GreetPause + 500) / 1000.0;
             if (!testing) AgentVoice();
             if (!testing && FreeChatOn) { GetFreeVoice(); GetFreeEars(); }
+            UpdateCallEars();
+            ShowCallPanel();
             // An update can move her HD voice to a new engine: the old pack goes, and with HD on, the new one comes down.
             if (!testing) ThreadPool.QueueUserWorkItem(delegate { qwen.Tidy(); });
             if (!testing && preferences.HdVoice && !qwen.Installed) SetUpHd();
@@ -2362,7 +2375,7 @@ namespace CapriDesktop
             // Something outside Capri closing her window, like a pop-up blocker, goes in errors.txt.
             if (!quitting && !testing && e.CloseReason != CloseReason.WindowsShutDown) Brain.Log("quit", -1, "Her window was closed from outside Capri (" + e.CloseReason + ").");
             // Windows asks before it shuts down, and the shutdown can still be called off, so that doesn't start her quit clock.
-            if (!e.Cancel) { quitting = true; if (heartbeat != null && e.CloseReason != CloseReason.WindowsShutDown) heartbeat.Closing(); ClonesOff(); CheckKeepAwake(); Computer.Close(); }
+            if (!e.Cancel) { quitting = true; if (heartbeat != null && e.CloseReason != CloseReason.WindowsShutDown) heartbeat.Closing(); ClonesOff(); CheckKeepAwake(); Computer.Close(); callEars.Stop(); }
         }
 
         private void Tick()
@@ -2811,8 +2824,8 @@ namespace CapriDesktop
             {
                 Point restHip = Hip();
                 Rectangle restArea = Screen.FromPoint(restHip).WorkingArea;
-                int restX;
-                bool restLeft;
+                int restX = restHip.X;
+                bool restLeft = facingLeft;
                 if (seat != null && LiePlace(seat, restHip, restArea, preferences.Size, facingLeft, out restX, out restLeft))
                 {
                     facingLeft = restLeft;
@@ -2821,8 +2834,9 @@ namespace CapriDesktop
                     LieDown();
                     return;
                 }
-                System.Collections.Generic.List<Ledge> places = napLedges == null ? Around() : napLedges();
-                Ledge restPlace = NapPlace(places, restHip, restArea, preferences.Size, facingLeft, out restX, out restLeft);
+                // Beside something full screen she dozes there standing, not lying down over the bottom of the game, and gets down
+                // once it's gone (john_sandevistan, 3 Nov).
+                Ledge restPlace = Aside ? null : NapPlace(Around(), restHip, restArea, preferences.Size, facingLeft, out restX, out restLeft);
                 if (restPlace != null)
                 {
                     SitUp(false);
@@ -2838,7 +2852,7 @@ namespace CapriDesktop
                     frames.Start();
                     return;
                 }
-                if (!doze) { ownRest = false; return; }
+                if (!doze) { ownRest = false; nextLie = -1; return; }
                 StandUp();
             }
             if (!doze) return;
@@ -3332,8 +3346,39 @@ namespace CapriDesktop
         {
             if (IsDisposed) return;
             Ledges.Invalidate();
-            // Her clones' room was the old screen, so they go, and the windows they had go back if their spots are still on a screen.
-            BeginInvoke((Action)delegate { if (cloneWindow != null) ClonesOff(); if (seat != null) StandUp(); anchor = KeepOnScreen(anchor); Location = anchor; RenderFrame(); });
+            BeginInvoke((Action)Rescreen);
+        }
+
+        // Her clones' room was the old screen, so they go, and the windows they had go back if their spots are still on a screen. On
+        // the taskbar she stays on it as it is now, still lying or asleep: a monitor waking up stood her up off it and left her
+        // floating above it (john_sandevistan, 3 Nov). Stood up beside something full screen, she still gets down once it's gone.
+        private void Rescreen()
+        {
+            if (cloneWindow != null) ClonesOff();
+            if (!Refloor())
+            {
+                bool aside = Aside;
+                if (seat != null) StandUp();
+                anchor = KeepOnScreen(anchor);
+                if (aside) asideAt = anchor;
+            }
+            Location = anchor;
+            RenderFrame();
+        }
+
+        private bool Refloor()
+        {
+            if (seat == null || !seat.Floor || seat.Free || walking) return false;
+            Point hip = Hip();
+            Rectangle area = Screen.FromPoint(hip).WorkingArea;
+            Ledge floor = new Ledge { Floor = true, Left = area.Left, Right = area.Right, Y = area.Bottom };
+            int x = Math.Max(area.Left + (int)Math.Ceiling(preferences.Size * (SitX - PerchedBody.Left)), Math.Min(hip.X, area.Right - (int)Math.Ceiling(preferences.Size * (PerchedBody.Right - SitX))));
+            bool way = facingLeft;
+            if (lying && !LiePlace(floor, hip, area, preferences.Size, facingLeft, out x, out way)) return false;
+            seat = floor;
+            facingLeft = way;
+            anchor = Seated(x, floor.Y);
+            return true;
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -3711,6 +3756,7 @@ namespace CapriDesktop
 
         private System.Collections.Generic.List<Ledge> Around()
         {
+            if (napLedges != null) return napLedges();
             System.Collections.Generic.List<IntPtr> skip = Skip();
             IntPtr own = mainframe.IsHandleCreated ? mainframe.Handle : IntPtr.Zero;
             skip.Remove(own);
@@ -3940,7 +3986,7 @@ namespace CapriDesktop
             nudgeGap = NudgeGap;
             noticed = -1;
             nextGlance = -1;
-            if (shushed) voice.Stop();
+            if (shushed) { ownLines.Clear(); voicePreview = null; BargeIn("quiet key"); }
             if (docked) GameHud.Status(!preferences.Silent, shushed);
             if (say) Say(shushed ? "Going quiet. " + QuietKeyName + " when you want me back." : "I'm back, choom.");
         }
@@ -5337,6 +5383,10 @@ namespace CapriDesktop
         private MicMix micMix;
         private MixDevice cableThere;
         private double cableLooked = -10, micMixShown;
+        // Settings' Input row: the pick and device list it last read, and the mic's name then.
+        private string mixMicFor, mixMicName;
+        private IMixDevices mixMicFrom;
+        private double mixMicLooked = -10;
         // VB-CABLE's setup while it's open from Settings, the setup file it was unpacked to and the hold on it, and Settings' line
         // about it. The gate keeps Set up and the setup closing, which Windows reports on another thread, from crossing.
         private readonly object cableSetupGate = new object();
@@ -5359,7 +5409,7 @@ namespace CapriDesktop
                 if (now >= cableLooked + 3 || now < cableLooked)
                 {
                     cableLooked = now;
-                    try { cableThere = MicMix.Devices.Cable(); }
+                    try { cableThere = MicMix.Devices.Cable(preferences.MixCable); }
                     catch (Exception) { cableThere = null; }
                     // A cable that's come leaves the setup's last line behind.
                     if (cableThere != null && cableSetup == null) cableSetupLine = null;
@@ -5469,13 +5519,87 @@ namespace CapriDesktop
             if (preferences.VoiceInMic && micMix == null)
             {
                 micMix = new MicMix(MicMix.Devices, null);
-                micMix.Chosen = preferences.Mic;
+                micMix.Chosen = MixMicPick;
+                micMix.CableChosen = preferences.MixCable;
                 micMix.Start();
             }
             else if (!preferences.VoiceInMic && micMix != null)
             {
                 micMix.Stop();
                 micMix = null;
+            }
+        }
+
+        // The mic her mix hears: its own pick on Settings' Input, else the one her ears use.
+        private string MixMicPick { get { return preferences.MixMic ?? preferences.Mic; } }
+
+        internal string MixInputPick { get { return preferences.MixMic; } }
+
+        internal string MixOutputPick { get { return preferences.MixCable; } }
+
+        // Settings' Input for her mix (Lachy, 3 Nov: "we need to be able to change the input and output for the mixer"): a mic of
+        // its own, or null for the one her ears use.
+        internal void ChooseMixInput(string id)
+        {
+            preferences.MixMic = string.IsNullOrEmpty(id) ? null : id;
+            SavePreferences();
+            if (micMix != null) micMix.Chosen = MixMicPick;
+            mainframe.ShowVoiceInMic();
+        }
+
+        // Settings' Output for her mix: the cable she plays into, or null for VB-CABLE's before Steam's.
+        internal void ChooseMixOutput(string id)
+        {
+            preferences.MixCable = string.IsNullOrEmpty(id) ? null : id;
+            SavePreferences();
+            cableLooked = -10;
+            if (micMix != null) micMix.CableChosen = preferences.MixCable;
+            mainframe.ShowVoiceInMic();
+        }
+
+        // The mic her mix hears, by name: the one it opens for the pick, so a new pick shows at once, else the one it has open.
+        // Null when there's none. Settings asks each time it syncs, so Windows' list is read for a new pick, else at most every 3 s.
+        internal string MixInputName
+        {
+            get
+            {
+                double now = clock.Elapsed.TotalSeconds;
+                string pick = MixMicPick;
+                IMixDevices devices = MicMix.Devices;
+                if (pick != mixMicFor || devices != mixMicFrom || now >= mixMicLooked + 3 || now < mixMicLooked)
+                {
+                    mixMicFor = pick;
+                    mixMicFrom = devices;
+                    mixMicLooked = now;
+                    try { MixDevice mic = devices.Mic(pick); mixMicName = mic == null ? null : mic.Name; }
+                    catch (Exception) { mixMicName = null; }
+                }
+                if (mixMicName != null) return mixMicName;
+                MicMix running = micMix;
+                return running == null ? null : running.MicName;
+            }
+        }
+
+        // The cable her mix plays into, the chosen one or the one it picks itself, or null when there's none.
+        internal MixDevice MixOutput { get { return CableReady ? cableThere : null; } }
+
+        internal System.Collections.Generic.List<MixDevice> MixOutputs
+        {
+            get
+            {
+                try { return MicMix.Devices.Cables(); }
+                catch (Exception) { return new System.Collections.Generic.List<MixDevice>(); }
+            }
+        }
+
+        // The programs hearing her mix's far end right now, like Discord, for the setup steps to say it's working.
+        internal System.Collections.Generic.List<string> MixListeners
+        {
+            get
+            {
+                MixDevice cable = MixOutput;
+                try { return cable == null || cable.Far == null ? new System.Collections.Generic.List<string>() : MicMix.Devices.Listening(cable.Far); }
+                catch (Exception) { return new System.Collections.Generic.List<string>(); }
             }
         }
 
@@ -5644,6 +5768,7 @@ namespace CapriDesktop
 
         internal void SetVoicePitch(int semitones)
         {
+            if (chatting && !local && AfterLine(delegate { SetVoicePitch(semitones); })) return;
             VoiceFx.Pitch = Math.Max(-VoiceFx.MostPitch, Math.Min(VoiceFx.MostPitch, semitones));
             preferences.VoicePitch = VoiceFx.Pitch;
             SavePreferences();
@@ -5651,6 +5776,7 @@ namespace CapriDesktop
 
         internal void SetVoiceSpeed(int percent)
         {
+            if (chatting && !local && AfterLine(delegate { SetVoiceSpeed(percent); })) return;
             VoiceFx.Speed = Math.Max(VoiceFx.Slowest, Math.Min(VoiceFx.Fastest, percent));
             preferences.VoiceSpeed = VoiceFx.Speed;
             SavePreferences();
@@ -5658,6 +5784,7 @@ namespace CapriDesktop
 
         internal void SetVoiceRobot(int percent)
         {
+            if (chatting && !local && AfterLine(delegate { SetVoiceRobot(percent); })) return;
             int robot = Math.Max(0, Math.Min(100, percent));
             if (SpeaksHd) preferences.HdRobot = VoiceFx.HdRobot = robot;
             else if (SpeaksServer) preferences.ServerRobot = VoiceFx.ServerRobot = robot;
@@ -5667,6 +5794,7 @@ namespace CapriDesktop
 
         internal void SetVoiceGlitch(int percent)
         {
+            if (chatting && !local && AfterLine(delegate { SetVoiceGlitch(percent); })) return;
             int glitch = Math.Max(0, Math.Min(100, percent));
             if (SpeaksHd) preferences.HdVoiceGlitch = VoiceFx.HdGlitch = glitch;
             else if (SpeaksServer) preferences.ServerGlitch = VoiceFx.ServerGlitch = glitch;
@@ -5684,6 +5812,7 @@ namespace CapriDesktop
 
         internal void SetVoiceLayers(VoiceFx.Layering layers)
         {
+            if (chatting && !local && AfterLine(delegate { SetVoiceLayers(layers); })) return;
             VoiceFx.Layers = layers ?? VoiceFx.Layering.Off;
             preferences.VoiceLayers = VoiceFx.Layers.On;
             preferences.LayerPitch1 = VoiceFx.Layers.Pitch1;
@@ -6407,6 +6536,7 @@ namespace CapriDesktop
             Halt();
             hanging = false;
             walking = false;
+            if (seat != null) asideAt = seat.Aside ? anchor : (Point?)null;
             seat = null;
             coveredSince = -1;
             seatLost = -1;
@@ -6942,11 +7072,11 @@ namespace CapriDesktop
             RectangleF shape = seat != null ? PerchedBody : Body;
             Point to = Within(new Point(anchor.X + away * hop, anchor.Y), area, shape);
             if (Math.Abs(to.X - anchor.X) < size / 3) to = Within(new Point(anchor.X - away * hop, anchor.Y), area, shape);
-            bool free = seat != null && seat.Free, drop = seat != null && !free && !preferences.NoSitting;
+            bool free = seat != null && seat.Free, drop = seat != null && !free && !preferences.NoSitting, beside = free && seat.Aside;
             int freeY = free ? seat.Y : 0, shift = to.X - anchor.X;
             GlitchOut(delegate
             {
-                if (free) { int freeX = Hip().X + shift; Hop(new Ledge { Left = freeX - 8, Right = freeX + 8, Y = freeY, Floor = true, Free = true }, freeX); return; }
+                if (free) { int freeX = Hip().X + shift; Hop(new Ledge { Left = freeX - 8, Right = freeX + 8, Y = freeY, Floor = true, Free = true, Aside = beside }, freeX); return; }
                 SitUp(false);
                 seat = null;
                 hanging = false;
@@ -7149,7 +7279,7 @@ namespace CapriDesktop
         {
             bool full = FullScreen();
             CheckFullScreen(full);
-            if (!full) LeaveAside();
+            if (!full) LeaveAside(now);
             if (now < frontChecked) return;
             frontChecked = now + 1;
             Sight ahead = Computer.Glimpse();
@@ -7165,22 +7295,40 @@ namespace CapriDesktop
             if (through || fullThrough) { fullThrough = through; PassThrough(); }
             bool shouldHide = preferences.HideFullScreen && full && !gaming.Asked;
             if (fullScreenHidden == shouldHide) return;
+            // Hiding closes her bubble and her voice with it, so she finishes her line first.
+            if (shouldHide && Voicing) return;
             fullScreenHidden = shouldHide;
             if (!docked && hidden != (manualHidden || shouldHide)) ApplyHidden(manualHidden || shouldHide);
         }
 
         internal bool FullScreenDisplay { get { return fullThrough || (!testing && Native.FillsScreen()); } }
 
-        // Beside something full screen she sits on nothing, clear of the game or video. Once it's gone she goes back to a real
-        // ledge instead of staying in the middle of their screen, sitting or standing up there after a nap (john_sandevistan, 1 Nov).
-        private void LeaveAside()
+        // Beside something full screen she sits on nothing, clear of the game or video. Once it's gone she drops onto what's under
+        // her, the taskbar if nothing else, even mid-nap or stood up there by a display change, instead of staying in the middle of
+        // their screen (john_sandevistan, 1 and 3 Nov).
+        private void LeaveAside(double now)
         {
-            if (seat == null || !seat.Aside || hidden || docked || dragging || pressed || riding || walking || falling || hanging || outro != null || working != null || ownRest || napping) return;
-            seat.Aside = false;
-            if (Wander() || outro != null || seat == null || !seat.Free) return;
-            Ledge under = Ledges.Below(Around(), Hip(), 0, int.MaxValue, 0, Headroom());
-            if (under != null) GlitchOut(delegate { Hop(under, Hip().X); }, false);
+            if (!Aside || hidden || docked || dragging || pressed || riding || walking || falling || hanging || outro != null || working != null) return;
+            Point hip = Hip();
+            Ledge under = Ledges.Below(Around(), hip, 0, int.MaxValue, 0, Headroom());
+            if (under == null)
+            {
+                Rectangle area = Screen.FromPoint(hip).WorkingArea;
+                under = new Ledge { Floor = true, Left = area.Left, Right = area.Right, Y = area.Bottom };
+            }
+            LoseSeat();
+            asideAt = null;
+            fallTo = under;
+            falling = true;
+            thrown = false;
+            fallSpeed = 0;
+            fallStep = now;
+            Play(dangle);
+            frames.Start();
         }
+
+        // Beside something full screen: on her spot there, or stood up on it and not moved since.
+        private bool Aside { get { return seat != null ? seat.Aside : asideAt == anchor; } }
 
         private void StopExplore()
         {
@@ -7292,6 +7440,7 @@ namespace CapriDesktop
 
         internal void ToggleSpeaking()
         {
+            if (AfterLine(ToggleSpeaking)) return;
             preferences.Quiet = !preferences.Quiet;
             if (preferences.Quiet) { voice.Stop(); LeaveCall(); }
             SavePreferences();
@@ -7306,9 +7455,13 @@ namespace CapriDesktop
         // Her settings tool turns it off without her line, since her brain says so.
         internal void Silence(bool say = true)
         {
+            voiceOffTurn++;
+            ownLines.Clear();
+            voicePreview = null;
             if (preferences.Silent) return;
             preferences.Silent = true;
-            voice.Stop();
+            BargeIn("voice off");
+            Hush();
             qwen.Stop();
             LeaveCall();
             SavePreferences();
@@ -7336,19 +7489,20 @@ namespace CapriDesktop
         // only clears Quiet for the key that comes next.
         internal void ChooseVoiceTier(bool paid)
         {
+            if (AfterLine(delegate { ChooseVoiceTier(paid); })) return;
             if (paid && preferences.CloudVoice != ElevenLabs)
             {
                 preferences.CloudVoice = ElevenLabs;
                 SavePreferences();
             }
             bool wasSilent = preferences.Silent;
-            preferences.Silent = false;
+            if (!keepVoiceOff) preferences.Silent = false;
             if (wasSilent)
             {
                 preferences.Quiet = !paid;
                 SavePreferences();
                 if (!paid) GetFreeVoice();
-                if (!hidden && !IsDisposed && (!paid || voice.Key != null))
+                if (!preferences.Silent && !hidden && !IsDisposed && (!paid || voice.Key != null))
                 {
                     heard = "settings";
                     box.Prompt = "> sys: ";
@@ -7887,6 +8041,7 @@ namespace CapriDesktop
             pill.Above = preferences.OnTop;
             box.Above = preferences.OnTop;
             typer.TopMost = preferences.OnTop;
+            if (callPanel != null) callPanel.TopMost = preferences.OnTop;
             if (minis != null)
             {
                 minis.Above = preferences.OnTop;
@@ -7978,6 +8133,7 @@ namespace CapriDesktop
 
         internal void ChooseLocalBrain(Cloud server, string model, Pick local)
         {
+            if (AfterLine(delegate { ChooseLocalBrain(server, model, local); })) return;
             ++cloudListing;
             cloudModels = null;
             brain.Cancel();
@@ -8229,7 +8385,7 @@ namespace CapriDesktop
                 {
                     if (job != running || turn != asideVoice || IsDisposed || (chatting && !local && !Computer.Streaming) || preferences.Silent || Hushed) { ToolVoiced(turn); return; }
                     double now = clock.Elapsed.TotalSeconds;
-                    if (voiceUntil > now)
+                    if (Voicing)
                     {
                         if (tries++ < 16) ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(500); Post(play); });
                         else ToolVoiced(turn);
@@ -8749,6 +8905,7 @@ namespace CapriDesktop
         internal void ChooseModel(string name, bool keep = true)
         {
             if (name == brain.Model) return;
+            if (keep && AfterLine(delegate { ChooseModel(name, keep); })) return;
             brain.Cancel();
             ++asking;
             CloseTalk();
@@ -8827,6 +8984,7 @@ namespace CapriDesktop
         internal void ChooseTier(int tier)
         {
             if (tier == preferences.Tier) return;
+            if (AfterLine(delegate { ChooseTier(tier); })) return;
             ++cloudListing;
             brain.Cancel();
             ++asking;
@@ -8872,6 +9030,7 @@ namespace CapriDesktop
 
         internal void ForgetText()
         {
+            if (AfterLine(ForgetText)) return;
             ++cloudListing;
             brain.Cancel();
             ++asking;
@@ -8947,6 +9106,7 @@ namespace CapriDesktop
 
         internal void ForgetVoice()
         {
+            if (AfterLine(ForgetVoice)) return;
             StopChat();
             voice.Stop();
             voice.Key = null;
@@ -8961,6 +9121,7 @@ namespace CapriDesktop
 
         internal void ChooseVoice(string id)
         {
+            if (AfterLine(delegate { ChooseVoice(id); })) return;
             id = (id ?? "").Trim();
             if (id.Length == 0) id = null;
             if (id == voice.VoiceId) { ShowVoice(false); return; }
@@ -8972,6 +9133,7 @@ namespace CapriDesktop
 
         internal void ChooseVoiceModel(string id)
         {
+            if (AfterLine(delegate { ChooseVoiceModel(id); })) return;
             voice.Model = string.IsNullOrEmpty(id) ? null : id;
             preferences.VoiceModel = voice.Model;
             SavePreferences();
@@ -8992,7 +9154,7 @@ namespace CapriDesktop
             StopMicTest(false);
             preferences.Mic = string.IsNullOrEmpty(id) ? null : id;
             ears.Chosen = preferences.Mic;
-            if (micMix != null) micMix.Chosen = preferences.Mic;
+            if (micMix != null) micMix.Chosen = MixMicPick;
             SavePreferences();
             mainframe.ShowMic(MicName(preferences.Mic));
             hearingCaptureProblem = null;
@@ -9022,6 +9184,69 @@ namespace CapriDesktop
         internal const string SpeechSettings = "ms-settings:privacy-speech";
         internal void OpenSpeechSettings() { Browse(SpeechSettings); }
 
+        // A setting changed partway through her line, a preview of her voice, or a line she starts herself, like a comment, cut
+        // off the line she was saying (john_sandevistan, 3 Nov). A setting now waits for her voice to finish and applies from her
+        // next line. A preview or her own line also waits for her reply and for them talking, and only the newest preview plays.
+        // Talking over her, her quiet key and turning her voice off still stop her at once.
+        private readonly System.Collections.Generic.Queue<Action> voiceChanges = new System.Collections.Generic.Queue<Action>();
+        private readonly System.Collections.Generic.Queue<Action> ownLines = new System.Collections.Generic.Queue<Action>();
+        private Action voicePreview;
+        private int voiceOffTurn;
+        private bool keepVoiceOff, changingVoice;
+
+        // Her voice is still being made or played, past its estimate too: an answer's, a reaction's, a clone's or voice chat's.
+        private bool Voicing
+        {
+            get
+            {
+                return voice.Busy || speaker.Busy || chatTail.Enabled || clock.Elapsed.TotalSeconds < voiceUntil || answerVoice == asking || hdSpeaking == asking;
+            }
+        }
+
+        private bool LineBusy { get { return Voicing || pushing || transcribing || talkState == TalkState.Thinking || talkState == TalkState.Talking; } }
+
+        private bool AfterLine(Action change)
+        {
+            if (!Voicing && (changingVoice || voiceChanges.Count == 0)) return false;
+            int turn = voiceOffTurn;
+            voiceChanges.Enqueue(delegate
+            {
+                bool held = keepVoiceOff, changing = changingVoice;
+                keepVoiceOff = held || preferences.Silent && turn != voiceOffTurn;
+                changingVoice = true;
+                try { change(); }
+                finally { keepVoiceOff = held; changingVoice = changing; }
+            });
+            return true;
+        }
+
+        // A preview they asked for waits for her voice and for them talking, but plays over a line still showing in her bubble,
+        // and a newer preview cuts off the one she's saying, so sliding a slider hears where it ended up.
+        private bool PreviewBusy { get { return pushing || transcribing || (heard != "voice check" && (Voicing || talkState == TalkState.Thinking)); } }
+
+        private bool PreviewAfterLine(Action preview)
+        {
+            if (!PreviewBusy) return false;
+            voicePreview = preview;
+            return true;
+        }
+
+        // Settings go in even while she's hidden; her own lines would bring her back, so they wait.
+        private void CheckNextLine()
+        {
+            if (quitting || IsDisposed) return;
+            while (voiceChanges.Count > 0 && !Voicing) voiceChanges.Dequeue()();
+            if (hidden && !docked) return;
+            if (voicePreview != null && !PreviewBusy)
+            {
+                Action preview = voicePreview;
+                voicePreview = null;
+                preview();
+                return;
+            }
+            if (!LineBusy && ownLines.Count > 0) ownLines.Dequeue()();
+        }
+
         private void Tell(string shown, string line)
         {
             if (hidden) SetHidden(false);
@@ -9034,6 +9259,14 @@ namespace CapriDesktop
         // "> sys: watching" above them (Lachy, 30 Oct: testers found it too robotic).
         private void Remark(string shown, string line, bool bubbleOnly = false, byte[] prepared = null, bool ready = false)
         {
+            // Out loud it waits for her to finish and for them; in her bubble only it waits just for her own voice, so a reminder
+            // still shows in a call.
+            bool aloud = prepared != null || !(bubbleOnly || ready);
+            if (aloud ? LineBusy : voice.Busy || clock.Elapsed.TotalSeconds < voiceUntil || answerVoice == asking || hdSpeaking == asking)
+            {
+                ownLines.Enqueue(delegate { Remark(shown, line, bubbleOnly, prepared, ready); });
+                return;
+            }
             if (hidden) SetHidden(false);
             heard = shown;
             box.Prompt = "";
@@ -9226,6 +9459,7 @@ namespace CapriDesktop
         private void HeardLevel(double value)
         {
             HearingLevel(value);
+            callYou = value;
             double level = local && (preferences.ListenCapri && !pushing || earsShut || transcribing || noiseHold || !earsReady) ? 0 : value;
             pill.SetLevel(level);
             if (docked) DockLevel(level);
@@ -9455,6 +9689,7 @@ namespace CapriDesktop
 
         internal void ToggleHdCpu()
         {
+            if (AfterLine(ToggleHdCpu)) return;
             preferences.HdCpu = !preferences.HdCpu;
             qwen.CpuOnly = preferences.HdCpu;
             qwen.Stop();
@@ -9467,6 +9702,7 @@ namespace CapriDesktop
         // HD is opt-in: one download, then it wakes on the graphics card when she talks and hands back to her free voice while games run.
         private void ChooseHd()
         {
+            if (AfterLine(ChooseHd)) return;
             preferences.HdVoice = true;
             preferences.ServerVoice = false;
             hdRest = -1;
@@ -9578,6 +9814,7 @@ namespace CapriDesktop
 
         internal void ChooseVoiceStyle(string name)
         {
+            if (AfterLine(delegate { ChooseVoiceStyle(name); })) return;
             if (name == QwenVoice.Style) { ChooseHd(); return; }
             if (preferences.HdVoice || settingUpHd)
             {
@@ -9707,14 +9944,11 @@ namespace CapriDesktop
 
         internal void TestVoice()
         {
+            if (PreviewAfterLine(TestVoice)) return;
             if (preferences.Silent) { mainframe.VoiceNote(SilentNote, true); return; }
             if (voice.Key == null && Speak == null && !kokoro.Installed && !preferences.ServerVoice) { mainframe.VoiceNote("Get her free voice, or paste an ElevenLabs key.", true); return; }
             if (voice.Key != null && voice.VoiceId == null && Speak == null) { mainframe.VoiceNote("Paste your Voice ID first.", true); return; }
-            if (hidden) SetHidden(false);
-            brain.Cancel();
-            heard = "voice check";
-            box.Prompt = "> sys: ";
-            Answer(++asking, TestLine, TalkState.Talking);
+            CheckVoice(TestLine, false);
         }
 
         internal string ServerUrl { get { return server.Url; } }
@@ -9737,6 +9971,7 @@ namespace CapriDesktop
         // for that row comes back, HD and ElevenLabs step aside, and she says her check line through it.
         internal void UseVoiceServer(string url, string model, string speaker, string key, string api)
         {
+            if (AfterLine(delegate { UseVoiceServer(url, model, speaker, key, api); })) return;
             api = VoiceServer.Known(api);
             string address = ServerAddress(url, api);
             Bring(Cloudy(address, api));
@@ -9771,7 +10006,7 @@ namespace CapriDesktop
             preferences.ServerVoice = true;
             if (Cloudy(address, api)) preferences.CloudVoice = VoiceServer.CloudName(api);
             bool wasSilent = preferences.Silent;
-            preferences.Silent = false;
+            if (!keepVoiceOff) preferences.Silent = false;
             if (wasSilent || (voice.Key != null && !preferences.Quiet))
             {
                 preferences.Quiet = true;
@@ -9783,7 +10018,7 @@ namespace CapriDesktop
             if (wasSilent || api == VoiceServer.Files) GetFreeVoice();
             mainframe.Sync();
             ShowVoice();
-            TestVoice();
+            if (!preferences.Silent) TestVoice();
         }
 
         // Forget in its panel drops the key saved for that server, in use or kept aside.
@@ -9970,12 +10205,7 @@ namespace CapriDesktop
                     if (problem != null) { done(problem, true); return; }
                     done("It works. " + label + " said that in " + seconds.ToString("0.0") + " s.", false);
                     if (preferences.Silent) return;
-                    if (hidden) SetHidden(false);
-                    brain.Cancel();
-                    voice.Stop();
-                    heard = "voice check";
-                    box.Prompt = "> sys: ";
-                    Begin(++asking, TestLine, TalkState.Talking, wav);
+                    CheckVoice(TestLine, false, wav);
                 });
             });
         }
@@ -10000,6 +10230,7 @@ namespace CapriDesktop
         // ElevenLabs makes the line once; after that its audio is restyled here, so dragging around spends no more credits.
         internal void HearVoiceStyle()
         {
+            if (PreviewAfterLine(HearVoiceStyle)) return;
             bool paid = !preferences.Quiet && !voiceBroke && (Speak != null || voice.Ready);
             bool free = FreeSpeak != null || kokoro.Installed || (preferences.HdVoice && qwen.Installed) || preferences.ServerVoice;
             string line = preferences.Silent ? StyleSilent : paid || free ? StyleLine : StyleMissing;
@@ -10007,13 +10238,15 @@ namespace CapriDesktop
             CheckVoice(line, false);
         }
 
-        private void CheckVoice(string line, bool quiet)
+        private void CheckVoice(string line, bool quiet, byte[] prepared = null)
         {
+            if (PreviewAfterLine(delegate { CheckVoice(line, quiet, prepared); })) return;
             if (hidden) SetHidden(false);
             brain.Cancel();
             heard = "voice check";
             box.Prompt = "> sys: ";
-            Answer(++asking, line, TalkState.Talking, quiet);
+            if (prepared == null) Answer(++asking, line, TalkState.Talking, quiet);
+            else Begin(++asking, line, TalkState.Talking, prepared);
         }
 
         internal const string HdWaking = "One sec, waking my HD voice.";
@@ -10022,6 +10255,7 @@ namespace CapriDesktop
         // she wakes it and says the line once it's up.
         private bool WakeFor(string line)
         {
+            if (PreviewAfterLine(delegate { if (!WakeFor(line)) CheckVoice(line, true); })) return true;
             if (testing || !preferences.HdVoice || preferences.Silent || !qwen.Installed || qwen.Awake || HdStepsAside() || clock.Elapsed.TotalSeconds < hdRest) return false;
             hdLine = line;
             WakeHd();
@@ -10751,7 +10985,8 @@ namespace CapriDesktop
                 if (!LineCounts(taken, wake, clock.Elapsed.TotalSeconds)) { nameOver = false; return; }
                 transcribing = true;
                 transcribingAt = Environment.TickCount;
-                Post(delegate { Transcribe(taken, ticket, request, wake); });
+                bool fromCall = CallLine(taken.Length);
+                Post(delegate { Transcribe(taken, ticket, request, wake, fromCall); });
             }
         }
 
@@ -10799,7 +11034,7 @@ namespace CapriDesktop
             return voiced >= Ears.Rate * 3 / 10 && (voiced < Ears.Rate * 8 / 10 || high >= low * 1.2);
         }
 
-        private void Transcribe(short[][] taken, int ticket, int request, double wake = WakeLevel)
+        private void Transcribe(short[][] taken, int ticket, int request, double wake = WakeLevel, bool fromCall = false)
         {
             if (ticket != chatTicket || !local || !chatting) return;
             if (request != asking) { transcribing = false; nameOver = false; CheckEars(clock.Elapsed.TotalSeconds); return; }
@@ -10824,11 +11059,11 @@ namespace CapriDesktop
                 string problem = null;
                 try { text = Hearing.Text(samples); }
                 catch (Exception error) { problem = Voice.Short(error.Message); }
-                Post(delegate { HeardLocally(ticket, request, text, problem); });
+                Post(delegate { HeardLocally(ticket, request, text, problem, fromCall); });
             });
         }
 
-        private void HeardLocally(int ticket, int request, string text, string problem)
+        private void HeardLocally(int ticket, int request, string text, string problem, bool fromCall = false)
         {
             if (ticket != chatTicket || !chatting || !local) return;
             transcribing = false;
@@ -10845,7 +11080,7 @@ namespace CapriDesktop
             }
             if (string.IsNullOrEmpty(text)) { HearingResult(null, false); Missed("I couldn't make out any words. Try again closer to the mic.", false); return; }
             HearingResult(null, true);
-            if (CallModeOn) { HearCall(text); return; }
+            if (CallModeOn) { HearCall(text, false, fromCall); return; }
             if (!VoiceForHer(text)) return;
             if (preferences.ListenCapri && (talkState == TalkState.Talking || clock.Elapsed.TotalSeconds < voiceUntil || speaker.Busy))
             {
@@ -11388,7 +11623,7 @@ namespace CapriDesktop
         {
             // Their push-to-talk key, held: what the mic hears is theirs until they let go.
             lock (waking) if (pushed != null) { pushed.Add(chunk); return; }
-            if (local) { Gather(chunk); return; }
+            if (local) { CallHear(chunk); return; }
             lock (waking)
             {
                 if (resting)
@@ -11810,7 +12045,7 @@ namespace CapriDesktop
             }
             bool comment = remarkTicket == asking;
             double hold = reply == null ? 0 : comment ? CommentHold(reply.Length, BubbleTime) : BubbleHold(reply.Length);
-            if (replyDone >= 0 && hdSpeaking != asking && box.Leaving < 0 && (comment || (!box.Scrollable && !typer.Visible && !(local && !earsReady && asking == earsNotice))) && now > voiceUntil && now > replyDone + hold) box.Leaving = now;
+            if (replyDone >= 0 && hdSpeaking != asking && box.Leaving < 0 && (comment || (!box.Scrollable && !typer.Visible && !(local && !earsReady && asking == earsNotice))) && now > voiceUntil && !voice.Busy && !speaker.Busy && !chatTail.Enabled && now > replyDone + hold) box.Leaving = now;
             if (box.Leaving >= 0 && now - box.Leaving > 0.25) { CloseTalk(); return; }
             if (docked) { DockTalk(); return; }
             if (!box.Visible && box.Opened < 0) box.Opened = now;
@@ -12675,6 +12910,10 @@ namespace CapriDesktop
                 || Native.Covers(new Rectangle(-1920, 0, 1920, 1040), desktopMonitor) || Native.Covers(new Rectangle(0, 0, 1920, 1080), desktopMonitor)) throw new Exception("Full screen did not follow the window's own monitor.");
             checks.Add("PASS full-screen geometry includes borderless windows on another monitor");
 
+            using (Process ownProcess = Process.GetCurrentProcess())
+                if (Hands.ProgramName(ownProcess.Id) != ownProcess.ProcessName || Hands.ProgramName(-1) != "") throw new Exception("Her window list named a program differently from Windows.");
+            checks.Add("PASS her window list names a program from just its own process, the same name Windows gives it, and a gone process is blank");
+
             AwayInput desktopInput = new AwayInput();
             if (desktopInput.Quiet(100000, 60000) != 60000) throw new Exception("Away time was not seeded from Windows idle time.");
             desktopInput.Own(100010);
@@ -12884,6 +13123,7 @@ namespace CapriDesktop
         {
             NapScaleChecks(checks);
             Point napHome = anchor;
+            Point? napAsideWas = asideAt;
             Ledge napSeatWas = seat, napFallWas = fallTo;
             Clip napClipWas = clip;
             double napClipStartWas = clipStart, napNextWas = nextNap, napLieWas = nextLie, napUntilWas = restUntil, napVoiceWas = voiceUntil, napMeetWas = meetAt;
@@ -12918,6 +13158,7 @@ namespace CapriDesktop
                 voiceUntil = 0;
                 meetAt = lieBy = nextNap = nextLie = restUntil = -1;
                 seat = fallTo = null;
+                asideAt = null;
                 facingLeft = false;
                 anchor = Seated(napArea.Left + napArea.Width / 2, napShelf.Y - 30);
                 Play(idle);
@@ -12991,21 +13232,68 @@ namespace CapriDesktop
                 preferences.Motion = true;
                 preferences.NoSitting = false;
                 checks.Add("PASS nap from floor, window ledge, hanging, walking, drag and dance with a stand-in clock, even with motion or automatic sitting off; asked naps hush comments and Watch and ignore PC input until clicked; on the floor she lies on its line, never lifted off it");
-                // Moved aside for something full screen, she leaves that spot once it's gone; a spot they chose with Sit here stays.
-                napReset();
-                preferences.Motion = false;
-                Ledge napAside = new Ledge { Left = napArea.Left + napArea.Width * 3 / 4 - 8, Right = napArea.Left + napArea.Width * 3 / 4 + 8, Y = napArea.Top + napArea.Height / 2, Floor = true, Free = true, Aside = true };
-                seat = napAside;
-                anchor = Seated(napAside.Left + 8, napAside.Y);
-                LeaveAside();
-                if (seat == napAside || (seat != null && seat.Aside)) throw new Exception("She stayed sitting on nothing beside a full screen that had gone.");
+                // Moved aside for something full screen, she gets down once it's gone: onto the taskbar with no window or nothing at
+                // all under her, after a display change stood her up there, and from a nap she takes there standing, never down over
+                // the bottom of the game. A spot they chose with Sit here stays.
+                Func<System.Collections.Generic.List<Ledge>> napBoth = napLedges;
+                Ledge napAside = null;
+                Action napBeside = delegate
+                {
+                    napReset();
+                    napAside = new Ledge { Left = napArea.Left + napArea.Width * 3 / 4 - 8, Right = napArea.Left + napArea.Width * 3 / 4 + 8, Y = napArea.Top + napArea.Height / 2, Floor = true, Free = true, Aside = true };
+                    seat = napAside;
+                    anchor = Seated(napAside.Left + 8, napAside.Y);
+                    Play(perch);
+                };
+                napLedges = delegate { return new System.Collections.Generic.List<Ledge> { napFloor }; };
+                napBeside();
+                LeaveAside(napNow);
+                napTicks(0, 100);
+                if (seat != napFloor || falling || Hip().Y != napFloor.Y) throw new Exception("With no window under her she stayed beside a full screen that had gone.");
+                napBeside();
+                Rescreen();
+                if (seat != null || !Aside) throw new Exception("A display change beside a full screen lost her spot there.");
+                LeaveAside(napNow);
+                napTicks(0, 100);
+                if (seat != napFloor || falling) throw new Exception("Stood up beside a full screen by a display change, she stayed there once it had gone.");
+                napBeside();
+                napTicks(120001, 200);
+                if (!Asleep || lying || seat != null || !Aside || Hip() != new Point(napAside.Left + 8, napAside.Y)) throw new Exception("Her nap beside a full screen left her spot.");
+                LeaveAside(napNow);
+                napTicks(120001, 200);
+                if (!Asleep || !lying || seat != napFloor || Hip().Y != napFloor.Y) throw new Exception("Asleep beside a full screen that had gone, she didn't get down and sleep on the taskbar.");
+                CheckIdle(napNow, 0);
+                if (Asleep || lying || seat != null || anchor.Y + PaddingSize + (int)(preferences.Size * StandY) != napFloor.Y) throw new Exception("Woken by the mouse after that nap, she didn't stand on the taskbar.");
+                napBeside();
+                Nap(true);
+                napTicks(0, 200);
+                if (!Asleep || !napping || seat != null || !Aside) throw new Exception("An asked-for nap beside a full screen left her spot.");
+                LeaveAside(napNow);
+                napTicks(0, 200);
+                if (!Asleep || !napping || !lying || seat != napFloor) throw new Exception("An asked-for nap beside a full screen that had gone didn't carry on on the taskbar.");
+                napLedges = delegate { return new System.Collections.Generic.List<Ledge>(); };
+                napBeside();
+                LeaveAside(napNow);
+                napTicks(0, 100);
+                if (seat == null || !seat.Floor || seat.Free || seat.Y != napArea.Bottom || Hip().Y != seat.Y) throw new Exception("With nothing at all under her she didn't get down to the taskbar.");
+                napLedges = napBoth;
                 Ledge napChosen = new Ledge { Left = napAside.Left, Right = napAside.Right, Y = napAside.Y, Floor = true, Free = true };
+                napReset();
                 seat = napChosen;
                 anchor = Seated(napChosen.Left + 8, napChosen.Y);
-                LeaveAside();
+                LeaveAside(napNow);
                 if (seat != napChosen) throw new Exception("Leaving a full screen's side moved her off a spot chosen with Sit here.");
-                preferences.Motion = true;
-                checks.Add("PASS beside something full screen she sits on nothing only while it lasts, and a spot chosen with Sit here stays put");
+                // A display change, like a monitor waking up, keeps her asleep on the taskbar as it is now.
+                napReset();
+                seat = new Ledge { Floor = true, Left = napArea.Left, Right = napArea.Right, Y = napArea.Bottom - preferences.Size };
+                anchor = Seated(napArea.Left + napArea.Width / 2, seat.Y);
+                Play(perch);
+                LieDown();
+                Play(laydownSleep);
+                napping = true;
+                Rescreen();
+                if (!lying || !Asleep || !napping || seat == null || !seat.Floor || seat.Y != napArea.Bottom || Hip().Y != napArea.Bottom) throw new Exception("A display change didn't keep her asleep on the taskbar as it is now.");
+                checks.Add("PASS beside something full screen she sits on nothing only while it lasts and naps there standing; once it's gone she gets down onto the taskbar with no window or nothing at all under her, after a display change stood her up there, and mid-nap, which carries on there until the mouse stands her up on it; a spot chosen with Sit here stays put; a display change keeps her asleep on the taskbar as it is now");
                 napReset();
                 Ledge napNarrow = new Ledge { Left = napArea.Left + napArea.Width / 2 - 12, Right = napArea.Left + napArea.Width / 2 + 12, Y = napShelf.Y - 10 };
                 seat = napNarrow;
@@ -13273,7 +13561,7 @@ namespace CapriDesktop
                 gaming.Find = napGameWas; gaming.Changed = napGameChangedWas; gaming.Dock = napGameDockWas; gaming.Undock = napGameUndockWas;
                 napLedges = napPlacesWas; Think = napThinkWas; stopTest = napStopWas;
                 preferences.Motion = napMotionWas; preferences.NoSitting = napSittingWas; preferences.SleepAfter = napAfterWas; preferences.Silent = napSilentWas;
-                anchor = napHome; seat = napSeatWas; fallTo = napFallWas; clip = napClipWas; clipStart = napClipStartWas;
+                anchor = napHome; asideAt = napAsideWas; seat = napSeatWas; fallTo = napFallWas; clip = napClipWas; clipStart = napClipStartWas;
                 facingLeft = napLeftWas; falling = napFallingWas; hanging = napHangingWas; walking = napWalkingWas; lying = napLyingWas;
                 napAsked = napAskedWas; napping = napNappingWas; ownRest = napOwnWas; ownNap = napOwnNapWas; ownLie = napOwnLieWas;
                 nextNap = napNextWas; nextLie = napLieWas; restUntil = napUntilWas; voiceUntil = napVoiceWas; meetAt = napMeetWas;
@@ -18525,9 +18813,9 @@ namespace CapriDesktop
                         ClipMedia.Inspect(clipPath, out length, out decoded, out actual, out audio, out audioLength, out audioPeak);
                         using (decoded)
                         {
-                            if (Math.Abs(length - 2.2) > 0.15 || actual.Length != expected.Length) throw new Exception("The clip changed duration or dropped encoded frames: " + length + " seconds, " + actual.Length + " frames.");
+                            if (Math.Abs(length - 2.2) > 0.15 || actual.Length != 66) throw new Exception("The clip changed duration or ignored its frame rate: " + length + " seconds, " + actual.Length + " frames.");
                             for (int at = 0; at < actual.Length; at++)
-                                if (Math.Abs(actual[at] - expected[at]) > 10000) throw new Exception("The clip changed a real frame time: " + actual[at] + " instead of " + expected[at]);
+                                if (Math.Abs(actual[at] - at * 10000000L / 30) > 10000) throw new Exception("The clip changed its saved frame cadence.");
                             if (decoded == null || decoded.Width != 98 || decoded.Height != 66) throw new Exception("The clip changed frame dimensions.");
                             Color top = decoded.GetPixel(10, 10), bottom = decoded.GetPixel(10, 55), right = decoded.GetPixel(82, 12);
                             if (top.R < top.B + 100 || bottom.B < bottom.R + 100 || right.G < right.R + 100)
@@ -18535,12 +18823,12 @@ namespace CapriDesktop
                             if (audio != made.Sound) throw new Exception("The saved clip's audio report was wrong.");
                             if (audio && (Math.Abs(audioLength - 2.2) > 0.15 || audioPeak < 1000)) throw new Exception("The clip's sound lost its samples or wasn't trimmed to the video: " + audioLength + " seconds, peak " + audioPeak);
                         }
-                        checks.Add("PASS clips save an H.264 MP4 that Media Foundation reopens at 2.2 seconds with uneven frame times, 98 x 66 pixels and the first frame the right way up");
+                        checks.Add("PASS clips save an H.264 MP4 that Media Foundation reopens at 2.2 seconds and 30 fps from uneven capture, with 98 x 66 pixels and the first frame the right way up");
                         checks.Add(made.Sound ? "PASS clips decode the matching AAC sound with its samples intact and trimmed to the video's length" : "LIMIT clips: this PC couldn't encode AAC; the video saved without sound");
                         if (lastResult.Problem != null || Math.Abs(lastResult.Seconds - 1) > 0.001) throw new Exception("The requested last second wasn't saved: " + lastResult.Problem);
                         ClipMedia.Inspect(lastPath, out length, out decoded, out actual, out audio, out audioLength, out audioPeak);
                         using (decoded)
-                            if (Math.Abs(length - 1) > 0.15 || actual.Length != 3 || actual[0] != 0 || Math.Abs(actual[1] - 2000000) > 10000 || Math.Abs(actual[2] - 7000000) > 10000)
+                            if (Math.Abs(length - 1) > 0.15 || actual.Length != 30 || actual[0] != 0 || Math.Abs(actual[1] - 10000000L / 30) > 10000 || Math.Abs(actual[29] - 290000000L / 30) > 10000)
                                 throw new Exception("A shorter clip lost its first held frame or changed speed.");
                         checks.Add("PASS queued clips keep their snapshots when capture stops, trim between captured frames, and release their memory after saving");
                     }
@@ -21203,15 +21491,17 @@ namespace CapriDesktop
         }
 
         // Her live reactions in games (F67), fed a synthetic stream of moments on a clock moved by hand, each part on its own so one
-        // that fails never hides the rest: quick lines go up at once and stack to four; the feed sits on the game's screen in her
-        // Mainframe's look and never takes focus; lines fade, never repeat back to back and follow her mood; her brain's line
-        // follows only in time; Mute her, her quiet key and reduced motion are kept; the switch is saved; banners are read.
+        // that fails never hides the rest: quick lines from her brain go up at once and stack to four; the feed sits on the game's
+        // screen in her Mainframe's look and never takes focus; lines fade, and her brain is asked in her mood; a quick line is her
+        // brain's or nothing, never a fixed one or a repeat; her brain's look follows only in time; Mute her, her quiet key and
+        // reduced motion are kept; the switch is saved; banners are read.
         private void SmokeReactions(System.Collections.Generic.List<string> checks)
         {
             Section(checks, "SmokeReactQuick", delegate { ReactCheck(checks, SmokeReactQuick); });
             Section(checks, "SmokeReactFeed", delegate { ReactCheck(checks, SmokeReactFeed); });
             Section(checks, "SmokeReactFade", delegate { ReactCheck(checks, SmokeReactFade); });
             Section(checks, "SmokeReactMoods", delegate { ReactCheck(checks, SmokeReactMoods); });
+            Section(checks, "SmokeReactWritten", delegate { ReactCheck(checks, SmokeReactWritten); });
             Section(checks, "SmokeReactBrain", delegate { ReactCheck(checks, SmokeReactBrain); });
             Section(checks, "SmokeReactVoice", delegate { ReactCheck(checks, SmokeReactVoice); });
             Section(checks, "SmokeReactMotion", delegate { ReactCheck(checks, SmokeReactMotion); });
@@ -21220,12 +21510,20 @@ namespace CapriDesktop
         }
 
         // The stand-ins her live reactions' checks share: a full-screen game she doesn't know by name, a clock moved by hand, a
-        // brain that says what it's told, and ears on what goes up in the feed and what she says. What they change goes back after.
+        // brain that says what it's told for her look and writes her quick lines, and ears on what goes up in the feed and what
+        // she says. What they change goes back after.
         private sealed class ReactRig
         {
+            // Her stand-in brain's own quick lines, which never share a word, so none reads as a repeat of another.
+            internal static readonly string[] Lines = { "alpha!!", "bravo!!", "charlie!!", "echo!!", "foxtrot!!", "hotel!!", "india!!", "juliet!!", "kilo!!", "lima!!", "mike!!", "oscar!!", "papa!!", "quebec!!", "romeo!!", "sierra!!", "tango!!", "victor!!", "yankee!!", "zulu!!" };
             internal int Now = 50000000;
             internal string Brain = "SKIP";
             internal int BrainWait;
+            // A quick line it's told to write instead, how long it takes, what it was asked and with which rules.
+            internal Func<string, string> Quick;
+            internal int QuickWait, Next;
+            internal readonly System.Collections.Generic.List<string> Asks = new System.Collections.Generic.List<string>();
+            internal string Rules;
             internal byte[] Frame;
             internal Rectangle GameArea;
             internal readonly System.Collections.Generic.List<string> Fed = new System.Collections.Generic.List<string>();
@@ -21235,6 +21533,7 @@ namespace CapriDesktop
             internal Action<string, bool> Show;
             internal Func<string> Game;
             internal Func<string, string, byte[][], string> See;
+            internal Func<string, string, string> Ask;
             internal Func<Sight> Glimpse;
             internal int Pace, Late, Mic;
             internal bool Motion, Off, Silent, Shush, Hidden, Manual, Nap, NapAsked, Push, Hear;
@@ -21245,7 +21544,7 @@ namespace CapriDesktop
         private void ReactCheck(System.Collections.Generic.List<string> checks, Action<System.Collections.Generic.List<string>, ReactRig> part)
         {
             ReactRig rig = new ReactRig();
-            rig.On = Reactions.On; rig.Clock = Reactions.Clock; rig.Show = Reactions.Show; rig.Late = Reactions.BrainLate;
+            rig.On = Reactions.On; rig.Clock = Reactions.Clock; rig.Show = Reactions.Show; rig.Late = Reactions.BrainLate; rig.Ask = Reactions.Ask;
             rig.Sees = Commentary.Sees; rig.Free = Commentary.Free; rig.Moments = Commentary.Moments; rig.CommentClock = Commentary.Clock;
             rig.Game = Commentary.Game; rig.See = Commentary.See; rig.Pace = Commentary.Pace; rig.Glimpse = Computer.Glimpse; rig.Full = FullScreen;
             rig.Motion = preferences.Motion; rig.Off = preferences.NoReactions; rig.Silent = preferences.Silent; rig.Shush = shushed;
@@ -21278,6 +21577,21 @@ namespace CapriDesktop
                 Computer.Glimpse = delegate { return new Sight { Window = new IntPtr(7), Title = "Hollow Abyss", Program = "HollowAbyss", Bounds = area }; };
                 Commentary.Game = GameAhead;
                 Commentary.See = delegate(string system, string ask, byte[][] frames) { if (rig.BrainWait > 0) Thread.Sleep(rig.BrainWait); return rig.Brain; };
+                Reactions.Ask = delegate(string system, string ask)
+                {
+                    Func<string, string> told;
+                    int wait, next;
+                    lock (rig.Asks)
+                    {
+                        rig.Asks.Add(ask);
+                        rig.Rules = system;
+                        told = rig.Quick;
+                        wait = rig.QuickWait;
+                        next = rig.Next++;
+                    }
+                    if (wait > 0) Thread.Sleep(wait);
+                    return told != null ? told(ask) : ReactRig.Lines[next % ReactRig.Lines.Length];
+                };
                 reactTest = delegate(string line, bool brain) { lock (rig.Fed) rig.Fed.Add((brain ? "brain|" : "quick|") + line); };
                 reactVoiceTest = delegate(string line) { lock (rig.Said) rig.Said.Add(line); };
                 if (feed == null || feed.IsDisposed) feed = new ReactionFeed();
@@ -21288,12 +21602,13 @@ namespace CapriDesktop
             }
             finally
             {
-                // Her brain's last look finishes on the stand-in brain before anything goes back.
+                // Her brain's last look and quick lines finish on the stand-in brain before anything goes back.
                 ReactSettle(0);
                 Reactions.On = rig.On;
                 Reactions.Clock = rig.Clock;
                 Reactions.Show = rig.Show;
                 Reactions.BrainLate = rig.Late;
+                Reactions.Ask = rig.Ask;
                 Reactions.Reset();
                 Banners.Reset();
                 Commentary.Clock = rig.CommentClock;
@@ -21353,21 +21668,23 @@ namespace CapriDesktop
             return Reactions.React(kind) && ReactFed(rig, before + 1);
         }
 
-        // Pumps her window for a while, and on until her brain's look is over, for at most 5 s.
+        // Pumps her window for a while, and on until her brain's look and quick lines are over, for at most 5 s. A line handed to her
+        // window just before goes up too, so it can't land in the next check.
         private static void ReactSettle(int milliseconds)
         {
             Stopwatch waited = Stopwatch.StartNew();
-            while ((waited.ElapsedMilliseconds < milliseconds || Commentary.Thinking) && waited.ElapsedMilliseconds < 5000)
+            while ((waited.ElapsedMilliseconds < milliseconds || Commentary.Thinking || Reactions.Pending > 0) && waited.ElapsedMilliseconds < 5000)
             {
                 Application.DoEvents();
                 Thread.Sleep(2);
             }
+            Application.DoEvents();
         }
 
         private static string ReactShown(ReactRig rig) { lock (rig.Fed) return string.Join(" / ", rig.Fed.ToArray()); }
 
-        // A kill's quick line goes up within a second in a full-screen game she doesn't know by name, and a run of big moments
-        // stacks to four with the newest at the bottom.
+        // A kill's quick line from her brain goes up within a second in a full-screen game she doesn't know by name, and a run of
+        // big moments stacks to four with the newest at the bottom.
         private void SmokeReactQuick(System.Collections.Generic.List<string> checks, ReactRig rig)
         {
             ReactMust(GameAhead() == "Hollow Abyss", "A full-screen game she doesn't know by name wasn't taken for one: " + GameAhead());
@@ -21375,8 +21692,8 @@ namespace CapriDesktop
             ReactMust(Commentary.Moment("kill", null, rig.Frame, rig.Frame), "A kill in a game she doesn't know didn't get her brain's look.");
             ReactMust(ReactFed(rig, 1), "A kill's quick line never went up.");
             long took = quick.ElapsedMilliseconds;
-            ReactMust(took < 1000 && rig.Fed[0].StartsWith("quick|", StringComparison.Ordinal) && Array.IndexOf(Reactions.Kills, rig.Fed[0].Substring(6)) >= 0 && feed.Count == 1 && feed.Visible,
-                "A kill's quick line was slow or wrong: " + took + " ms, " + ReactShown(rig));
+            ReactMust(took < 1000 && rig.Fed[0] == "quick|" + ReactRig.Lines[0] && feed.Count == 1 && feed.Visible,
+                "A kill's quick line was slow or wasn't her brain's: " + took + " ms, " + ReactShown(rig));
             foreach (string kind in new[] { "death", "advancement", "win", "loss" })
             {
                 rig.Now += 300;
@@ -21387,7 +21704,7 @@ namespace CapriDesktop
             float[] slots = feed.Slots;
             ReactMust(feed.Count == Reactions.Most && stack[Reactions.Most - 1] == rig.Fed[4].Substring(6) && stack[0] == rig.Fed[1].Substring(6) && slots[0] < slots[1] && slots[1] < slots[2] && slots[2] < slots[3],
                 "The feed didn't stack to four with the newest at the bottom: " + string.Join(" / ", stack) + " at " + string.Join(", ", Array.ConvertAll(slots, slot => slot.ToString("0"))));
-            checks.Add("PASS live reactions: a moment in a full-screen game she doesn't know by name gets its quick line in the feed in " + took + " ms, and a run of big moments stacks to four with the newest at the bottom and the oldest pushed out");
+            checks.Add("PASS live reactions: a moment in a full-screen game she doesn't know by name gets her brain's quick line in the feed in " + took + " ms, and a run of big moments stacks to four with the newest at the bottom and the oldest pushed out");
         }
 
         // The feed sits on the right of the game's screen a third of the way down, clear of the top-right corner, never takes a
@@ -21457,56 +21774,144 @@ namespace CapriDesktop
             checks.Add("PASS live reactions fade after 4 s, the oldest first, and the feed goes once they have");
         }
 
-        // Her pools never give the same line twice in a row, and each kind of moment has lines in the mood it puts her in.
+        // Her brain is asked in the mood the run of the game has put her in: each kind of moment comes with three of its own lines
+        // as examples, and a run of deaths or kills is told with its count.
         private void SmokeReactMoods(System.Collections.Generic.List<string> checks, ReactRig rig)
         {
-            System.Collections.Generic.List<string> run = new System.Collections.Generic.List<string>();
-            Reactions.Show = delegate(string line, bool brain) { run.Add(line); };
-            string[] kinds = { "kill", "death", "hit", "flash", "sound", "scene", "dark", "win", "loss", "advancement" };
-            Random dice = new Random(67);
-            string wrong = null;
-            for (int round = 0; round < 400; round++)
+            Func<string, int, string> asked = delegate(string kind, int advance)
             {
-                rig.Now += 11000;
-                string kind = kinds[dice.Next(kinds.Length)];
-                int before = run.Count;
-                if (!Reactions.React(kind)) { wrong = wrong ?? "a " + kind + " after every gap got no line"; continue; }
-                if (before > 0 && string.Equals(run[before - 1], run[run.Count - 1], StringComparison.OrdinalIgnoreCase)) wrong = wrong ?? "the same line twice in a row: " + run[run.Count - 1];
+                rig.Now += advance;
+                int before;
+                lock (rig.Asks) before = rig.Asks.Count;
+                bool asking = Reactions.React(kind);
+                ReactSettle(0);
+                lock (rig.Asks) return asking && rig.Asks.Count > before ? rig.Asks[rig.Asks.Count - 1] : "(not asked)";
+            };
+            Func<string, string[], int, int> shown = delegate(string ask, string[] pool, int count)
+            {
+                int found = 0;
+                foreach (string line in pool) if (ask.IndexOf("\n- " + string.Format(line, count) + "\n", StringComparison.Ordinal) >= 0) found++;
+                return found;
+            };
+            string[] kinds = { "kill", "death", "hit", "flash", "sound", "scene", "dark", "win", "loss", "advancement" };
+            string[][] pools = { Reactions.Kills, Reactions.Deaths, Reactions.Hits, Reactions.Flashes, Reactions.Sounds, Reactions.Scenes, Reactions.Darks, Reactions.Wins, Reactions.Losses, Reactions.Unlocks };
+            string wrong = null;
+            for (int i = 0; i < kinds.Length; i++)
+            {
+                string ask = asked(kinds[i], 11000);
+                if (shown(ask, pools[i], 0) != 3) wrong = wrong ?? "a " + kinds[i] + " wasn't asked with three of its own lines: " + ask;
             }
-            ReactMust(wrong == null && run.Count == 400, "Her quick lines went wrong: " + wrong + ", " + run.Count + " lines");
+            ReactMust(wrong == null, "Her brain wasn't shown the right examples: " + wrong);
             Reactions.Reset();
-            Func<string, string> mood = delegate(string kind) { rig.Now += 3000; int before = run.Count; Reactions.React(kind); return run.Count > before ? run[run.Count - 1] : "(nothing)"; };
-            bool kindsRight = Array.IndexOf(Reactions.Hits, mood("hit")) >= 0 && Array.IndexOf(Reactions.Flashes, mood("flash")) >= 0 && Reactions.MoodOf("kill") == GameMood.Happy && Reactions.MoodOf("death") == GameMood.Hit && Reactions.MoodOf("flash") == GameMood.Surprise;
-            bool firstDeath = Array.IndexOf(Reactions.Deaths, mood("death")) >= 0;
-            mood("death");
-            string third = mood("death");
-            bool comeback = Array.IndexOf(Reactions.Comebacks, mood("kill")) >= 0;
-            mood("kill");
-            bool onFire = Array.IndexOf(Reactions.Streaks, mood("kill")) >= 0;
-            bool ended = Array.IndexOf(Reactions.Ended, mood("death")) >= 0;
-            bool teased = Array.Exists(Reactions.Again, again => string.Format(again, 3) == third);
-            ReactMust(kindsRight && firstDeath && teased && comeback && onFire && ended,
-                "Her lines didn't follow her mood: kinds " + kindsRight + ", first death " + firstDeath + ", third " + third + ", comeback " + comeback + ", streak " + onFire + ", ended " + ended);
-            checks.Add("PASS live reactions: 400 moments never gave the same line twice in a row, and her lines follow her mood: a third death in a row is teased with its count, a kill after deaths is a comeback, a third kill a streak, and a death after it stings");
+            string firstDeath = asked("death", 3000);
+            asked("death", 3000);
+            string third = asked("death", 3000);
+            string comeback = asked("kill", 3000);
+            asked("kill", 3000);
+            string onFire = asked("kill", 3000);
+            string ended = asked("death", 3000);
+            bool kindsRight = Reactions.MoodOf("kill") == GameMood.Happy && Reactions.MoodOf("death") == GameMood.Hit && Reactions.MoodOf("flash") == GameMood.Surprise;
+            bool died = shown(firstDeath, Reactions.Deaths, 0) == 3 && firstDeath.Contains("They just died.");
+            bool teased = shown(third, Reactions.Again, 3) == 3 && third.Contains("that's 3 deaths in a row");
+            bool relief = shown(comeback, Reactions.Comebacks, 0) == 3 && comeback.Contains("after dying 3 times in a row");
+            bool streak = shown(onFire, Reactions.Streaks, 0) == 3 && onFire.Contains("that's 3 in a row");
+            bool stung = shown(ended, Reactions.Ended, 0) == 3 && ended.Contains("ended their streak of 3");
+            ReactMust(kindsRight && died && teased && relief && streak && stung,
+                "Her brain wasn't asked in her mood: kinds " + kindsRight + ", first death " + died + ", third " + teased + ", comeback " + relief + ", streak " + streak + ", ended " + stung + ": " + third);
+            checks.Add("PASS live reactions ask her brain in her mood: each kind of moment comes with three of its own lines as examples, a third death in a row is told with its count and teased, a kill after deaths is a comeback, a third kill a streak, and a death after it stings");
         }
 
-        // Her brain's line follows when it lands in time and is dropped when it's late, and a slow brain is asked less.
+        // A quick line is her brain's or nothing (Lachy, 3 Nov: "Premade ones? fr? Remove that"): its line goes up as it wrote it,
+        // asked with her safety lines, the game, what happened, three examples and her last lines; a line that repeats one of hers,
+        // nearly does or copies an example is dropped; a slow or failing brain puts nothing up, never a fixed line; and a brain late
+        // three times running is only asked every 30 s until it's quick again.
+        private void SmokeReactWritten(System.Collections.Generic.List<string> checks, ReactRig rig)
+        {
+            Reactions.BrainLate = 400;
+            Func<string, string, int, Func<string, string>, bool> up = delegate(string kind, string detail, int advance, Func<string, string> write)
+            {
+                rig.Now += advance;
+                rig.Quick = write;
+                int before;
+                lock (rig.Fed) before = rig.Fed.Count;
+                bool asking = Reactions.React(kind, detail);
+                ReactSettle(0);
+                ReactSettle(150);
+                lock (rig.Fed) return asking && rig.Fed.Count > before;
+            };
+            Func<string> lastAsk = delegate { lock (rig.Asks) return rig.Asks[rig.Asks.Count - 1]; };
+            bool written = up("kill", null, 0, ask => "that boss just FOLDED");
+            string first = lastAsk(), rules = rig.Rules;
+            int examples = 0;
+            foreach (string line in Reactions.Kills) if (first.IndexOf("\n- " + line + "\n", StringComparison.Ordinal) >= 0) examples++;
+            bool banner = up("win", "The screen says VICTORY", 2000, ask => "dub secured, no notes");
+            string won = lastAsk();
+            ReactMust(written && banner && feed.Texts[feed.Count - 1] == "dub secured, no notes" && rules.Contains(Brain.Safety) && rules.Contains("about 6 words")
+                && first.Contains("(They're playing Hollow Abyss. They just took someone down.") && won.Contains("They just won. This just happened: \"The screen says VICTORY\"."),
+                "Her brain's line didn't go up as it wrote it, or it wasn't asked with her safety lines, the game and what happened: " + ReactShown(rig) + " / " + first);
+            checks.Add("PASS live reactions come from her brain: its quick line goes up as it wrote it, asked with her safety lines, the game, what happened and what the screen said");
+            bool repeated = up("death", null, 2000, ask => "That boss just folded!");
+            string seen = lastAsk();
+            bool near = up("death", null, 2000, ask => "that boss just folded again");
+            bool copied = up("death", null, 2000, ask => Regex.Match(ask, @"word for word:\n- ([^\n]+)").Groups[1].Value);
+            bool fresh = up("death", null, 2000, ask => "who even taught them to aim");
+            ReactMust(examples == 3 && seen.Contains("\n- that boss just FOLDED\n- dub secured, no notes\n"),
+                "Her brain wasn't shown three examples and her last lines: " + examples + " examples in " + first + " / " + seen);
+            checks.Add("PASS live reactions show her brain three of her lines for the moment as examples, and her last lines over the game");
+            ReactMust(!repeated && !near && !copied && fresh, "A repeat or a copied example went up, or a fresh line didn't: " + repeated + " " + near + " " + copied + " " + fresh + ", " + ReactShown(rig));
+            checks.Add("PASS live reactions drop a line from her brain that repeats one of her last lines, nearly repeats one or copies an example, and keep a fresh one");
+            rig.QuickWait = 700;
+            bool slow = up("kill", null, 2000, ask => "way too late for this one");
+            rig.QuickWait = 0;
+            bool failed = up("kill", null, 2000, ask => { throw new BrainException("No brain here."); });
+            bool cut = up("kill", null, 2000, ask => { throw new System.Net.WebException("The connection was cut."); });
+            rig.Now += 2000;
+            int asks;
+            lock (rig.Asks) asks = rig.Asks.Count;
+            bool rested = !Reactions.React("kill");
+            lock (rig.Asks) rested = rested && rig.Asks.Count == asks;
+            bool back = up("kill", null, Reactions.SlowAsk, ask => "back on time, finally");
+            string[] fed;
+            lock (rig.Fed) fed = rig.Fed.ToArray();
+            bool onlyHers = fed.Length == 4 && fed[0] == "quick|that boss just FOLDED" && fed[1] == "quick|dub secured, no notes" && fed[2] == "quick|who even taught them to aim" && fed[3] == "quick|back on time, finally";
+            ReactMust(!slow && !failed && !cut && rested && back && onlyHers,
+                "A slow or failing brain put something up, or wasn't asked less: slow " + slow + ", failed " + failed + ", cut " + cut + ", rested " + rested + ", back " + back + ", " + ReactShown(rig));
+            checks.Add("PASS live reactions show nothing, never a fixed line, when her brain answers after 2.5 s or fails, and a brain late three times running is only asked every 30 s until it's quick again");
+            Func<string> gameWas = Commentary.Game;
+            int thread = Thread.CurrentThread.ManagedThreadId, fedBefore;
+            lock (rig.Fed) fedBefore = rig.Fed.Count;
+            try
+            {
+                rig.Now += Reactions.SlowAsk;
+                rig.Quick = ask => "this moment was from the old game";
+                Commentary.Game = delegate { return Thread.CurrentThread.ManagedThreadId == thread ? "Hollow Abyss" : "Another game"; };
+                ReactMust(Reactions.React("death"), "The queued game change check did not start.");
+                ReactSettle(0);
+                lock (rig.Fed) ReactMust(rig.Fed.Count == fedBefore, "A queued reaction followed a moment into another game.");
+            }
+            finally { Commentary.Game = gameWas; }
+            checks.Add("PASS a reaction keeps the game where its moment happened and drops it if the game changes before its worker starts");
+        }
+
+        // Her brain's look follows when it lands in time and is dropped when it's late, and a slow brain is asked less.
         private void SmokeReactBrain(System.Collections.Generic.List<string> checks, ReactRig rig)
         {
             Reactions.BrainLate = 400;
             rig.Brain = "That sniper had your number.";
+            // Her look reads pictures, so it takes a moment longer than her quick line.
+            rig.BrainWait = 100;
             ReactMust(Commentary.Moment("death", null, rig.Frame, rig.Frame), "A death didn't get her brain's look.");
-            ReactMust(ReactFed(rig, 2), "Her brain's quick line didn't follow the moment: " + ReactShown(rig));
+            ReactMust(ReactFed(rig, 2), "Her brain's look didn't follow the moment: " + ReactShown(rig));
             ReactSettle(100);
             ReactMust(rig.Fed.Count == 2 && rig.Fed[0].StartsWith("quick|", StringComparison.Ordinal) && rig.Fed[1] == "brain|That sniper had your number." && feed.Texts[feed.Count - 1] == "That sniper had your number.",
-                "Her brain's line didn't follow her quick one: " + ReactShown(rig));
+                "Her brain's look didn't follow her quick line: " + ReactShown(rig));
             rig.Now += 60000;
             rig.Brain = "Took you long enough to notice.";
             rig.BrainWait = 700;
             lock (rig.Fed) rig.Fed.Clear();
             ReactMust(Commentary.Moment("death", null, rig.Frame, rig.Frame), "A second death didn't get her brain's look.");
             ReactSettle(1200);
-            ReactMust(rig.Fed.Count == 1 && rig.Fed[0].StartsWith("quick|", StringComparison.Ordinal), "A late brain line went up: " + ReactShown(rig));
+            ReactMust(rig.Fed.Count == 1 && rig.Fed[0].StartsWith("quick|", StringComparison.Ordinal), "A late look went up: " + ReactShown(rig));
             rig.BrainWait = 0;
             Reactions.Reset();
             for (int late = 0; late < 3; late++) Reactions.Looked(3000);
@@ -21515,7 +21920,7 @@ namespace CapriDesktop
             bool waits = !Reactions.Asking(rig.Now + 1000) && Reactions.Asking(rig.Now + Reactions.SlowAsk);
             Reactions.Looked(100);
             ReactMust(slow && waits && !Reactions.Slow && Reactions.Asking(rig.Now + 1000), "A slow brain wasn't asked less, or a quick one again was: " + slow + " " + waits);
-            checks.Add("PASS live reactions and her brain: its line follows the quick one when it lands in time and is dropped when it's late, and a brain late three times running is only asked every 30 s until it's quick again");
+            checks.Add("PASS live reactions and her brain's look: its line follows the quick one when it lands in time and is dropped when it's late, and a brain late three times running is only asked every 30 s until it's quick again");
         }
 
         // Out loud at most once every 8 s, never over her own voice or theirs, and Mute her and her quiet key keep it to text.
@@ -23654,6 +24059,123 @@ namespace CapriDesktop
             finally { mainframe.LayoutScale(0, 0); mainframe.SizeMainframe(wasSize); mainframe.ShowSettings(wasSettings); }
         }
 
+        private void SmokeLanguageBounds(ToolStripDropDown menu, Rectangle area, bool[] seen)
+        {
+            if (!menu.Visible || !area.Contains(menu.Bounds)) throw new Exception("The language menu leaves its screen: " + menu.Bounds + " in " + area);
+            foreach (ToolStripItem item in menu.Items)
+            {
+                if (!item.Available) continue;
+                Rectangle bounds = new Rectangle(menu.PointToScreen(item.Bounds.Location), item.Size);
+                if (!item.Visible || !area.Contains(bounds) || !menu.ClientRectangle.Contains(item.Bounds)) throw new Exception("A language item is clipped: " + item.Text + " at " + bounds + " in " + area);
+                ToolStripMenuItem choice = item as ToolStripMenuItem;
+                if (choice == null) continue;
+                if (choice.HasDropDownItems)
+                {
+                    choice.ShowDropDown();
+                    try { SmokeLanguageBounds(choice.DropDown, area, seen); }
+                    finally { choice.HideDropDown(); }
+                    continue;
+                }
+                int row = -1;
+                for (int i = 0; i < Brain.Languages.GetLength(0); i++) if ((string)choice.Tag == Brain.Languages[i, 1]) { row = i; break; }
+                if (row < 0) throw new Exception("A language item has no language: " + choice.Text);
+                string name = Brain.Languages[row, 0], english = Brain.Languages[row, 1];
+                if (choice.Text != (name == english ? name : name + " (" + english + ")") || choice.Checked != (english == Language)) throw new Exception("A language label or tick is wrong: " + choice.Text);
+                seen[row] = true;
+            }
+        }
+
+        private void SmokeLanguages(System.Collections.Generic.List<string> checks)
+        {
+            int sizeWas = MainframeSize;
+            Point atWas = mainframe.Location;
+            bool shownWas = mainframe.Visible, settingsWas = mainframe.SettingsShown;
+            FormWindowState stateWas = mainframe.WindowState;
+            string languageWas = Brain.Language, savedWas = preferences.Language;
+            ContextMenuStrip menu = null;
+            try
+            {
+                mainframe.WindowState = FormWindowState.Normal;
+                mainframe.Show();
+                mainframe.ShowSettings(true);
+                mainframe.SizeMainframe(100);
+                foreach (int percent in new[] { 100, 150, 200 })
+                {
+                    mainframe.LayoutScale(percent * 96 / 100, 100);
+                    foreach (Screen screen in Screen.AllScreens)
+                    {
+                        Rectangle area = screen.WorkingArea;
+                        int right = Math.Max(area.Left, area.Right - mainframe.Width), bottom = Math.Max(area.Top, area.Bottom - mainframe.Height);
+                        foreach (Point at in new[] { area.Location, new Point(right, area.Top), new Point(area.Left, bottom), new Point(right, bottom), new Point((area.Left + right) / 2, (area.Top + bottom) / 2), new Point(area.Right - mainframe.Width / 2, area.Bottom - mainframe.Height / 2), new Point(area.Left - mainframe.Width / 2, area.Top - mainframe.Height / 2) })
+                        {
+                            mainframe.Location = at;
+                            Rectangle work = Screen.FromControl(mainframe).WorkingArea;
+                            foreach (string language in new[] { "English", "Persian", "Japanese" })
+                            {
+                                Brain.Language = language == "English" ? null : language;
+                                mainframe.Sync();
+                                menu = mainframe.ShowLanguages();
+                                if ((string)menu.Items[0].Tag != "English" || menu.Items[1].Available != (language != "English") || (string)menu.Items[1].Tag != language) throw new Exception("The language shortcuts are wrong.");
+                                bool[] seen = new bool[Brain.Languages.GetLength(0)];
+                                try { SmokeLanguageBounds(menu, work, seen); }
+                                catch (Exception error) { throw new Exception("Language menu at " + percent + "%, Mainframe " + at + ": " + error.Message, error); }
+                                finally { menu.Close(); }
+                                for (int row = 0; row < seen.Length; row++) if (!seen[row]) throw new Exception("The language menu is missing " + Brain.Languages[row, 1] + " at " + percent + "%.");
+                            }
+                        }
+                    }
+                }
+                Brain.Language = null;
+                mainframe.Sync();
+                menu = mainframe.ShowLanguages();
+                Brain.Language = "Persian";
+                mainframe.Sync();
+                if (!menu.Visible || !menu.Items[1].Available || !mainframe.LanguageIs("Persian")) throw new Exception("Sync lost the open language menu.");
+                SmokeLanguageBounds(menu, Screen.FromControl(mainframe).WorkingArea, new bool[Brain.Languages.GetLength(0)]);
+                Brain.Language = null;
+                mainframe.Sync();
+                if (menu.Items[1].Available || !mainframe.LanguageIs("English")) throw new Exception("Sync left the current-language shortcut open for English.");
+                SmokeLanguageBounds(menu, Screen.FromControl(mainframe).WorkingArea, new bool[Brain.Languages.GetLength(0)]);
+                mainframe.LayoutScale(96, 100);
+                if (menu.Visible) throw new Exception("Scaling left the language menu open with old fonts.");
+                menu.Close();
+                for (int row = 0; row < Brain.Languages.GetLength(0); row++)
+                {
+                    string language = Brain.Languages[row, 1];
+                    Brain.Language = language == "English" ? null : language;
+                    mainframe.Sync();
+                    if (!mainframe.LanguageIs(language) || (string)menu.Items[1].Tag != language || menu.Items[1].Available != (language != "English")) throw new Exception("Sync lost the current language: " + language);
+                    foreach (ToolStripMenuItem item in Mainframe.LanguageItems(menu.Items))
+                        if (item.Checked != ((string)item.Tag == language)) throw new Exception("Sync left the wrong language ticked: " + item.Text);
+                }
+                ToolStripMenuItem persian = null;
+                foreach (ToolStripMenuItem item in Mainframe.LanguageItems(menu.Items)) if ((string)item.Tag == "Persian" && item.Owner != menu) persian = item;
+                if (persian == null) throw new Exception("Persian has no submenu item.");
+                persian.PerformClick();
+                if (Language != "Persian" || LoadPreferences().Language != "Persian" || !mainframe.LanguageIs("Persian") || (string)menu.Items[1].Tag != "Persian") throw new Exception("The Persian menu item did not select, save and tick Persian.");
+                menu = mainframe.ShowLanguages();
+                ((ToolStripMenuItem)menu.Items[0]).PerformClick();
+                menu.Close();
+                if (Language != "English" || LoadPreferences().Language != "English" || !mainframe.LanguageIs("English") || menu.Items[1].Available) throw new Exception("The English shortcut did not select, save and tick English.");
+                checks.Add("PASS language menu: every language has its native and English name, every menu and item fits Mainframe's screen at 100%, 150% and 200% from each corner, the centre and partly off screen, English and the current language stay at the top, Sync updates every tick and the open shortcut, scaling closes old menus, and Persian and English can be picked and saved");
+            }
+            finally
+            {
+                if (menu != null) menu.Close();
+                Brain.Language = languageWas;
+                preferences.Language = savedWas;
+                SavePreferences();
+                PointEars();
+                mainframe.LayoutScale(0, 0);
+                mainframe.SizeMainframe(sizeWas);
+                mainframe.Sync();
+                mainframe.ShowSettings(settingsWas);
+                mainframe.Location = atWas;
+                mainframe.WindowState = stateWas;
+                if (!shownWas) mainframe.Hide();
+            }
+        }
+
         private static void SmokeOpening(System.Collections.Generic.List<string> checks)
         {
             Func<System.Collections.Generic.List<InstalledApp>> openingCatalog = Hands.Catalog;
@@ -23963,6 +24485,272 @@ namespace CapriDesktop
             if (!done()) throw new Exception(problem);
         }
 
+        private void SmokeLineChanges(System.Collections.Generic.List<string> checks)
+        {
+            Func<string, byte[]> speakWas = Speak, freeWas = FreeSpeak;
+            bool signalsWas = signals.Enabled, quietWas = preferences.Quiet, silentWas = preferences.Silent, hdWas = preferences.HdVoice, servedWas = preferences.ServerVoice;
+            bool chattingWas = chatting, localWas = local, hiddenWas = hidden, shushedWas = shushed, dockedWas = docked;
+            Job jobWas = job;
+            string workingWas = working, modelWas = voice.Model, savedModelWas = preferences.VoiceModel;
+            int pitchWas = VoiceFx.Pitch, speedWas = VoiceFx.Speed, robotWas = VoiceFx.Robot, glitchWas = VoiceFx.Glitch;
+            int savedPitchWas = preferences.VoicePitch, savedSpeedWas = preferences.VoiceSpeed, savedRobotWas = preferences.VoiceRobot, savedGlitchWas = preferences.VoiceGlitch;
+            int waitWas = VoiceWait, freeWaitWas = FreeWait, typingWas = preferences.Typing;
+            VoiceFx.Layering layersWas = VoiceFx.Layers, savedLayers = LayersOf(preferences);
+            CloneWindow clonesWas = cloneWindow, clonesHere = null;
+            bool talkingWas = cloneTalking, hideFullWas = preferences.HideFullScreen, fullHiddenWas = fullScreenHidden, throughWas = fullThrough;
+            double cloneAtWas = cloneTalkAt;
+            int micWas = micTalked;
+            int offWas = voiceOffTurn;
+            bool keepOffWas = keepVoiceOff, changingWas = changingVoice;
+            string cloudWas = preferences.CloudVoice;
+            string[] serverWas = { server.Url, server.Api, server.Model, server.Speaker, server.Key };
+            string[] savedServer = { preferences.ServerUrl, preferences.ServerApi, preferences.ServerModel, preferences.ServerSpeaker, preferences.ServerKey };
+            string[] savedAside = { preferences.AsideUrl, preferences.AsideApi, preferences.AsideModel, preferences.AsideSpeaker, preferences.AsideKey };
+            Func<bool> fullWas = FullScreen;
+            try
+            {
+                signals.Stop();
+                CloseTalk(); Hush();
+                voiceChanges.Clear(); ownLines.Clear(); voicePreview = null;
+                FullScreen = delegate { return false; };
+                hidden = shushed = docked = chatting = local = false;
+                preferences.Quiet = preferences.Silent = preferences.HdVoice = preferences.ServerVoice = false;
+                preferences.Typing = 2;
+                job = null; working = null;
+                VoiceWait = FreeWait = 20;
+                VoiceFx.Pitch = VoiceFx.Robot = VoiceFx.Glitch = 0; VoiceFx.Speed = 100; VoiceFx.Layers = VoiceFx.Layering.Off;
+                short[] samples = new short[16000];
+                for (int at = 0; at < samples.Length; at++) samples[at] = (short)(5000 * Math.Sin(at * 0.05));
+                byte[] wav = Voice.Wave(samples, 16000);
+                Speak = FreeSpeak = delegate { return wav; };
+                Begin(++asking, "The first line is still playing.", TalkState.Talking, wav);
+                voice.Play(wav);
+                int ticket = asking, answer = answerTurn;
+                double until = voiceUntil;
+                SetVoicePitch(3);
+                HearVoiceStyle();
+                ChooseVoiceModel("next-line-model");
+                CheckNextLine();
+                if (!voice.Busy || voiceUntil != until || asking != ticket || answerTurn != answer || reply != "The first line is still playing." || voice.Model != modelWas || voicePreview == null || voiceChanges.Count != 1)
+                    throw new Exception("A voice setting or its preview cut the current line.");
+                WaitVoice(delegate { return !voice.Busy && clock.Elapsed.TotalSeconds >= until; }, "The fake setting line did not finish.");
+                CloseTalk();
+                CheckNextLine();
+                WaitVoice(delegate { return reply == StyleLine && voiceUntil > 0; }, "The held voice preview did not play next.");
+                if (voice.Model != "next-line-model" || voiceChanges.Count != 0 || voicePreview != null || VoiceFx.Pitch != 3) throw new Exception("A held voice setting was lost.");
+                checks.Add("PASS a voice setting and its preview leave a fake line playing to the end, then apply and preview the next line");
+                CloseTalk();
+
+                Begin(++asking, "Keep this line before her comment.", TalkState.Talking, wav);
+                voice.Play(wav);
+                ticket = asking; until = voiceUntil;
+                SayOwn("check-in", "Her queued check-in.");
+                Remark("watching", "Her queued prepared comment.", false, wav, true);
+                CheckNextLine();
+                if (!voice.Busy || asking != ticket || voiceUntil != until || ownLines.Count != 2 || reply != "Keep this line before her comment.") throw new Exception("Her own comment replaced a playing line.");
+                WaitVoice(delegate { return !voice.Busy && clock.Elapsed.TotalSeconds >= until; }, "The fake comment line did not finish.");
+                CloseTalk();
+                hidden = true; CheckNextLine();
+                if (ownLines.Count != 2 || asking != ticket) throw new Exception("A queued comment brought her back while hidden.");
+                hidden = false;
+                CheckNextLine();
+                WaitVoice(delegate { return reply == "Her queued check-in." && voiceUntil > 0; }, "Her queued check-in never spoke.");
+                ticket = asking; until = voiceUntil;
+                CheckNextLine();
+                if (asking != ticket || voiceUntil != until || ownLines.Count != 1) throw new Exception("A second own line cut off the queued check-in.");
+                voice.Play(wav);
+                int audio = audioTurn;
+                BargeIn();
+                if (voice.Busy || voiceUntil != 0 || audioTurn == audio) throw new Exception("Talking over her didn't stop her at once.");
+                CloseTalk();
+                CheckNextLine();
+                if (reply != "Her queued prepared comment." || ownLines.Count != 0 || voiceUntil <= 0) throw new Exception("A prepared comment was lost while it waited.");
+                checks.Add("PASS check-ins and prepared comments wait in order, leave the current line alone, and talking over her still stops her at once");
+                CloseTalk();
+
+                chatting = true;
+                VoiceFx.Pitch = VoiceFx.Robot = VoiceFx.Glitch = 0; VoiceFx.Speed = 100; VoiceFx.Layers = VoiceFx.Layering.Off;
+                speaker.Open(16000); speaker.Play(samples);
+                short[] piece = new short[320];
+                SetVoicePitch(4); SetVoiceSpeed(120); SetVoiceRobot(20); SetVoiceGlitch(10); SetVoiceLayers(layersWas.Turned(true));
+                CheckNextLine();
+                if (VoiceFx.Pitch != 0 || VoiceFx.Speed != 100 || VoiceFx.Robot != 0 || VoiceFx.Glitch != 0 || VoiceFx.Layers.On || ChatVoice(piece) != piece || voiceChanges.Count != 5 || !speaker.Busy)
+                    throw new Exception("A style change rebuilt the live voice partway through a line.");
+                WaitVoice(delegate { return !speaker.Busy; }, "The fake streamed line did not finish.");
+                CheckNextLine();
+                ChatVoice(piece);
+                if (VoiceFx.Pitch != 4 || VoiceFx.Speed != 120 || VoiceFx.Robot != 20 || VoiceFx.Glitch != 10 || !VoiceFx.Layers.On || chatFx == null || chatFx.Pitch != 4 || voiceChanges.Count != 0)
+                    throw new Exception("The next streamed line missed its new style.");
+                Hush(); chatting = false;
+                checks.Add("PASS pitch, speed, robot, glitch and layers keep the live line's style, then reach the next streamed line");
+
+                voice.Play(wav);
+                voiceUntil = 0;
+                speech = null; talkState = TalkState.Off; micTalked = Environment.TickCount - 5000;
+                if (ReactionVoiceFree()) throw new Exception("A reaction ignored sound still on the speakers.");
+                clonesHere = new CloneWindow(new Rectangle(0, 0, 300, 300), clock, idle, walk, grin, glitch, preferences.Size, Width, 1);
+                cloneWindow = clonesHere;
+                ticket = asking;
+                int clone = ++cloneTurn;
+                CloneLine(new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<int, string>> { new System.Collections.Generic.KeyValuePair<int, string>(1, "A clone line waits.") }, 0, clone);
+                if (!voice.Busy || asking != ticket) throw new Exception("A clone line cut sound still on the speakers.");
+                cloneTurn++;
+                voice.Stop();
+                cloneWindow = clonesWas; clonesHere.Dispose(); clonesHere = null;
+                checks.Add("PASS reactions and clone lines wait for sound still playing past its estimate");
+
+                working = "Waiting for her answer's voice.";
+                talkState = TalkState.Online;
+                if (!ReactionVoiceFree()) throw new Exception("The pending answer check started with reactions blocked.");
+                answerVoice = asking;
+                if (ReactionVoiceFree()) throw new Exception("A reaction spoke while an answer's audio was still being made.");
+                answerVoice = -1;
+                hdSpeaking = asking;
+                if (ReactionVoiceFree()) throw new Exception("A reaction spoke while HD answer audio was still being made.");
+                hdSpeaking = -1;
+                working = null;
+                CloseTalk();
+                checks.Add("PASS reactions wait for pending answer audio during a job after its text appears");
+
+                voice.Play(wav);
+                ticket = asking;
+                ChooseVoiceTier(false);
+                ChooseVoiceModel("muted-next-model");
+                Silence(false);
+                CheckNextLine();
+                if (!preferences.Silent || !LoadPreferences().Silent || !preferences.Quiet || voice.Model != "muted-next-model" || asking != ticket || voiceChanges.Count != 0 || voicePreview != null || Voicing)
+                    throw new Exception("A queued voice choice undid a newer voice OFF.");
+                ChooseVoiceTier(false);
+                if (preferences.Silent) throw new Exception("A new voice choice after OFF could not turn her voice on.");
+                CloseTalk();
+                preferences.Quiet = false;
+                voice.Play(wav);
+                ticket = asking;
+                UseVoiceServer("http://127.0.0.1:9", "muted-next-voice", null, null, VoiceServer.OpenAi);
+                Silence(false);
+                CheckNextLine();
+                if (!preferences.Silent || !LoadPreferences().Silent || !preferences.ServerVoice || server.Url != "http://127.0.0.1:9" || server.Model != "muted-next-voice" || asking != ticket || voiceChanges.Count != 0 || voicePreview != null || Voicing)
+                    throw new Exception("A queued voice server undid a newer voice OFF.");
+                preferences.Silent = preferences.Quiet = preferences.ServerVoice = false;
+                CloseTalk();
+                checks.Add("PASS queued voice and server choices keep their settings after a newer OFF without speaking, and a later voice choice can turn her voice back on");
+
+                voice.Play(wav);
+                ChooseVoiceModel("older-queued-model");
+                voice.Stop();
+                ChooseVoiceModel("newer-queued-model");
+                CheckNextLine();
+                if (voice.Model != "newer-queued-model" || voiceChanges.Count != 0) throw new Exception("An older queued setting replaced a newer choice after speech ended.");
+                checks.Add("PASS settings keep their order when speech ends before the waiting settings are applied");
+
+                Begin(++asking, "Keep playing while settings change.", TalkState.Talking, wav);
+                voice.Play(wav);
+                Action[] changes = {
+                    ToggleSpeaking, delegate { ChooseVoiceTier(true); }, delegate { ChooseLocalBrain(null, "line-guard-check", null); },
+                    delegate { ChooseModel("line-guard-check"); }, delegate { ChooseTier((preferences.Tier + 1) % 3); }, ForgetText, ForgetVoice,
+                    delegate { ChooseVoice("line-guard-check"); }, delegate { ChooseVoiceModel("line-guard-check"); }, ToggleHdCpu, ChooseHd,
+                    delegate { ChooseVoiceStyle(LocalVoice.Styles[0].Name); }, delegate { UseVoiceServer("http://127.0.0.1:9", "line-guard-check", null, null, VoiceServer.OpenAi); }, ToggleCallMode
+                };
+                ticket = asking; until = voiceUntil;
+                foreach (Action change in changes) change();
+                if (voiceChanges.Count != changes.Length || !voice.Busy || asking != ticket || voiceUntil != until) throw new Exception("A voice, brain or call setting stopped the current line.");
+                preferences.HideFullScreen = true; fullScreenHidden = false;
+                CheckFullScreen(true);
+                if (!gaming.Asked && (hidden || fullScreenHidden || !voice.Busy)) throw new Exception("Automatic full-screen hiding cut her voice.");
+                preferences.HideFullScreen = hideFullWas; fullScreenHidden = fullHiddenWas; fullThrough = throughWas;
+                PassThrough();
+                HearVoiceStyle(); SayOwn("check-in", "This waits for her voice.");
+                speaker.Open(16000); speaker.Play(samples); chatting = local = true;
+                Silence(false);
+                if (voice.Busy || speaker.Busy || voiceUntil != 0 || ownLines.Count != 0 || voicePreview != null || !preferences.Silent || voiceChanges.Count != changes.Length)
+                    throw new Exception("Turning her voice off left her talking, or lost a setting that was waiting.");
+                checks.Add("PASS voice, brain and call changes and full-screen hiding wait for her line, and turning her voice off stops both speakers at once, drops her waiting lines and keeps the waiting settings");
+            }
+            finally
+            {
+                voiceChanges.Clear(); ownLines.Clear(); voicePreview = null;
+                CloseTalk(); Hush(); FullScreen = fullWas;
+                cloneWindow = clonesWas; if (clonesHere != null) clonesHere.Dispose(); cloneTalking = talkingWas; cloneTalkAt = cloneAtWas;
+                preferences.HideFullScreen = hideFullWas; fullScreenHidden = fullHiddenWas; fullThrough = throughWas; micTalked = micWas; PassThrough();
+                Speak = speakWas; FreeSpeak = freeWas;
+                preferences.Quiet = quietWas; preferences.Silent = silentWas; preferences.HdVoice = hdWas; preferences.ServerVoice = servedWas;
+                chatting = chattingWas; local = localWas; hidden = hiddenWas; shushed = shushedWas; docked = dockedWas;
+                job = jobWas; working = workingWas; voice.Model = modelWas; preferences.VoiceModel = savedModelWas;
+                VoiceWait = waitWas; FreeWait = freeWaitWas; preferences.Typing = typingWas;
+                VoiceFx.Pitch = pitchWas; VoiceFx.Speed = speedWas; VoiceFx.Robot = robotWas; VoiceFx.Glitch = glitchWas; VoiceFx.Layers = layersWas;
+                preferences.VoicePitch = savedPitchWas; preferences.VoiceSpeed = savedSpeedWas; preferences.VoiceRobot = savedRobotWas; preferences.VoiceGlitch = savedGlitchWas;
+                preferences.VoiceLayers = savedLayers.On; preferences.LayerPitch1 = savedLayers.Pitch1; preferences.LayerDelay1 = savedLayers.Delay1; preferences.LayerPitch2 = savedLayers.Pitch2; preferences.LayerDelay2 = savedLayers.Delay2;
+                preferences.CloudVoice = cloudWas;
+                preferences.ServerUrl = savedServer[0]; preferences.ServerApi = savedServer[1]; preferences.ServerModel = savedServer[2]; preferences.ServerSpeaker = savedServer[3]; preferences.ServerKey = savedServer[4];
+                preferences.AsideUrl = savedAside[0]; preferences.AsideApi = savedAside[1]; preferences.AsideModel = savedAside[2]; preferences.AsideSpeaker = savedAside[3]; preferences.AsideKey = savedAside[4];
+                lock (server.Changing) { server.Url = serverWas[0]; server.Api = serverWas[1]; server.Model = serverWas[2]; server.Speaker = serverWas[3]; server.Key = serverWas[4]; }
+                voiceOffTurn = offWas; keepVoiceOff = keepOffWas; changingVoice = changingWas;
+                SavePreferences();
+                if (signalsWas) signals.Start();
+            }
+        }
+
+        private void SmokeAdminKeys(System.Collections.Generic.List<string> checks)
+        {
+            Func<string, byte[]> speakWas = Speak, freeWas = FreeSpeak;
+            Func<IntPtr> frontWas = Hands.Foreground;
+            Func<Sight> sightWas = Computer.Glimpse;
+            Func<IntPtr, bool> raisedWas = Computer.AboveHer;
+            Func<bool> fullWas = FullScreen;
+            bool signalsWas = signals.Enabled, silentWas = preferences.Silent, quietWas = preferences.Quiet, hiddenWas = hidden, shushedWas = shushed;
+            bool chattingWas = chatting, localWas = local, dockedWas = docked, hdWas = preferences.HdVoice, servedWas = preferences.ServerVoice;
+            int waitWas = VoiceWait, freeWaitWas = FreeWait;
+            Job jobWas = job;
+            IntPtr keyFrontWas = keyFront;
+            string[] warnedWas = new string[keyWarnings.Count]; keyWarnings.CopyTo(warnedWas);
+            try
+            {
+                signals.Stop(); CloseTalk(); Hush();
+                ownLines.Clear(); voicePreview = null;
+                hidden = shushed = chatting = local = docked = false;
+                preferences.Silent = preferences.Quiet = preferences.HdVoice = preferences.ServerVoice = false;
+                job = null;
+                VoiceWait = FreeWait = 20;
+                byte[] wav = Voice.Wave(new short[16000], 16000);
+                Speak = FreeSpeak = delegate { return wav; };
+                Sight genshin = new Sight { Window = new IntPtr(7101), Title = "Genshin Impact", Program = "GenshinImpact" };
+                Sight manager = new Sight { Window = new IntPtr(7102), Title = "Task Manager", Program = "Taskmgr" };
+                Sight roblox = new Sight { Window = new IntPtr(7103), Title = "Roblox", Program = "RobloxPlayerBeta" };
+                Sight front = genshin;
+                bool admin = false;
+                Hands.Foreground = delegate { return front.Window; };
+                Computer.Glimpse = delegate { return front; };
+                Computer.AboveHer = delegate(IntPtr window) { return !admin && window != IntPtr.Zero; };
+                FullScreen = delegate { return false; };
+                keyWarnings.Clear(); keyFront = IntPtr.Zero;
+                CheckKeyAccess();
+                WaitVoice(delegate { return reply == AdminKeys; }, "A game that runs as admin didn't say why her keys don't work there.");
+                CloseTalk();
+                int ticket = asking;
+                CheckKeyAccess();
+                front = manager; CheckKeyAccess();
+                front = genshin; CheckKeyAccess();
+                if (asking != ticket || reply != null || ownLines.Count != 0 || keyWarnings.Count != 1) throw new Exception("Task Manager or the same game again got her admin line.");
+                admin = true; front = roblox; CheckKeyAccess();
+                if (asking != ticket || reply != null || keyWarnings.Count != 1) throw new Exception("A game that doesn't run above her got her admin line.");
+                admin = false; front = manager; CheckKeyAccess(); front = roblox; CheckKeyAccess();
+                WaitVoice(delegate { return reply == AdminKeys; }, "A second game that runs as admin didn't get its own line.");
+                checks.Add("PASS a game that runs as admin, like Genshin Impact, gets one line on why her keys don't work there; Task Manager, the same game again and a game that doesn't run above her get nothing");
+                checks.Add("LIMIT whether Windows hides Genshin Impact's keys from her, and whether its token says it runs as admin, needs a real PC with the game");
+            }
+            finally
+            {
+                ownLines.Clear(); voicePreview = null; CloseTalk(); Hush();
+                Hands.Foreground = frontWas; Computer.Glimpse = sightWas; Computer.AboveHer = raisedWas; FullScreen = fullWas;
+                Speak = speakWas; FreeSpeak = freeWas; VoiceWait = waitWas; FreeWait = freeWaitWas; job = jobWas;
+                preferences.HdVoice = hdWas; preferences.ServerVoice = servedWas;
+                preferences.Silent = silentWas; preferences.Quiet = quietWas; hidden = hiddenWas; shushed = shushedWas; chatting = chattingWas; local = localWas; docked = dockedWas;
+                keyFront = keyFrontWas;
+                keyWarnings.Clear(); foreach (string warned in warnedWas) keyWarnings.Add(warned);
+                if (signalsWas) signals.Start();
+            }
+        }
+
         private void SmokeAnswerVoice(System.Collections.Generic.List<string> checks, string output)
         {
             Func<string, byte[]> speakWas = Speak, freeWas = FreeSpeak;
@@ -24119,11 +24907,12 @@ namespace CapriDesktop
                 asideVoiceTest = true;
                 int jobVoice = asideVoice;
                 SayAside("Private job line.", busy);
-                WaitVoice(delegate { return voiceUntil > 0; }, "The fake job line did not speak.");
                 if (asideVoice == jobVoice || answerTurn != asideTurn || audioTurn != asideAudio) throw new Exception("A job line changed the answer's audio identity.");
                 asideRelease.Set();
                 WaitVoice(delegate { return completed(asideTurn) && reply == "Private answer beside a job." && mouths != null; }, "A job voice invalidated its answer.");
-                checks.Add("PASS a job line changes its own voice generation while the pending answer still completes and speaks");
+                double answerUntil = voiceUntil;
+                WaitVoice(delegate { return voiceUntil > answerUntil; }, "The fake job line didn't speak after the answer it waited for.");
+                checks.Add("PASS a job line changes its own voice generation and waits for the answer being voiced beside it, which still completes and speaks first");
                 CloseTalk();
 
                 ManualResetEvent serverEntered = gate(), serverRelease = gate();
@@ -24795,7 +25584,22 @@ namespace CapriDesktop
                 Clock = delegate { return own.Elapsed.TotalSeconds; };
             }
 
-            public MixDevice Cable() { return CableThere; }
+            internal Func<MixDevice> CableRead;
+
+            public MixDevice Cable(string chosen) { return CableRead == null ? CableThere : CableRead(); }
+
+            // Explicit, since Cables is also the list of cables the mix opened.
+            System.Collections.Generic.List<MixDevice> IMixDevices.Cables()
+            {
+                System.Collections.Generic.List<MixDevice> cables = new System.Collections.Generic.List<MixDevice>();
+                if (CableThere != null) cables.Add(CableThere);
+                return cables;
+            }
+
+            // The programs the smoke test says are hearing the cable's far end.
+            internal readonly System.Collections.Generic.List<string> Listeners = new System.Collections.Generic.List<string>();
+
+            public System.Collections.Generic.List<string> Listening(string mic) { lock (Listeners) return new System.Collections.Generic.List<string>(Listeners); }
 
             public bool Boost(MixDevice cable, out double boost, out bool muted) { boost = FarBoost; muted = FarMuted; return cable != null && cable.Far != null && !FarUnread; }
 
@@ -25358,8 +26162,8 @@ namespace CapriDesktop
                     mix.Stop();
                 }
                 checks.Add("PASS her voice in your mic recovers: a lost mic or cable opens again within a second while her voice keeps going, a new Windows default or a new pick moves it to that mic, a cable that goes away closes the mic too and comes back with it, a busy cable is tried again, and CABLE Output is never the mic it hears, so with no other mic her voice goes in alone");
-                // Her voice goes in from her own speakers' code, at her volume, and stops when she's cut off. Her sound effects' Plain
-                // speakers stay out.
+                // Her voice goes in from her own speakers' code at a speaking level whatever her volume, so a quiet line at volume 50
+                // comes in at Speaking, and stops when she's cut off. Her sound effects' Plain speakers stay out.
                 {
                     double[] now = { 0 };
                     StandInDevices pc = MixPc(now, 48000, 48000);
@@ -25373,7 +26177,7 @@ namespace CapriDesktop
                     using (Speaker effect = new Speaker(true) { Plain = true })
                     {
                         Voice.Loudness = 50;
-                        new Voice(voiced).Play(Voice.Wave(Hum(24000, 1000, 0.4, 2), 24000));
+                        new Voice(voiced).Play(Voice.Wave(Hum(24000, 1000, 0.05, 2), 24000));
                         effect.Open(Sfx.Rate);
                         effect.Play(Hum(Sfx.Rate, 2500, 0.4, 2));
                         waitingLine = mix.Waiting;
@@ -25388,10 +26192,70 @@ namespace CapriDesktop
                     }
                     MicMix.Current = null;
                     mix.Stop();
-                    if (waitingLine != 48000 || Math.Abs(line / 0.2 - 1) > 0.03 || beep > 0.001 || waitingCut != 0 || after > 0.001)
+                    // A sine at Speaking's RMS peaks at Speaking times root 2.
+                    if (waitingLine != 48000 || Math.Abs(line / (MicMix.Speaking * Math.Sqrt(2)) - 1) > 0.03 || beep > 0.001 || waitingCut != 0 || after > 0.001)
                         throw new Exception("Her speakers didn't hand her mic mix just her voice: " + waitingLine + " samples waiting, line " + line.ToString("0.000") + ", effect " + beep.ToString("0.000") + ", " + waitingCut + " left after the cut, then " + after.ToString("0.000"));
                 }
-                checks.Add("PASS her voice in your mic only takes her voice: a line through her speaker code goes into the cable at her volume and stops when she's cut off, and her sound effects' speakers stay out");
+                checks.Add("PASS her voice in your mic only takes her voice: a quiet line through her speaker code at volume 50 goes into the cable at her speaking level (" + Db(MicMix.Speaking) + " dB RMS) and stops when she's cut off, and her sound effects' speakers stay out");
+                foreach (int cableRate in new[] { 48000, 44100, 16000 })
+                    foreach (bool steam in new[] { false, true })
+                        foreach (bool streamed in new[] { false, true })
+                        {
+                            double[] now = { 0 };
+                            StandInDevices pc = MixPc(now, cableRate, 48000);
+                            pc.Level = 0;
+                            if (steam)
+                            {
+                                pc.CableThere = new MixDevice("{0.0.0.00000000}.{stand-in-steam}", "Speakers (Steam Streaming Microphone)", "{0.0.1.00000000}.{stand-in-steam-mic}");
+                                pc.FarBoost = MicMix.SteamBoost;
+                            }
+                            using (MicMix mix = new MicMix(pc, delegate { return now[0]; }))
+                            using (Speaker voiced = new Speaker(true))
+                            {
+                                mix.Step();
+                                MicMix.Current = mix;
+                                Voice lines = new Voice(voiced);
+                                Voice.Loudness = 50;
+                                int rate = streamed ? 16000 : 24000;
+                                for (int line = 0; line < 3; line++)
+                                {
+                                    double began = now[0], hertz = 700 + line * 300;
+                                    short[] samples = new short[rate * 7 / 5];
+                                    short[] hum = Hum(rate, hertz, 0.05, 1);
+                                    Array.Copy(hum, 0, samples, rate / 5, hum.Length);
+                                    if (streamed)
+                                    {
+                                        voiced.Open(rate);
+                                        int sent = 0;
+                                        RunMix(mix, pc, now, 1.8, delegate(double at)
+                                        {
+                                            while (sent < samples.Length && sent < (at - began + 0.1) * rate)
+                                            {
+                                                short[] chunk = new short[Math.Min(rate / 20, samples.Length - sent)];
+                                                Array.Copy(samples, sent, chunk, 0, chunk.Length);
+                                                voiced.Play(chunk);
+                                                sent += chunk.Length;
+                                            }
+                                        });
+                                        if (sent != samples.Length) throw new Exception("A streamed mic mix line was not sent in full.");
+                                    }
+                                    else
+                                    {
+                                        lines.Play(Voice.Wave(samples, rate));
+                                        RunMix(mix, pc, now, 1.8, null);
+                                    }
+                                    float[] got = pc.Cables[0].Kept;
+                                    foreach (float sample in got) if (float.IsNaN(sample) || float.IsInfinity(sample)) throw new Exception("A mic mix line reached the cable with a bad sample.");
+                                    double level = ToneIn(got, cableRate, hertz, began + 0.5, 0.5) * Math.Pow(10, pc.FarBoost / 20) / Math.Sqrt(2);
+                                    double after = ToneIn(got, cableRate, hertz, began + 1.5, 0.2) * Math.Pow(10, pc.FarBoost / 20);
+                                    if (double.IsNaN(level) || double.IsInfinity(level) || Math.Abs(level / MicMix.Speaking - 1) > 0.03 || after > 0.001 || mix.Waiting != 0
+                                        || !mix.Mixing || mix.CableOpens != 1 || mix.CableLosses != 0 || mix.MicLosses != 0)
+                                        throw new Exception("Mic mix line " + (line + 1) + " came out wrong: " + (streamed ? "streamed" : "WAV") + ", " + (steam ? "Steam" : "VB-CABLE") + ", " + Khz(cableRate) + " kHz, level " + level.ToString("0.000") + ", after " + after.ToString("0.000") + ", waiting " + mix.Waiting);
+                                    if (line == 1) voiced.Clear();
+                                }
+                            }
+                        }
+                checks.Add("PASS three voice lines in a row reach the mic mix at speaking level through WAV playback and streamed chunks, across idle gaps and a clear, at 48, 44.1 and 16 kHz on VB-CABLE and Steam's trim; silence stays quiet and samples stay finite");
                 // On its own thread with stand-ins on a real clock: it starts, mixes the mic and her voice, and stops letting both go.
                 {
                     StandInDevices pc = new StandInDevices();
@@ -25465,6 +26329,14 @@ namespace CapriDesktop
                     || MicMix.CableFor(speakersHere.GetRange(0, 1), heardBy) != null || steamOverOff == null || steamOverOff.Id != "{0.0.0.00000000}.{steam}" || steamOverOff.Far != "{0.0.1.00000000}.{steam}"
                     || bothOff == null || bothOff.Id != "{0.0.0.00000000}.{cable}" || bothOff.Far != null || renamed == null || renamed.Id != "{0.0.1.00000000}.{renamed}" || MicMix.EndOf(steamOnly) != MicMix.SteamEnd || MicMix.EndOf(bothThere) != MicMix.CableEnd)
                     throw new Exception("Her mic mix picked the wrong cable or far end: " + pairOf(steamOnly) + ", " + pairOf(bothThere) + ", " + pairOf(steamOverOff) + ", " + pairOf(bothOff) + ", " + pairOf(renamed));
+                // Settings' Output: the cable they picked while it's there, else the usual one, and every cable for its menu,
+                // VB-CABLE's first, each named as Discord lists its far end.
+                MixDevice pickedSteam = MicMix.CableFor(speakersHere, heardBy, "{0.0.0.00000000}.{steam}"), pickedGone = MicMix.CableFor(speakersHere, heardBy, "{0.0.0.00000000}.{unplugged}");
+                System.Collections.Generic.List<MixDevice> listed = MicMix.Cables(speakersHere, heardBy);
+                if (pickedSteam == null || pickedSteam.Id != "{0.0.0.00000000}.{steam}" || pickedSteam.Far != "{0.0.1.00000000}.{steam}" || pickedGone == null || pickedGone.Id != bothThere.Id
+                    || listed.Count != 2 || listed[0].Id != "{0.0.0.00000000}.{cable}" || listed[1].Id != "{0.0.0.00000000}.{steam}" || Ears.ListedName("{0.0.1.00000000}.{no-such-mic}") != null
+                    || MicMix.FarName(null) != "CABLE Output (VB-Audio Virtual Cable)" || MicMix.FarName(new MixDevice("{0.0.0.00000000}.{steam}", "Speakers (Steam Streaming Microphone)")) != "Microphone (Steam Streaming Microphone)")
+                    throw new Exception("Settings' Output picked the wrong cable: " + pairOf(pickedSteam) + ", " + pairOf(pickedGone) + ", " + listed.Count + " listed");
                 double[] steamNow = { 0 };
                 StandInDevices steamPc = MixPc(steamNow, 48000, 48000);
                 steamPc.CableThere = new MixDevice("{0.0.0.00000000}.{stand-in-steam}", "Speakers (Steam Streaming Microphone)", "{0.0.1.00000000}.{stand-in-steam-mic}");
@@ -25520,7 +26392,7 @@ namespace CapriDesktop
                     || Math.Abs(upTrim - Math.Pow(10, -1.5)) > 0.0005 || Math.Abs(keptTrim - Math.Pow(10, -1.5)) > 0.0005 || Math.Abs(guessedTrim - Math.Pow(10, -1.5)) > 0.0005
                     || mutedProblem != MicMix.MutedLine(MicMix.SteamEnd) || offProblem != MicMix.OffLine(MicMix.SteamEnd))
                     throw new Exception("Steam's virtual mic came out wrong: mic at " + Db(steamLevel) + " dBFS, trim " + steamTrim.ToString("0.0000") + " then " + turnedTrim.ToString("0.0000") + ", up " + upTrim.ToString("0.0000") + ", kept " + keptTrim.ToString("0.0000") + ", guessed " + guessedTrim.ToString("0.0000") + ", problems " + (steamProblem ?? "-") + " then " + (mutedProblem ?? "-") + " then " + (offProblem ?? "-"));
-                checks.Add("PASS her voice in your mic uses Steam's virtual mic when there's no VB-CABLE (VB-CABLE first when both are, and a cable whose far end is on before one Windows has turned off), finds each cable's own far end, renamed or not, plays 30 dB under Windows' +30 dB on Steam Streaming Microphone so their mic comes out at " + Db(steamLevel) + " dBFS like VB-CABLE's -12, follows that volume down or up within a quarter second, keeps the last trim or Steam's usual +30 dB when Windows won't say, and says when Windows has the far end muted or turned off");
+                checks.Add("PASS her voice in your mic uses Steam's virtual mic when there's no VB-CABLE (VB-CABLE first when both are, and a cable whose far end is on before one Windows has turned off), or the one picked on Settings' Output while it's there, finds each cable's own far end, renamed or not, names it as Discord lists it, plays 30 dB under Windows' +30 dB on Steam Streaming Microphone so their mic comes out at " + Db(steamLevel) + " dBFS like VB-CABLE's -12, follows that volume down or up within a quarter second, keeps the last trim or Steam's usual +30 dB when Windows won't say, and says when Windows has the far end muted or turned off");
                 checks.Add("LIMIT her voice in your mic on real devices needs a PC with VB-CABLE or Steam's virtual mic: friends in Discord or Roblox hearing you and her through CABLE Output or Steam Streaming Microphone, how it sounds, the cable's own delay on top of hers, a mic near speakers picking her up a second time (headphones avoid it), and a Bluetooth headset's mic dropping it to call quality while the mix has it open");
             }
             finally
@@ -25541,6 +26413,8 @@ namespace CapriDesktop
             Section(checks, "SmokeComments", delegate { SmokeComments(checks); });
             Section(checks, "SmokeOpening", delegate { SmokeOpening(checks); });
             Section(checks, "SmokeVoiceWaits", delegate { SmokeVoiceWaits(checks); });
+            Section(checks, "SmokeLineChanges", delegate { SmokeLineChanges(checks); });
+            Section(checks, "SmokeAdminKeys", delegate { SmokeAdminKeys(checks); });
             Section(checks, "SmokeAnswerVoice", delegate { SmokeAnswerVoice(checks, output); });
             Section(checks, "SmokeVoiceLanguages", delegate { SmokeVoiceLanguages(checks, output); });
             Section(checks, "SmokeVault", delegate { SmokeVault(checks); });
@@ -28507,8 +29381,7 @@ namespace CapriDesktop
                                 if (discordLineOp != 1 || discordLine == null || discordLine.IndexOf("\"cmd\":\"SET_ACTIVITY\"", StringComparison.Ordinal) < 0 || discordLine.IndexOf("\"details\":\"Dancing to music\"", StringComparison.Ordinal) < 0 || discordLine.IndexOf("\"large_image\":\"capri\"", StringComparison.Ordinal) < 0 || discordLine.IndexOf("\"pid\":" + discordPid, StringComparison.Ordinal) < 0 || discordLine.IndexOf("\"start\":", StringComparison.Ordinal) < 0 || discordLine.IndexOf("\"label\":\"Get Capri\"", StringComparison.Ordinal) < 0) throw new Exception("Her Discord status line was wrong: " + discordLineOp + " " + discordLine);
                                 if (discordSeen != "Showing: Dancing to music" || !discordHungUp) throw new Exception("Her Discord status didn't settle or hang up: " + discordSeen + ", hung up " + discordHungUp);
                                 if (Presence.Look("Plugged in") != "plugged" || Presence.Look("Playing a game") != "game" || Presence.Look("Streaming") != "live" || Presence.Look("Using the computer") != "computer" || Presence.Look("Multiplying") != "clones"
-                                    || Presence.Badge("Using the computer") != "cursor" || Presence.Badge("Playing a game") != "controller" || Presence.Badge("Plugged in") != null || Presence.Header("Voice chatting") != 2 || Presence.Header("Plugged in") != 0
-                                    || Presence.Flickered("Plugged in", 0) != "Plugged in" || Presence.Flickered("Plugged in", 1) == "Plugged in" || Presence.Flickered("Plugged in", 1).Length != 10) throw new Exception("Her Discord looks were picked wrong.");
+                                    || Presence.Badge("Using the computer") != "cursor" || Presence.Badge("Playing a game") != "controller" || Presence.Badge("Plugged in") != null || Presence.Header("Voice chatting") != 2 || Presence.Header("Plugged in") != 0) throw new Exception("Her Discord looks were picked wrong.");
                                 string discordMoving = null, discordFellBack = null;
                                 Presence.PipeName = "capri-smoke-moving-" + Process.GetCurrentProcess().Id + "-ipc-";
                                 Presence.AppId = "1431234567890123456";
@@ -28541,7 +29414,7 @@ namespace CapriDesktop
                                     Presence.AppId = discordAppWas;
                                     Presence.ArtLive = discordArtWas;
                                 }
-                                if (discordMoving == null || discordMoving.IndexOf("assets\\/presence\\/game.gif", StringComparison.Ordinal) < 0 || discordMoving.IndexOf("assets\\/presence\\/controller.gif", StringComparison.Ordinal) < 0 || discordMoving.IndexOf("\"size\":[14,9999]", StringComparison.Ordinal) < 0) throw new Exception("Her moving Discord status was wrong: " + discordMoving);
+                                if (discordMoving == null || discordMoving.IndexOf("assets\\/presence\\/game.gif?v=9.9.9\"", StringComparison.Ordinal) < 0 || discordMoving.IndexOf("assets\\/presence\\/controller.gif?v=9.9.9\"", StringComparison.Ordinal) < 0 || discordMoving.IndexOf("\"size\":[14,9999]", StringComparison.Ordinal) < 0 || discordMoving.IndexOf("\"details\":\"Playing a game\"", StringComparison.Ordinal) < 0) throw new Exception("Her moving Discord status was wrong: " + discordMoving);
                                 if (discordFellBack == null || discordFellBack.IndexOf("\"large_image\":\"capri\"", StringComparison.Ordinal) < 0 || discordFellBack.IndexOf("\"party\"", StringComparison.Ordinal) >= 0 || discordFellBack.IndexOf("\"details\":\"Playing a game\"", StringComparison.Ordinal) < 0) throw new Exception("Her status didn't go back to the plain line when Discord said no: " + discordFellBack);
                                 Clip discordClipWas = clip;
                                 Job discordJobWas = job;
@@ -28580,7 +29453,7 @@ namespace CapriDesktop
                                 preferences.NoDiscord = discordOffWas;
                                 mainframe.Sync();
                                 if (new Preferences().NoDiscord || !discordShownOn || !discordTurnedOff || !discordBackOn) throw new Exception("The Show on Discord switch went wrong: shown " + discordShownOn + ", off " + discordTurnedOff + ", back on " + discordBackOn);
-                                checks.Add("PASS Discord status: on by default, a pretend Discord hears her hello with the app's id and 'Dancing to music' with her picture, start time and Get Capri button, she hangs up when it's turned off, her moving art, glitch controller and clone count go out and fall back to the plain line if Discord says no, her states read Plugged in, Dancing to music, Dancing (asked, with no music), Asleep and Voice chatting, and the Mainframe switch turns it off and back on");
+                                checks.Add("PASS Discord status: on by default, a pretend Discord hears her hello with the app's id and 'Dancing to music' with her picture, start time and Get Capri button, she hangs up when it's turned off, her moving art and glitch controller (with her version on the end so Discord fetches them fresh), plain words and clone count go out and fall back to the plain line if Discord says no, her states read Plugged in, Dancing to music, Dancing (asked, with no music), Asleep and Voice chatting, and the Mainframe switch turns it off and back on");
                             }
                             Clip[] strips = { idle, blink, blinkGlitch, grin, glitch, dangle, sleep, wake, perch, perchBlink, perchBlinkGlitch, perchGlitch, idle };
                             int[] cells = { 0, 1, 1, 0, 1, 3, 0, 4, 8, 1, 1, 1, 0 };
@@ -32783,6 +33656,7 @@ namespace CapriDesktop
                             if (pageOverlap != null) throw new Exception("Settings controls overlap: " + pageOverlap);
                             string pageOutside = mainframe.Outside();
                             if (pageOutside != null) throw new Exception("A settings control pokes out of the page: " + pageOutside);
+                            SmokeLanguages(checks);
                             // Her default personality and safety lines are in code, her reply rules come last, and her chat and voice-chat prompts start with all three.
                             const string todaysPersona = "2975408ad8bc6d515aa950c64ad896f5890dfdfa3eb039b105a4f972eeb51e14";
                             Func<string, string> personaHash = delegate(string text) { using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(new System.Text.UTF8Encoding(false).GetBytes(text))).Replace("-", "").ToLowerInvariant(); };
@@ -32889,6 +33763,19 @@ namespace CapriDesktop
                             if (!shortOpened || !shortRow || !shortBottom || shortOverlap != null || !shortTop || shortTabs != null || !shortTabbed || shortPerch != "30 fps | -" || !shortLeft || mainframe.Scrolled != 0 || !mainframe.PerchFits) throw new Exception("Settings on a short screen went wrong: opened " + shortOpened + ", row " + shortRow + ", bottom " + shortBottom + ", overlap " + shortOverlap + ", top " + shortTop + ", tab " + shortTabs + "/" + shortTabbed + ", perch " + shortPerch + ", left " + shortLeft + ", now " + mainframe.ScrollStatus + " scrolled " + mainframe.Scrolled);
                             checks.Add("PASS short screens: Settings shrinks to fit a screen 480 px tall; a turn of the wheel over a slider scrolls the page and its header one row and leaves the slider alone; scrolling down brings the hide key into view and reaches the end of the page, at the top Back is back where it was; nothing overlaps; leaving Settings puts it all back");
                             checks.Add(shortTabLimit == null ? "PASS short Settings keyboard walk: Back takes focus, Tab scrolls to every control it lands on including the quiet key, and Back returns to the top" : "LIMIT short Settings keyboard walk: " + shortTabLimit);
+                            double scrollFrame = mainframe.FrameCost();
+                            if (mainframe.Scrolled != 0) throw new Exception("Timing Settings' scrolling left the page moved.");
+                            checks.Add((scrollFrame <= 34 ? "PASS" : "LIMIT") + " Settings scrolls at " + scrollFrame.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " ms a frame here, with every control moved in one batch and the page painted");
+                            using (Mainframe scrolling = new Mainframe(this, null, "0.8.2"))
+                            {
+                                scrolling.ShortScreen = 480;
+                                scrolling.ShowSettings(true);
+                                scrolling.Wheel(-1, false);
+                                if (!scrolling.Gliding) throw new Exception("The scrolling cleanup check did not start a glide.");
+                                scrolling.Dispose();
+                                if (scrolling.Gliding) throw new Exception("A disposed Mainframe kept its scrolling timer running.");
+                            }
+                            checks.Add("PASS disposing a Mainframe during a glide stops its scrolling timer");
                             // Her Mainframe size (Zenni's Virtual Super Resolution ask): 150% grows Settings with nothing overlapping or poking
                             // out and is saved, and Auto puts it back as it was.
                             float sizedFrom = mainframe.Zoom;
@@ -33053,6 +33940,144 @@ namespace CapriDesktop
                                     || mixAlone != "on | open | " + MicMix.NoMic + " | -" + mixNote || mixGone != "on | open | " + MicMix.Missing + " | Set up" + creditNote || mixOff != mixMissing || !mixStopped || !mixUnsaved || mixSimpleFits != null)
                                     throw new Exception("Her voice in your mic's Settings went wrong: " + string.Join(" / ", new[] { mixMissing, mixMissingFits, mixRefused, mixStayedOff.ToString(), mixBrowsed, creditOpened, mixSetupOpen, setupUnpacked.ToString(), setupHeld.ToString(), mixSetupDone, setupTidied.ToString(), mixDeclined, mixSteam, mixSteamFits, mixSteamOff, mixReady, mixOn, mixSaved.ToString(), mixWired.ToString(), mixOnFits, mixMoved, mixAlone, mixGone, mixOff, mixStopped.ToString(), mixUnsaved.ToString(), mixSimpleFits }));
                                 checks.Add("PASS her voice in your mic in Settings: without a cable the switch is locked, the note credits VB-CABLE as donationware from vb-cable.com and opens its page, and the line says it needs VB-CABLE (free); Set up unpacks VB-Audio's pack as she carries it and opens its setup (a stand-in here) with the unpacked setup held so nothing can change it, says to click Install Driver while it's open and to restart once it closes, tidies the unpacked files and says so when Windows' prompt is turned down; with Steam's virtual mic the switch opens and the note says to pick Steam Streaming Microphone, and the line says to turn it on when Windows has it off; with VB-CABLE the switch starts the mix with the mic picked under VOICE and is saved, a new pick moves it, no mic says only her voice goes in, VB-CABLE going away says it's needed again and the switch still turns off and stops it, and the rows fit in Advanced and Simple Settings");
+                            });
+                            // Her voice in your mic's Input, Output and setup window (Lachy, 3 Nov: "we need to be able to change the input
+                            // and output for the mixer as well / And make it clear how to set it up too"), on stand-in devices: the window
+                            // says what to do first, the exact name to pick in Discord and who hears it now, and its switch starts the mix;
+                            // Input moves a running mix to a mic of its own and back, and her ears' pick leaves that one alone; Output's pick
+                            // is saved and reaches the mix; her mainframe tool opens the window as "mixer", and it fits at 100, 150 and 200%.
+                            Section(checks, "SmokeMixSetup", delegate
+                            {
+                                IMixDevices setupDevicesWas = MicMix.Devices;
+                                string setupMicWas = preferences.Mic, setupMixMicWas = preferences.MixMic, setupMixCableWas = preferences.MixCable;
+                                StandInDevices setupPc = new StandInDevices();
+                                const string setupHeadset = "{0.0.1.00000000}.{stand-in-headset}", setupCable = "{0.0.0.00000000}.{stand-in-cable}";
+                                const string vbName = "CABLE Output (VB-Audio Virtual Cable)", steamName = "Microphone (Steam Streaming Microphone)";
+                                MixDevice steamCable = new MixDevice("{0.0.0.00000000}.{stand-in-steam}", "Speakers (Steam Streaming Microphone)", "{0.0.1.00000000}.{stand-in-steam-mic}");
+                                string noCable, steamOff, steamFarOff, vbOn, vbObs, vbAll, rowsOwn, rowsBack, steamDiscord, at100, at150, at200, toolSaid, toolShown;
+                                bool inputSaved, earsLeft, outputSaved, outputBack, toolValid;
+                                try
+                                {
+                                    preferences.MixMic = null;
+                                    preferences.MixCable = null;
+                                    // No cable yet: get VB-CABLE first, and VB-CABLE's far end is the one to pick in Discord.
+                                    MicMix.Devices = new StandInDevices();
+                                    cableLooked = -10;
+                                    mainframe.ShowMixWindow();
+                                    mainframe.ShowVoiceInMic();
+                                    noCable = mainframe.MixShown;
+                                    bool echoStep = false, noiseStep = false;
+                                    foreach (Form sheet in mainframe.OwnedForms)
+                                        if (sheet.Text == "Her voice in your mic")
+                                            foreach (Control mixStep in sheet.Controls)
+                                            {
+                                                echoStep |= mixStep.Visible && mixStep.Text == "4   Echo Cancellation: Off";
+                                                noiseStep |= mixStep.Visible && mixStep.Text == "5   Noise Suppression: None. Both can cut her voice after the first line.";
+                                            }
+                                    if (!echoStep || !noiseStep) throw new Exception("The mixer setup left out Discord's echo or noise settings.");
+                                    // Steam's virtual mic with the switch off: turn it on, and pick Steam's far end by its full name.
+                                    setupPc.CableThere = steamCable;
+                                    setupPc.Mics.Add(new MixDevice(MixMicId, "Microphone (stand-in)"));
+                                    setupPc.Mics.Add(new MixDevice(setupHeadset, "Headset Microphone (stand-in)"));
+                                    setupPc.DefaultMic = MixMicId;
+                                    MicMix.Devices = setupPc;
+                                    cableLooked = -10;
+                                    mainframe.ShowVoiceInMic();
+                                    steamOff = mainframe.MixShown;
+                                    // Its far end turned off in Windows: turn that on first.
+                                    setupPc.CableThere = new MixDevice(steamCable.Id, steamCable.Name);
+                                    cableLooked = -10;
+                                    mainframe.ShowVoiceInMic();
+                                    steamFarOff = mainframe.MixShown;
+                                    // VB-CABLE, switched on from the window: going in, and who hears it, Discord's test builds as Discord.
+                                    setupPc.CableThere = new MixDevice(setupCable, "CABLE Input (VB-Audio Virtual Cable)", "{0.0.1.00000000}.{stand-in-cable-out}");
+                                    cableLooked = -10;
+                                    mainframe.ShowVoiceInMic();
+                                    mainframe.FlipMix();
+                                    MicMix setupMix = micMix;
+                                    WaitSound(delegate { return setupMix != null && setupMix.Mixing && setupMix.MicName == "Microphone (stand-in)" && setupMix.Problem == null; }, "The setup window's switch didn't start her voice in your mic.");
+                                    mainframe.ShowVoiceInMic();
+                                    vbOn = mainframe.MixShown;
+                                    lock (setupPc.Listeners) setupPc.Listeners.Add("obs64");
+                                    mainframe.ShowVoiceInMic();
+                                    vbObs = mainframe.MixShown;
+                                    lock (setupPc.Listeners) setupPc.Listeners.AddRange(new[] { "Discord", "RobloxPlayerBeta", "DiscordPTB" });
+                                    mainframe.ShowVoiceInMic();
+                                    vbAll = mainframe.MixShown;
+                                    // Input: a mic of its own moves the running mix and is saved, her ears' pick leaves it alone, and back.
+                                    ChooseMixInput(setupHeadset);
+                                    rowsOwn = mainframe.MixRowsShown;
+                                    WaitSound(delegate { return setupMix.MicName == "Headset Microphone (stand-in)"; }, "Settings' Input didn't move her voice in your mic: " + setupMix.MicName);
+                                    inputSaved = preferences.MixMic == setupHeadset && LoadPreferences().MixMic == setupHeadset;
+                                    ChooseMic(MixMicId);
+                                    earsLeft = setupMix.Chosen == setupHeadset;
+                                    ChooseMixInput(null);
+                                    rowsBack = mainframe.MixRowsShown;
+                                    WaitSound(delegate { return setupMix.MicName == "Microphone (stand-in)"; }, "Settings' Input didn't go back to her ears' mic: " + setupMix.MicName);
+                                    // Output: the pick is saved and reaches the mix, and Automatic clears it.
+                                    ChooseMixOutput(setupCable);
+                                    outputSaved = preferences.MixCable == setupCable && LoadPreferences().MixCable == setupCable && setupMix.CableChosen == setupCable;
+                                    ChooseMixOutput(null);
+                                    outputBack = preferences.MixCable == null && LoadPreferences().MixCable == null && setupMix.CableChosen == null;
+                                    // Steam's virtual mic with Discord hearing it, as on Lachy's PC, for the pictures.
+                                    setupPc.CableThere = steamCable;
+                                    setupMix.CableChosen = null;
+                                    WaitSound(delegate { return setupMix.Mixing && setupMix.CableName == steamCable.Name && setupMix.MicName != null && setupMix.Problem == null; }, "Her voice in your mic didn't move to Steam's virtual mic: " + setupMix.CableName + ", " + setupMix.Problem);
+                                    lock (setupPc.Listeners) { setupPc.Listeners.Clear(); setupPc.Listeners.Add("Discord"); }
+                                    cableLooked = -10;
+                                    mainframe.ShowVoiceInMic();
+                                    steamDiscord = mainframe.MixShown;
+                                    snap("mainframe-settings-mixer-rows.png");
+                                    float setupMachine = mainframe.Px(1000) / 1000f;
+                                    at100 = mainframe.MixSheetAt(1f / setupMachine, Path.Combine(output, "mixer-100.png"));
+                                    at150 = mainframe.MixSheetAt(1.5f / setupMachine, Path.Combine(output, "mixer-150.png"));
+                                    at200 = mainframe.MixSheetAt(2f / setupMachine, Path.Combine(output, "mixer-200.png"));
+                                    // Her mainframe tool opens it as "mixer".
+                                    mainframe.CloseMix();
+                                    toolValid = Hands.Valid("mainframe", new ToolArguments { Name = "mixer" });
+                                    toolSaid = MainframeTool("mixer");
+                                    toolShown = mainframe.MixShown;
+                                    preferences.VoiceInMic = false;
+                                    StandInDevices refreshPc = new StandInDevices();
+                                    int cableReads = 0;
+                                    refreshPc.CableRead = delegate
+                                    {
+                                        if (cableReads++ == 0) { cableLooked = -10; return steamCable; }
+                                        return null;
+                                    };
+                                    MicMix.Devices = refreshPc;
+                                    cableLooked = -10;
+                                    mainframe.ShowMixWindow();
+                                    if (cableReads != 1) throw new Exception("The mixer read its cable twice during one refresh.");
+                                    mainframe.ShowMixWindow();
+                                    if (cableReads != 2 || mainframe.MixShown.IndexOf("No virtual mic yet.", StringComparison.Ordinal) < 0) throw new Exception("The mixer did not handle a cable disappearing between refreshes.");
+                                    MicMix.Devices = setupPc;
+                                    cableLooked = -10;
+                                    checks.Add("PASS the mixer keeps one cable snapshot per refresh and handles it disappearing on the next refresh");
+                                }
+                                finally
+                                {
+                                    mainframe.CloseMix();
+                                    if (micMix != null) { micMix.Stop(); micMix = null; }
+                                    preferences.VoiceInMic = false;
+                                    preferences.MixMic = setupMixMicWas;
+                                    preferences.MixCable = setupMixCableWas;
+                                    if (preferences.Mic != setupMicWas) ChooseMic(setupMicWas);
+                                    SavePreferences();
+                                    MicMix.Devices = setupDevicesWas;
+                                    cableLooked = -10;
+                                    mainframe.ShowSettings(true);
+                                }
+                                string vbLine = "on | Microphone (stand-in) | " + vbName + " | On: your mic and her voice are going in. | " + vbName + " | ";
+                                if (noCable != "off | No mic found | None yet: pick to get VB-CABLE (free) | No virtual mic yet. Pick Output, then Get VB-CABLE (free). | " + vbName + " | "
+                                    || steamOff != "off | Microphone (stand-in) | " + steamName + " | Off. Turn on Her voice in your mic above. | " + steamName + " | "
+                                    || steamFarOff != "off | Microphone (stand-in) | " + steamName + " | " + MicMix.OffLine(MicMix.SteamEnd) + " | " + steamName + " | "
+                                    || vbOn != vbLine + "Discord isn't hearing it yet: do 1 and 2, then join a call." || vbObs != vbLine + "OBS hears it now. Discord doesn't yet." || vbAll != vbLine + "OBS, Discord and Roblox hear it now."
+                                    || rowsOwn != "Input: Headset Microphone (stand-in) | Output: " + MicMix.CableEnd || !inputSaved || !earsLeft || rowsBack != "Input: Microphone (stand-in) | Output: " + MicMix.CableEnd || !outputSaved || !outputBack
+                                    || steamDiscord != "on | Microphone (stand-in) | " + steamName + " | On: your mic and her voice are going in. | " + steamName + " | Discord hears it now."
+                                    || at100 != null || at150 != null || at200 != null || !toolValid || toolSaid != "Opened Capri Mainframe." || toolShown != steamDiscord)
+                                    throw new Exception("Her voice in your mic's setup went wrong: " + string.Join(" / ", new[] { noCable, steamOff, steamFarOff, vbOn, vbObs, vbAll, rowsOwn, inputSaved.ToString(), earsLeft.ToString(), rowsBack, outputSaved.ToString(), outputBack.ToString(), steamDiscord, at100, at150, at200, toolValid.ToString(), toolSaid, toolShown }));
+                                checks.Add("PASS her voice in your mic's setup window: it says to get VB-CABLE first, to turn the switch on, or to turn the far end on in Windows, names the exact mic to pick in Discord (Steam's or VB-CABLE's far end) and who hears it now, Discord's test builds as Discord, and its own switch starts the mix; Discord's steps turn Echo Cancellation off and Noise Suppression to None and say why; Settings' Input moves the running mix to a mic of its own and back to her ears' one, her ears' pick leaves its own one alone, Output's pick is saved and reaches the mix, her mainframe tool opens the window as mixer, and it fits at 100, 150 and 200%");
                             });
                             // A new install has them all off, and steps before this one leave Watch my screen on.
                             int launchWander = WanderLevel;
@@ -35526,10 +36551,15 @@ namespace CapriDesktop
                             string bunzipInto = Path.Combine(bunzipRoot, "into");
                             Directory.CreateDirectory(bunzipInto);
                             bool systemBzip = LocalEars.SystemBzip;
+                            int tarTimeout = LocalEars.TarTimeout;
+                            Func<ProcessStartInfo, Process> tarStart = LocalEars.StartTar;
+                            string tarUrl = LocalEars.PackUrl, tarSha = LocalEars.PackSha;
+                            long tarSize = LocalEars.PackSize;
                             string unpackedSha = "", trickySha = "", damagedProblem = null;
                             bool cleaned = false, emptyKept = false;
                             try
                             {
+                                if (!systemBzip || tarTimeout != 600000) throw new Exception("Her ears stopped trying Windows tar first, or changed its timeout.");
                                 LocalEars.SystemBzip = false;
                                 LocalEars.Untar(bunzipTar, bunzipInto);
                                 using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create())
@@ -35539,13 +36569,119 @@ namespace CapriDesktop
                                 }
                                 emptyKept = File.Exists(Path.Combine(Path.Combine(bunzipInto, "pack"), "empty.bin"));
                                 cleaned = !File.Exists(bunzipTar) && !File.Exists(Path.Combine(bunzipRoot, "pack.tar"));
+                                foreach (string tarTest in new[] { "pipes", "failure", "start", "hang", "plain-hang", "plain-failure", "plain-empty" })
+                                {
+                                    string tarInstallRoot = Path.Combine(bunzipRoot, "install");
+                                    string tarFolder = Path.Combine(Path.Combine(tarInstallRoot, "ears"), LocalEars.Pack);
+                                    string tarInto = tarTest == "hang" ? tarFolder + ".new" : bunzipInto;
+                                    string tarPartial = Path.Combine(tarInto, "partial.txt"), tarChildFile = Path.Combine(bunzipRoot, tarTest + "-" + Guid.NewGuid().ToString("N") + ".pid");
+                                    int tarCalls = 0;
+                                    Process tarWatch = null, tarChild = null;
+                                    Stopwatch tarWaited = new Stopwatch();
+                                    LocalEars.SystemBzip = tarTest == "failure" || tarTest == "start" || tarTest == "hang";
+                                    int tarLimit = tarTest == "hang" || tarTest == "plain-hang" ? 500 : 15000;
+                                    LocalEars.TarTimeout = tarLimit;
+                                    File.WriteAllBytes(bunzipTar, bunzipPack);
+                                    Directory.CreateDirectory(tarInto);
+                                    using (SmokeJob tarJob = new SmokeJob())
+                                    try
+                                    {
+                                        LocalEars.StartTar = delegate(ProcessStartInfo info)
+                                        {
+                                            tarCalls++;
+                                            bool compressed = info.Arguments.StartsWith("-xjf ", StringComparison.Ordinal);
+                                            if (!compressed && LocalEars.SystemBzip)
+                                            {
+                                                if (File.Exists(tarPartial)) throw new Exception("Failed tar left files for the fallback.");
+                                                tarWaited.Stop();
+                                                LocalEars.TarTimeout = 15000;
+                                                return tarStart(info);
+                                            }
+                                            File.WriteAllText(tarPartial, "partial");
+                                            if (tarTest == "start") throw new System.ComponentModel.Win32Exception(2);
+                                            if (tarTest == "failure" || tarTest == "plain-failure" || tarTest == "plain-empty")
+                                            {
+                                                info.FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+                                                info.Arguments = tarTest == "plain-empty" ? "/d /c exit /b 3" : "/d /c echo tar test failed 1>&2 & exit /b 3";
+                                                return tarStart(info);
+                                            }
+                                            string script;
+                                            if (tarTest == "pipes")
+                                                script = "[Console]::Error.Write(('e' * 131072)); [Console]::Out.Write(('o' * 131072)); & '" + info.FileName.Replace("'", "''") + "' -xf '" + Path.ChangeExtension(bunzipTar, null).Replace("'", "''") + "' -C '" + tarInto.Replace("'", "''") + "'; exit $LASTEXITCODE";
+                                            else
+                                                script = "$child = Start-Process -FilePath '" + Path.Combine(Environment.SystemDirectory, "ping.exe").Replace("'", "''") + "' -ArgumentList '-t 127.0.0.1' -WindowStyle Hidden -PassThru; [IO.File]::WriteAllText('" + tarChildFile.Replace("'", "''") + ".new', $child.Id.ToString()); [IO.File]::Move('" + tarChildFile.Replace("'", "''") + ".new', '" + tarChildFile.Replace("'", "''") + "'); while ($true) { [Threading.Thread]::Sleep(1000) }";
+                                            info.FileName = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
+                                            info.Arguments = "-NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
+                                            Process fakeTar = tarStart(info);
+                                            tarJob.Assign(fakeTar);
+                                            if (tarTest != "pipes")
+                                            {
+                                                tarWatch = Process.GetProcessById(fakeTar.Id);
+                                                tarWatch.EnableRaisingEvents = true;
+                                                Stopwatch ready = Stopwatch.StartNew();
+                                                while (!File.Exists(tarChildFile) && !fakeTar.HasExited && ready.ElapsedMilliseconds < 10000) Thread.Sleep(10);
+                                                if (!File.Exists(tarChildFile)) throw new Exception("The fake tar did not start its child.");
+                                                tarChild = Process.GetProcessById(int.Parse(File.ReadAllText(tarChildFile)));
+                                                tarChild.EnableRaisingEvents = true;
+                                                if (tarWatch.HasExited || tarChild.HasExited) throw new Exception("The fake tar exited before its timeout.");
+                                                tarWaited.Start();
+                                            }
+                                            return fakeTar;
+                                        };
+                                        string tarProblem = null;
+                                        if (tarTest == "hang")
+                                        {
+                                            byte[] tarPack = earsPacks["/" + englishInside + ".tar.bz2"];
+                                            File.WriteAllBytes(tarFolder + ".tar.bz2.part", tarPack);
+                                            LocalEars.PackUrl = "http://127.0.0.1:1/ears.tar.bz2";
+                                            LocalEars.PackSize = tarPack.Length;
+                                            LocalEars.PackSha = shaOf(tarPack);
+                                            LocalEars timedEars = new LocalEars(tarInstallRoot);
+                                            timedEars.Install(delegate(string text, long done, long total) { });
+                                            if (!timedEars.Installed || Directory.Exists(tarInto) || File.Exists(tarFolder + ".tar.bz2") || File.Exists(tarFolder + ".tar")) throw new Exception("Her ears did not finish setup after tar hung.");
+                                        }
+                                        else
+                                        {
+                                            try { LocalEars.Untar(bunzipTar, bunzipInto); }
+                                            catch (IOException problem) { tarProblem = problem.Message; }
+                                            if (tarTest == "plain-hang" || tarTest == "plain-failure" || tarTest == "plain-empty")
+                                            {
+                                                string expected = "Couldn't unpack her ears: " + (tarTest == "plain-hang" ? "Windows tar took too long." : tarTest == "plain-empty" ? "Windows tar couldn't unpack the download." : "tar test failed");
+                                                if (tarProblem != expected || Directory.Exists(bunzipInto)) throw new Exception("Failed plain tar left files or the wrong problem: " + tarProblem);
+                                            }
+                                            else if (tarProblem != null || shaOf(File.ReadAllBytes(Path.Combine(Path.Combine(bunzipInto, "pack"), "tricky.bin"))) != shaOf(trickyBytes))
+                                                throw new Exception("Tar did not unpack after " + tarTest + ": " + tarProblem);
+                                        }
+                                        if (tarCalls != (LocalEars.SystemBzip ? 2 : 1) || File.Exists(Path.Combine(bunzipRoot, "pack.tar"))) throw new Exception("Tar used the wrong path or left its plain archive after " + tarTest + ".");
+                                        if (tarWatch != null && (!tarWatch.WaitForExit(2000) || !tarChild.WaitForExit(2000) || tarWaited.ElapsedMilliseconds > tarLimit + 12000)) throw new Exception("Tar or its child survived the unpacking timeout.");
+                                    }
+                                    finally
+                                    {
+                                        LocalEars.StartTar = tarStart;
+                                        tarJob.Stop();
+                                        if (tarWatch != null) tarWatch.Dispose();
+                                        if (tarChild != null) tarChild.Dispose();
+                                    }
+                                }
+                                checks.Add("PASS ears tar: both output pipes drain; a failed or missing tar falls back; a hung tar and its child are killed at the test timeout and setup finishes through bzip2; failed plain tar leaves no unpacked folder or plain archive");
+                                LocalEars.SystemBzip = false;
+                                Directory.CreateDirectory(bunzipInto);
+                                File.WriteAllText(Path.Combine(bunzipInto, "partial.txt"), "partial");
                                 bunzipPack[bunzipPack.Length / 2] ^= 0x10;
                                 File.WriteAllBytes(bunzipTar, bunzipPack);
                                 try { LocalEars.Untar(bunzipTar, bunzipInto); }
                                 catch (IOException problem) { damagedProblem = problem.Message; }
                             }
-                            finally { LocalEars.SystemBzip = systemBzip; }
-                            if (unpackedSha != trickySha || !emptyKept || !cleaned || damagedProblem == null || File.Exists(Path.Combine(bunzipRoot, "pack.tar")))
+                            finally
+                            {
+                                LocalEars.SystemBzip = systemBzip;
+                                LocalEars.TarTimeout = tarTimeout;
+                                LocalEars.StartTar = tarStart;
+                                LocalEars.PackUrl = tarUrl;
+                                LocalEars.PackSha = tarSha;
+                                LocalEars.PackSize = tarSize;
+                            }
+                            if (unpackedSha != trickySha || !emptyKept || !cleaned || damagedProblem == null || Directory.Exists(bunzipInto) || File.Exists(Path.Combine(bunzipRoot, "pack.tar")))
                                 throw new Exception("Unpacking bzip2 without Windows' tar went wrong: " + (unpackedSha == trickySha) + " / " + emptyKept + " / " + cleaned + " / " + damagedProblem);
                             Directory.Delete(bunzipRoot, true);
                             checks.Add("PASS ears on Windows 10: when Windows' tar can't read bzip2, she unpacks that layer herself (block CRCs checked) and tar unpacks the rest; a damaged pack stops with an error");

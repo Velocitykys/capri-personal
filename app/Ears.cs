@@ -179,6 +179,24 @@ namespace CapriDesktop
             catch (Exception) { return null; }
         }
 
+        // The name Windows' Sound settings, Discord and Roblox list an endpoint under, "Microphone (Steam Streaming Microphone)"
+        // where FullName says "Steam Streaming Microphone", or null.
+        internal static string ListedName(string id)
+        {
+            try
+            {
+                using (RegistryKey key = Properties(id))
+                {
+                    if (key == null) return null;
+                    string kind = key.GetValue("{a45c254e-df1c-4efd-8020-67d146a850e0},2") as string;
+                    string name = key.GetValue("{b3f8fa53-0004-438e-9003-51a46e139bfc},6") as string;
+                    if (string.IsNullOrEmpty(kind) || string.IsNullOrEmpty(name)) return string.IsNullOrEmpty(kind) ? (string.IsNullOrEmpty(name) ? null : name) : kind;
+                    return kind + " (" + name + ")";
+                }
+            }
+            catch (Exception) { return null; }
+        }
+
         // The mic Start opens for a pick, by endpoint id: the picked one while it's plugged in, or Windows' default, or when that's
         // VB-CABLE's output, the first other mic. Null when there's none.
         internal static string Opens(string chosen)
@@ -768,10 +786,11 @@ namespace CapriDesktop
             leftover.RemoveRange(0, at);
             if (!Plain)
             {
-                samples = Voice.Louder(samples);
-                // Her voice in their mic (F66): everything she says goes into VB-CABLE too while the switch is on, at her volume.
-                // Her sound effects play through Plain speakers, so they stay out.
+                // Her voice in their mic (F66): everything she says goes into the cable too while the switch is on, at her own
+                // level rather than her speakers' volume, for the mix to bring to a speaking level. Her sound effects play
+                // through Plain speakers, so they stay out.
                 MicMix.Hear(this, samples, rate);
+                samples = Voice.Louder(samples);
             }
             if (silent || (device == IntPtr.Zero && modern == null)) return;
             if (modern != null) { modern.Write(samples); return; }
@@ -1504,6 +1523,8 @@ namespace CapriDesktop
         }
 
         internal static bool SystemBzip = true;
+        internal static int TarTimeout = 600000;
+        internal static Func<ProcessStartInfo, Process> StartTar = Process.Start;
 
         // Windows 10 and 11 ship bsdtar, but only Windows 11's reads bzip2. When tar can't, she unpacks the bzip2 layer herself and tar gets the plain archive.
         // The checksum was already matched, so this is the known archive.
@@ -1511,10 +1532,11 @@ namespace CapriDesktop
         {
             string tar = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "tar.exe");
             if (!File.Exists(tar)) throw new IOException("Windows is missing tar.exe, which unpacks her ears.");
-            if (SystemBzip && Tar(tar, "-xjf \"" + tarball + "\" -C \"" + into + "\"") == null) return;
             string plain = Path.ChangeExtension(tarball, null);
+            bool complete = false;
             try
             {
+                if (SystemBzip && Tar(tar, "-xjf \"" + tarball + "\" -C \"" + into + "\"", into) == null) { complete = true; return; }
                 using (FileStream packed = new FileStream(tarball, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20))
                 using (FileStream opened = new FileStream(plain, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
                 {
@@ -1523,23 +1545,88 @@ namespace CapriDesktop
                     catch (Exception) { throw new IOException("The ears download is damaged."); }
                 }
                 File.Delete(tarball);
-                Directory.Delete(into, true);
+                if (Directory.Exists(into)) Directory.Delete(into, true);
                 Directory.CreateDirectory(into);
-                string problem = Tar(tar, "-xf \"" + plain + "\" -C \"" + into + "\"");
+                string problem = Tar(tar, "-xf \"" + plain + "\" -C \"" + into + "\"", into);
                 if (problem != null) throw new IOException("Couldn't unpack her ears: " + Voice.Short(problem));
+                complete = true;
             }
-            finally { if (File.Exists(plain)) File.Delete(plain); }
+            finally
+            {
+                if (File.Exists(plain)) File.Delete(plain);
+                if (!complete && Directory.Exists(into)) Directory.Delete(into, true);
+            }
         }
 
-        private static string Tar(string tar, string arguments)
+        private static string Tar(string tar, string arguments, string into)
         {
-            ProcessStartInfo start = new ProcessStartInfo(tar, arguments) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
-            using (Process unpacking = Process.Start(start))
+            bool complete = false;
+            try
             {
-                string problem = unpacking.StandardError.ReadToEnd();
-                unpacking.WaitForExit();
-                return unpacking.ExitCode == 0 ? null : problem.Trim();
+                ProcessStartInfo start = new ProcessStartInfo(tar, arguments) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
+                Process child;
+                try { child = StartTar(start); }
+                catch (System.ComponentModel.Win32Exception) { return "Windows tar couldn't start."; }
+                using (Process unpacking = child)
+                {
+                    if (unpacking == null) return "Windows tar couldn't start.";
+                    StringBuilder problem = new StringBuilder();
+                    Thread errors = ReadTar(unpacking.StandardError, problem), output = ReadTar(unpacking.StandardOutput, null);
+                    Stopwatch waited = Stopwatch.StartNew();
+                    int timeout = Math.Max(1, TarTimeout);
+                    if (!unpacking.WaitForExit(timeout) || !errors.Join((int)Math.Max(0, timeout - waited.ElapsedMilliseconds)) || !output.Join((int)Math.Max(0, timeout - waited.ElapsedMilliseconds)))
+                    {
+                        StopTar(unpacking);
+                        errors.Join(1000);
+                        output.Join(1000);
+                        return "Windows tar took too long.";
+                    }
+                    string error = problem.ToString().Trim();
+                    if (unpacking.ExitCode != 0) return error.Length == 0 ? "Windows tar couldn't unpack the download." : error;
+                    complete = true;
+                    return null;
+                }
             }
+            finally { if (!complete && Directory.Exists(into)) Directory.Delete(into, true); }
+        }
+
+        private static Thread ReadTar(StreamReader stream, StringBuilder text)
+        {
+            Thread reader = new Thread(delegate()
+            {
+                try
+                {
+                    char[] buffer = new char[1024];
+                    int read;
+                    while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                        if (text != null && text.Length < 4096) text.Append(buffer, 0, Math.Min(read, 4096 - text.Length));
+                }
+                catch (IOException) { }
+                catch (ObjectDisposedException) { }
+            });
+            reader.IsBackground = true;
+            reader.Start();
+            return reader;
+        }
+
+        private static void StopTar(Process unpacking)
+        {
+            try
+            {
+                string taskkill = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe");
+                using (Process stopping = Process.Start(new ProcessStartInfo(taskkill, "/PID " + unpacking.Id.ToString(CultureInfo.InvariantCulture) + " /T /F") { UseShellExecute = false, CreateNoWindow = true }))
+                {
+                    if (!stopping.WaitForExit(5000))
+                    {
+                        stopping.Kill();
+                        stopping.WaitForExit(1000);
+                        throw new IOException("Windows tar wouldn't stop.");
+                    }
+                    if (stopping.ExitCode != 0 && !unpacking.HasExited) throw new IOException("Windows tar wouldn't stop.");
+                }
+                if (!unpacking.WaitForExit(5000)) throw new IOException("Windows tar wouldn't stop.");
+            }
+            catch (System.ComponentModel.Win32Exception) { throw new IOException("Windows tar wouldn't stop."); }
         }
 
         internal void Warm() { lock (gate) Open(); }
