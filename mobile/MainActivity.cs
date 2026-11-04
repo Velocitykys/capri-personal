@@ -200,8 +200,9 @@ public sealed class MainActivity : Activity, TextToSpeech.IOnInitListener
         }
         catch (Exception error)
         {
-            AddMessage("assistant", "My connection's being a gonk. " + error.Message + " I can still keep your saved chats, memories and reminders on this phone.");
-            statusText.Text = "CONNECTION NEEDED";
+            string localReply = brain.OfflineReply(prompt);
+            AddMessage("assistant", localReply + " (" + error.Message + ")");
+            statusText.Text = "OFFLINE MODE  •  LOCAL DATA AVAILABLE";
         }
         finally
         {

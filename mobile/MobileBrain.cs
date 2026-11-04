@@ -128,6 +128,37 @@ internal sealed class MobileBrain
         return ranked.Count == 0 ? "" : "\n\nThings you remember about this person (use naturally, never recite as a profile):\n- " + string.Join("\n- ", ranked);
     }
 
+    internal string OfflineReply(string prompt)
+    {
+        prompt ??= "";
+        string lower = prompt.Trim().ToLowerInvariant();
+        LearnFrom(prompt);
+
+        if (lower.StartsWith("remember that ") || lower.StartsWith("remember this: ") || lower.StartsWith("save this: "))
+            return "Got it. I've saved that on this phone. My full brain's offline, but that note is safe.";
+
+        if (lower.Contains("what do you remember") || lower.Contains("show my memories") || lower == "memory")
+        {
+            if (Memories.Count == 0) return "My memory shelf is empty right now. Add something in the Memory tab and I'll keep it here.";
+            return "Here's what I've got saved: " + string.Join("; ", Memories.TakeLast(10).Select(m => m.Text));
+        }
+
+        if (lower.Contains("reminder"))
+        {
+            var upcoming = Reminders.Where(r => !r.Completed && r.DueLocal > DateTime.Now).OrderBy(r => r.DueLocal).Take(8).ToList();
+            if (upcoming.Count == 0) return "No upcoming reminders. Suspiciously organised of us.";
+            return "Your upcoming reminders: " + string.Join("; ", upcoming.Select(r => r.Title + " at " + r.DueLocal.ToString("dd MMM HH:mm")));
+        }
+
+        if (lower.Contains("what time") || lower == "time")
+            return "It's " + DateTime.Now.ToString("HH:mm") + " on your phone. Even offline, I can manage a clock, choom.";
+
+        if (lower.Contains("what date") || lower.Contains("today's date") || lower == "date")
+            return "It's " + DateTime.Now.ToString("dddd, dd MMMM yyyy") + ". Your phone still knows what day it is.";
+
+        return "My network's down, so I can't reach the full AI brain right now. Your chats, saved memories and reminders are still on this phone, and I can manage those locally.";
+    }
+
     internal async Task<string> AskAsync(string prompt)
     {
         if (string.IsNullOrWhiteSpace(Settings.ApiKey))
