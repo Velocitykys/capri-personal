@@ -12,6 +12,7 @@ namespace CapriDesktop
     internal sealed class CallView
     {
         internal bool Listening, Muted, Discord, Talking;
+        internal string Source;
         // How loud your mic and Discord are, 0 to 1, as her ears measure them.
         internal double You, Call;
         // Why she can't hear Discord while it's on, or null.
@@ -28,6 +29,7 @@ namespace CapriDesktop
         internal const double Talks = 0.01;
         private const int Hold = 300;
         internal event Action MicPressed, DiscordPressed, EndPressed;
+        internal event Action<string, string> SourceSelected;
         private readonly float s;
         private readonly Bitmap face;
         private readonly Func<CallView> read;
@@ -66,7 +68,20 @@ namespace CapriDesktop
             mic.Location = new Point(discord.Left - Px(8) - mic.Width, Px(RowY));
             mic.Click += delegate { if (MicPressed != null) MicPressed(); };
             discord.Click += delegate { if (DiscordPressed != null) DiscordPressed(); };
-            end.Click += delegate { if (EndPressed != null) EndPressed(); };
+            ContextMenuStrip sourceMenu = new ContextMenuStrip();
+            sourceMenu.Opening += delegate
+            {
+                sourceMenu.Items.Clear();
+                foreach (CallAudioApp app in CallEars.Applications())
+                {
+                    CallAudioApp picked = app;
+                    ToolStripMenuItem item = new ToolStripMenuItem(picked.Name);
+                    item.Click += delegate { if (SourceSelected != null) SourceSelected(picked.ProcessName, picked.Name); };
+                    sourceMenu.Items.Add(item);
+                }
+                if (sourceMenu.Items.Count == 0) sourceMenu.Items.Add(new ToolStripMenuItem("No running apps with a window") { Enabled = false });
+            };
+            discord.ContextMenuStrip = sourceMenu;
             Controls.AddRange(new Control[] { hide, mic, discord, end });
             Neon.Clip(this, 16 * s, 6 * s);
             ticks.Interval = 100;
@@ -121,7 +136,8 @@ namespace CapriDesktop
             youLit = now - youAt < Hold;
             callLit = now - callAt < Hold;
             Mark(mic, !next.Listening ? "LISTEN" : next.Muted ? "UNMUTE" : "MUTE", next.Listening ? Neon.Rose : Neon.Cyan);
-            Mark(discord, next.Discord ? "DISCORD: ON" : "DISCORD: OFF", Neon.Rose);
+            string source = string.IsNullOrWhiteSpace(next.Source) ? "DISCORD" : next.Source.ToUpperInvariant();
+            Mark(discord, (source.Length > 10 ? source.Substring(0, 9) + "…" : source) + (next.Discord ? ": ON" : ": OFF"), Neon.Rose);
             string state = youLit + "|" + callLit + "|" + next.Talking + "|" + next.Listening + "|" + next.Muted + "|" + next.Discord + "|" + next.DiscordNote + "|" + Clock(next.Length);
             if (state == drawn) return;
             drawn = state;
@@ -141,7 +157,7 @@ namespace CapriDesktop
             if (!view.Listening) return "She isn't listening.";
             if (view.Muted) return "Muted: she hears no one.";
             if (!view.Discord) return "She hears you only.";
-            return view.DiscordNote ?? "She hears you and Discord.";
+            return view.DiscordNote ?? "She hears you and " + (string.IsNullOrWhiteSpace(view.Source) ? "Discord" : view.Source) + ".";
         }
 
         internal static string Clock(TimeSpan length)
@@ -184,7 +200,7 @@ namespace CapriDesktop
             bool youOff = !view.Listening || view.Muted, callOff = !view.Discord || view.DiscordNote != null;
             DrawTile(graphics, 0, "YOU", !view.Listening ? "not listening" : view.Muted ? "muted" : null, view.Muted ? Neon.Hot : Neon.Faint, youLit && !youOff, youOff);
             DrawTile(graphics, 1, "CAPRI", null, Neon.Faint, view.Talking, false);
-            DrawTile(graphics, 2, "DISCORD", !view.Discord ? "off" : view.DiscordNote != null ? Short(view.DiscordNote) : null, view.DiscordNote != null && view.Discord ? Neon.Hot : Neon.Faint, callLit && !callOff, callOff);
+            DrawTile(graphics, 2, string.IsNullOrWhiteSpace(view.Source) ? "DISCORD" : view.Source.ToUpperInvariant(), !view.Discord ? "off" : view.DiscordNote != null ? Short(view.DiscordNote) : null, view.DiscordNote != null && view.Discord ? Neon.Hot : Neon.Faint, callLit && !callOff, callOff);
             using (Font words = Type(10f))
                 TextRenderer.DrawText(graphics, Status(view), words, Rectangle.Round(StatusBox), Neon.Faint, TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
             Neon.Frame(graphics, ClientSize, s, 16 * s, 6 * s, 52 * s, 26 * s);
