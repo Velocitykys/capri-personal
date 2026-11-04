@@ -7,9 +7,9 @@ using Avalonia.Android;
 namespace Capri.Mobile;
 
 [Application]
-public sealed class MainApplication : AvaloniaAndroidApplication<App>
+public class MainApplication : AvaloniaAndroidApplication<App>
 {
-    public MainApplication(IntPtr javaReference, JniHandleOwnership transfer)
+    protected MainApplication(IntPtr javaReference, JniHandleOwnership transfer)
         : base(javaReference, transfer)
     {
     }
