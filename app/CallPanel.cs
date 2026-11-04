@@ -66,6 +66,7 @@ namespace CapriDesktop
             end.Location = new Point(ClientSize.Width - Px(Inset) - end.Width, Px(RowY));
             discord.Location = new Point(end.Left - Px(8) - discord.Width, Px(RowY));
             mic.Location = new Point(discord.Left - Px(8) - mic.Width, Px(RowY));
+            end.Click += delegate { if (EndPressed != null) EndPressed(); };
             mic.Click += delegate { if (MicPressed != null) MicPressed(); };
             discord.Click += delegate { if (DiscordPressed != null) DiscordPressed(); };
             ContextMenuStrip sourceMenu = new ContextMenuStrip();
@@ -173,7 +174,7 @@ namespace CapriDesktop
             return new RectangleF((Inset + index * (wide + Gap)) * s, TileY * s, wide * s, TileHigh * s);
         }
 
-        private RectangleF StatusBox { get { return new RectangleF(Px(Inset + 2), Px(RowY - 6), mic.Left - Px(Inset + 14), Px(PressHigh + 12)); } }
+        private Rectangle StatusBox { get { return new Rectangle(Px(Inset + 2), Px(RowY - 6), mic.Left - Px(Inset + 14), Px(PressHigh + 12)); } }
 
         protected override void OnPaintBackground(PaintEventArgs e) { Neon.Backdrop(e.Graphics, ClientSize, 210 * s); }
 
