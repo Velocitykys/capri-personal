@@ -2982,21 +2982,21 @@ namespace CapriDesktop
         // the Windows command-line rules before joining them into Arguments.
         private static string PocketArgument(string value)
         {
-            StringBuilder quoted = new StringBuilder("\\\"");
+            StringBuilder quoted = new StringBuilder("\"");
             int slashes = 0;
             foreach (char c in value ?? "")
             {
-                if (c == '\\\\') { slashes++; continue; }
-                if (c == '\\"')
+                if (c == '\\') { slashes++; continue; }
+                if (c == '"')
                 {
-                    quoted.Append('\\\\', slashes * 2 + 1).Append(c);
+                    quoted.Append('\\', slashes * 2 + 1).Append(c);
                     slashes = 0;
                     continue;
                 }
-                quoted.Append('\\\\', slashes).Append(c);
+                quoted.Append('\\', slashes).Append(c);
                 slashes = 0;
             }
-            quoted.Append('\\\\', slashes * 2).Append('\\\"');
+            quoted.Append('\\', slashes * 2).Append('"');
             return quoted.ToString();
         }
 
