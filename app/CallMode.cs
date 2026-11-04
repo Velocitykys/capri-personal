@@ -70,6 +70,8 @@ namespace CapriDesktop
         // Discord while she talks, and the answer it last stopped.
         private readonly CallOver callOver = new CallOver();
         private int callOverAudio = -1;
+        private volatile WakeWord callWake;
+        private int callWakeGeneration;
 
         internal void ToggleCallMode()
         {
@@ -88,6 +90,7 @@ namespace CapriDesktop
             mainframe.VoiceNote(on ? "Call mode (beta) on. Voice is conversation only." : "Call mode off.", false);
             if (wasChatting && !testing) ToggleChat();
             UpdateCallEars();
+            if (on) PrepareCallWake(); else StopCallWake();
             ShowCallPanel();
         }
 
@@ -96,6 +99,75 @@ namespace CapriDesktop
         {
             if (CallModeOn && !preferences.CallDiscordOff && !testing) callEars.Start();
             else callEars.Stop();
+        }
+
+        // Warm the existing local "Hey Capri" spotter once for Call Mode. It receives the combined mic/call stream,
+        // but is only decoded while she is speaking; ordinary voice activity is never used as an interruption signal.
+        private void PrepareCallWake()
+        {
+            if (testing || callWake != null) return;
+            string memory = Brain.MemoryPath;
+            string data = string.IsNullOrWhiteSpace(memory) ? null : Path.GetDirectoryName(memory);
+            if (string.IsNullOrWhiteSpace(data))
+            {
+                Brain.Log("call mode", -1, "Wake-word interruption isn't ready: Capri's data folder couldn't be found.");
+                return;
+            }
+            int generation = Interlocked.Increment(ref callWakeGeneration);
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                WakeWord made = null;
+                try
+                {
+                    made = new WakeWord(data);
+                    if (!made.Ready)
+                    {
+                        made.Dispose();
+                        Brain.Log("call mode", -1, "Wake-word interruption isn't ready: install the existing Hey Capri wake-word pack and local voice pack.");
+                        return;
+                    }
+                    made.Warm();
+                    made.Heard += CallWakeHeard;
+                    Post(delegate
+                    {
+                        if (!CallModeOn || generation != Volatile.Read(ref callWakeGeneration))
+                        {
+                            made.Dispose();
+                            return;
+                        }
+                        WakeWord old = callWake;
+                        callWake = made;
+                        if (old != null) old.Dispose();
+                        Brain.Log("call mode", -1, "Call interruption is listening for the existing Hey Capri wake phrase.");
+                    });
+                }
+                catch (Exception error)
+                {
+                    if (made != null) made.Dispose();
+                    Brain.Log("call mode", -1, "Wake-word interruption couldn't start: " + error.Message);
+                }
+            });
+        }
+
+        private void StopCallWake()
+        {
+            Interlocked.Increment(ref callWakeGeneration);
+            WakeWord wake = callWake;
+            callWake = null;
+            if (wake != null) wake.Dispose();
+            callOver.Reset();
+        }
+
+        // Only the explicit local wake phrase can stop an answer. The buffered lead-in is replayed after her voice ends.
+        private void CallWakeHeard()
+        {
+            if (!CallModeOn || clock.Elapsed.TotalSeconds >= voiceUntil) return;
+            int ticket = asking, audio = audioTurn;
+            if (callOver.Fired && callOverAudio == audio) return;
+            if (callOver.Fired) callOver.Rearm();
+            callOver.Trigger();
+            callOverAudio = audio;
+            QueueBargeIn(ticket, audio, "call wake word");
         }
 
         private void ToggleCallDiscord()
@@ -171,32 +243,37 @@ namespace CapriDesktop
         // line it was. On her ears' thread, like Gather.
         private void CallHear(short[] chunk)
         {
-            if (!CallModeOn || !callEars.Hearing)
+            if (!CallModeOn)
             {
                 callOver.Reset();
                 CallKeep(Speaker.Loudness(chunk, 0, chunk.Length), 0);
                 Gather(chunk);
                 return;
             }
-            double mine, theirs;
-            short[] call = new short[chunk.Length];
-            short[] mixed = callEars.Mix(chunk, out mine, out theirs, call);
+
+            double mine = Speaker.Loudness(chunk, 0, chunk.Length), theirs = 0;
+            short[] mixed = chunk;
+            if (callEars.Hearing)
+            {
+                short[] call = new short[chunk.Length];
+                mixed = callEars.Mix(chunk, out mine, out theirs, call);
+            }
+
             if (clock.Elapsed.TotalSeconds < voiceUntil)
             {
-                int ticket = asking, audio = audioTurn;
+                int audio = audioTurn;
                 if (callOver.Fired && callOverAudio != audio) callOver.Rearm();
-                if (callOver.Heard(call, VoiceLevel(call), WakeLevel))
-                {
-                    callOverAudio = audio;
-                    QueueBargeIn(ticket, audio, "call talk-over");
-                }
+                callOver.Hold(mixed);
+                WakeWord wake = callWake;
+                if (wake != null && wake.Warmed) wake.Feed(mixed);
+                // Don't run normal speech detection while she's talking: background voices must not barge in.
                 CallKeep(mine, 0);
-                Gather(chunk);
                 return;
             }
+
             foreach (short[] held in callOver.Release())
             {
-                CallKeep(0, Speaker.Loudness(held, 0, held.Length));
+                CallKeep(Speaker.Loudness(held, 0, held.Length), 0);
                 Gather(held);
             }
             CallKeep(mine, theirs);
@@ -223,6 +300,7 @@ namespace CapriDesktop
             CancelAnswerAudio();
             voice.Stop();
             voiceUntil = 0;
+            callOver.Reset();
             int ticket = ++asking;
             callAnswer = ticket;
             heard = text;
