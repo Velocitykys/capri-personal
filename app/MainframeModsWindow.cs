@@ -18,7 +18,7 @@ namespace CapriDesktop
         private float SheetZoom(int wide, int tall)
         {
             Rectangle area = Screen.FromControl(this).WorkingArea;
-            float dpi = DeviceDpi / 96f;
+            float dpi = DeviceScale() * TextScale();
             return Math.Max(0.75f, Math.Min(zoom, Math.Min(area.Width / (wide * dpi), area.Height / (tall * dpi))));
         }
 
@@ -41,22 +41,25 @@ namespace CapriDesktop
             sheet.Dispose();
         }
 
-        private abstract class ModSheet : Form
+        private abstract class ModSheet : Form, LookWindow
         {
             internal readonly float Zoom;
             protected readonly Mainframe Frame;
+            private readonly int designWide, designTall;
 
             protected ModSheet(Mainframe owner, float zoom, string title, string heading, int wide, int tall)
             {
+                SuspendLayout();
                 Frame = owner;
                 Zoom = zoom;
+                designWide = wide;
+                designTall = tall;
                 Text = title;
                 Icon = owner.Icon;
                 ShowInTaskbar = false;
                 FormBorderStyle = FormBorderStyle.None;
                 StartPosition = FormStartPosition.Manual;
-                AutoScaleMode = AutoScaleMode.Dpi;
-                AutoScaleDimensions = new SizeF(96, 96);
+                AutoScaleMode = AutoScaleMode.None;
                 Font = Type(9.5f * zoom);
                 BackColor = Ground;
                 ForeColor = White;
@@ -106,11 +109,13 @@ namespace CapriDesktop
             internal string Crowded()
             {
                 float s = ScaleOf(this);
+                // A small desktop clamps the window, so check the size it was drawn for.
+                Rectangle area = new Rectangle(0, 0, Math.Max(ClientSize.Width, (int)Math.Round(designWide * s)), Math.Max(ClientSize.Height, (int)Math.Round(designTall * s)));
                 for (int i = 0; i < Controls.Count; i++)
                 {
                     Control a = Controls[i];
                     if (!a.Visible || (a is Label && a.Text.Length == 0)) continue;
-                    if (!ClientRectangle.Contains(a.Bounds)) return "pokes out: " + (a.Text.Length > 0 ? a.Text : a.AccessibleName) + " " + a.Bounds;
+                    if (!area.Contains(a.Bounds)) return "pokes out: " + (a.Text.Length > 0 ? a.Text : a.AccessibleName) + " " + a.Bounds;
                     Key key = a as Key;
                     if (key != null && key.Text.Length > 0 && TextRenderer.MeasureText(key.Text, key.Font).Width + (int)Math.Ceiling(12 * s) > key.Width) return "doesn't fit: " + key.Text;
                     for (int j = i + 1; j < Controls.Count; j++)
@@ -317,7 +322,7 @@ namespace CapriDesktop
             {
                 Words("The directory checks mods for malware first. Code mods still ask before they run.", 28, 52, 688, 16, Small(), Faint);
                 search = new Entry();
-                search.Bounds = Box(28, 74, 352, 26);
+                search.Bounds = Box(28, 74, 270, 26);
                 search.Cue = "Search name, author or description";
                 search.Box.AccessibleName = "Search the mods directory";
                 search.Box.AccessibleDescription = "Search mods";
@@ -326,7 +331,7 @@ namespace CapriDesktop
                 for (int i = 0; i < filters.Length; i++)
                 {
                     int kind = i;
-                    filters[i] = Make(ModDirectory.Kinds[i], 388 + i * 82, 76, 76, 22, delegate { first = 0; filter = kind; Fill(); });
+                    filters[i] = Make(ModDirectory.Kinds[i], 306 + i * 82, 76, 76, 22, delegate { first = 0; filter = kind; Fill(); });
                     filters[i].AccessibleName = "Show " + ModDirectory.Kinds[i].ToLowerInvariant() + " in the mods directory";
                     filters[i].AccessibleDescription = "Mod filter";
                 }
@@ -360,6 +365,7 @@ namespace CapriDesktop
                 empty = Words("", 28, 250, 688, 24, Font, Faint);
                 empty.TextAlign = ContentAlignment.MiddleCenter;
                 status = Words("", 28, 708, 688, 36, Font, Faint);
+                Frame.Fit(this);
                 Fill();
             }
 
@@ -618,6 +624,7 @@ namespace CapriDesktop
                 fork.Loud = true;
                 Make("Show my mod file", 186, 298, 150, 26, delegate { Open("explorer.exe", "/select,\"" + mod.Path + "\""); });
                 status = Words("", 28, 330, 464, 26, Small(), Rose);
+                Frame.Fit(this);
             }
 
             private void Open(string what, string how)

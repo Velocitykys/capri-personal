@@ -777,7 +777,7 @@ namespace CapriDesktop
             { "layer_1_pitch", "Layer 1 pitch", "Voice" }, { "layer_1_delay", "Layer 1 delay", "Voice" }, { "layer_2_pitch", "Layer 2 pitch", "Voice" }, { "layer_2_delay", "Layer 2 delay", "Voice" },
             { "sounds", "Sound effects", "Voice" }, { "mainframe_size", "Mainframe size", "Capri" }, { "perch_fps", "Perch frame rate", "Habits" }, { "language", "Language", "Brain" }, { "reply_limit", "Max reply", "Brain" },
             { "game_comments", "Game comments pace", "Games" }, { "clip_length", "Default clip length", "Clips" }, { "clip_fps", "Clip frame rate", "Clips" }, { "clip_resolution", "Clip resolution", "Clips" }, { "clip_bitrate", "Clip bitrate", "Clips" },
-            { "typing_sound", "Typing sound mode", "Voice" }
+            { "typing_sound", "Typing sound mode", "Voice" }, { "mainframe_colours", "Mainframe colours", "Capri" }
         };
         internal static readonly string[][] OwnSteps =
         {
@@ -803,7 +803,7 @@ namespace CapriDesktop
 #endif
             new[] { "Auto", "100%", "125%", "150%", "175%", "200%" }, new[] { "10 fps", "15 fps", "20 fps", "30 fps", "40 fps", "50 fps", "60 fps" }, LanguageSteps(), new[] { "Auto", "256", "2K", "8K" },
             new[] { "Off", "Events only", "Chatty" }, new[] { "15 s", "30 s", "45 s", "1 min", "1.5 min", "2 min" }, new[] { "Up to 15 fps", "Up to 24 fps", "Up to 30 fps", "Up to 60 fps" },
-            new[] { "Auto", "Up to 480p", "Up to 720p", "Up to 1080p" }, new[] { "Auto", "2 Mbps", "4 Mbps", "8 Mbps", "12 Mbps", "20 Mbps" }, new[] { "Auto", "On", "Off" }
+            new[] { "Auto", "Up to 480p", "Up to 720p", "Up to 1080p" }, new[] { "Auto", "2 Mbps", "4 Mbps", "8 Mbps", "12 Mbps", "20 Mbps" }, new[] { "Auto", "On", "Off" }, new[] { "Night City", "Black", "White", "Grey" }
         };
         // What each step of a slider stands for, where its steps are times, rates or percents, so set takes 45 s or 720p as well.
         private static readonly Dictionary<string, int[]> OwnValues = new Dictionary<string, int[]>
@@ -947,7 +947,7 @@ namespace CapriDesktop
         // Her settings Mac and Linux have.
         internal static bool CrossSetting(string name)
         {
-            return Array.IndexOf(new[] { "head_pats", "follow_ups", "keep_awake", "care_water", "care_stretch", "care_eyes", "care_late_night", "care_meals", "care_long_game", "care_boredom", "voice", "quiet", "check_ins", "wander", "dance_to_music", "always_on_top", "typing_sound", "glitch_in", "watch_my_screen", "startup", "discord_presence", "voice_layers", "show_advanced", "size", "pop_ins", "sleep", "volume", "voice_speed", "replies", "reply_limit", "mainframe_size", "bubble", "glance_gap", "voice_pitch", "voice_robot", "voice_glitch", "layer_1_pitch", "layer_1_delay", "layer_2_pitch", "layer_2_delay", "sounds", "language", "preview_voice" }, name) >= 0;
+            return Array.IndexOf(new[] { "head_pats", "follow_ups", "keep_awake", "care_water", "care_stretch", "care_eyes", "care_late_night", "care_meals", "care_long_game", "care_boredom", "voice", "quiet", "check_ins", "wander", "dance_to_music", "always_on_top", "typing_sound", "glitch_in", "watch_my_screen", "startup", "discord_presence", "voice_layers", "show_advanced", "size", "pop_ins", "sleep", "volume", "voice_speed", "replies", "reply_limit", "mainframe_size", "mainframe_colours", "bubble", "glance_gap", "voice_pitch", "voice_robot", "voice_glitch", "layer_1_pitch", "layer_1_delay", "layer_2_pitch", "layer_2_delay", "sounds", "language", "preview_voice" }, name) >= 0;
         }
 
         private static bool HasSetting(Kit kit, string name) { return kit == null || kit.Has("capri_settings:" + name); }
@@ -1566,6 +1566,44 @@ namespace CapriDesktop
         }
 
         internal static string Problem(Exception error) { return "That didn't work: " + (string.IsNullOrWhiteSpace(error.Message) ? "no error details came back." : error.Message); }
+
+        // Her job tools, which her chat tools' list doesn't have.
+        private static readonly string[] JobTools = { "ask", "done", "note", "say", "learn", "wait", "wait_for", "click", "type", "key", "drag", "scroll", "move", "start_coordinate" };
+        private static Regex brainOnly, calling;
+
+        // Tool results are written for her brain, and some tell it which tool to call next or name her tools and their settings,
+        // like "Call ask and say..." or "list_windows names its program". What people see or hear of one leaves that out: a
+        // sentence or a clause after a colon or comma that holds it goes, and a result that was only for her brain becomes
+        // "That didn't work." Her brain still gets the whole result.
+        internal static string Shown(string result)
+        {
+            if (string.IsNullOrWhiteSpace(result)) return result;
+            if (brainOnly == null)
+            {
+                List<string> names = new List<string>(JobTools);
+                for (int i = 0; i < Count; i++) names.Add(Name(i));
+                string every = string.Join("|", names.ConvertAll(name => Regex.Escape(name)).ToArray());
+                string snakes = string.Join("|", names.FindAll(name => name.IndexOf('_') > 0).ConvertAll(name => Regex.Escape(name)).ToArray());
+                calling = new Regex(@"\b[Cc]all (?:" + every + @")\b");
+                // A snake_case tool name, but not a file that happens to share one, like read_file.txt.
+                brainOnly = new Regex(@"\b(?:" + snakes + @")\b(?!\.\w)|\bThere's no (?:tool|[a-z_]+ action) called\b|\bthat (?:" + every + @") call\b");
+            }
+            if (!calling.IsMatch(result) && !brainOnly.IsMatch(result)) return result;
+            List<string> kept = new List<string>();
+            foreach (string sentence in Regex.Split(result.Trim(), @"(?<=[.!?])\s+"))
+            {
+                Match call = calling.Match(sentence), named = brainOnly.Match(sentence);
+                Match found = !call.Success || named.Success && named.Index < call.Index ? named : call;
+                if (!found.Success) { kept.Add(sentence); continue; }
+                // What comes before the colon or comma ahead of it can stand alone, like "More pages are available" before
+                // "call read_file...", unless it's only the start of an "If..." or "When...".
+                int cut = sentence.LastIndexOfAny(new[] { ':', ',' }, Math.Max(0, found.Index - 1));
+                string head = cut > 0 ? sentence.Substring(0, cut).Trim() : "";
+                if (head.Length >= 8 && !Regex.IsMatch(head, @"^(If|When|Once|Before|After|Unless)\b") && !calling.IsMatch(head) && !brainOnly.IsMatch(head)) kept.Add(head + ".");
+            }
+            string spoken = string.Join(" ", kept.ToArray()).Trim();
+            return spoken.Length == 0 ? "That didn't work." : spoken;
+        }
 
         internal static void Forget() { lock (gate) cached = null; }
 
@@ -5406,7 +5444,7 @@ namespace CapriDesktop
             }
             else if (action == "up" || action == "down")
             {
-                if (action == "up" && now >= 100 && !muted) return name + " is already at 100% in the volume mixer. Its own volume slider inside the app, or the PC's volume with media, can still go up.";
+                if (action == "up" && now >= 100 && !muted) return name + " is already at 100% in the volume mixer. Its own volume slider inside the app, or the PC's volume, can still go up.";
                 if (action == "down" && now <= 0) return name + " is already at 0% in the volume mixer.";
                 int step = leveled && level > 0 ? level : 20;
                 target = Math.Max(0, Math.Min(100, action == "up" ? now + step : now - step));
