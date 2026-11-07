@@ -1977,6 +1977,7 @@ namespace CapriDesktop
         private const double LettersPerSecond = 28;
         private const double MouthRate = 12;
         private readonly Brain brain = new Brain { Act = Hands.Do };
+        private DiscordBridge discordBridge;
         private System.Collections.Generic.List<string> cloudModels;
         private int cloudListing;
         private int cloudRefresh;
@@ -2750,7 +2751,23 @@ namespace CapriDesktop
             anchor = KeepOnScreen(anchor);
             Location = anchor;
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged += DisplaysChanged;
-            if (!smoke) StartNews(hadSettings);
+            if (!smoke)
+            {
+                StartNews(hadSettings);
+                try
+                {
+                    discordBridge = new DiscordBridge(data, reminders,
+                        delegate(string message, string sharedMemory, bool initiated) { return brain.AskFromDiscord(message, sharedMemory, initiated); },
+                        delegate(string message, string publicContext) { return brain.AskFromPublicDiscord(message, publicContext); },
+                        DiscordStatus);
+                    Hands.DiscordMessage = SendDiscordMessage;
+                }
+                catch (Exception error)
+                {
+                    Brain.Log("Discord bridge", -1, error.Message);
+                    Hands.DiscordMessage = delegate { return "I couldn't start the private Discord connection."; };
+                }
+            }
         }
 
         protected override bool ShowWithoutActivation { get { return true; } }
@@ -14510,6 +14527,38 @@ namespace CapriDesktop
             catch (UnauthorizedAccessException) { return false; }
         }
 
+        private string SendDiscordMessage(string text)
+        {
+            return discordBridge == null
+                ? "Private Discord messaging isn't connected."
+                : discordBridge.QueueMessage(text);
+        }
+
+        private string DiscordStatus()
+        {
+            long idle = Native.IdleMilliseconds();
+            bool gaming = GamingOn || Native.Gaming();
+            string app = "";
+
+            try
+            {
+                int processId;
+                IntPtr window = Native.GetForegroundWindow();
+                Native.GetWindowThreadProcessId(window, out processId);
+
+                if (processId != 0)
+                {
+                    using (System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(processId))
+                        app = process.ProcessName;
+                }
+            }
+            catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+
+            return idle.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "|" + (gaming ? "1" : "0") + "|" + app;
+        }
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             if (husk != null) husk.Dispose();
@@ -14526,6 +14575,7 @@ namespace CapriDesktop
             clickDelay.Stop();
             frames.Stop();
             signals.Stop();
+            if (discordBridge != null) discordBridge.Dispose();
             brain.Cancel();
             StopChat();
             mouseKeys.Stop();
