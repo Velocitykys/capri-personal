@@ -74,6 +74,10 @@ namespace CapriDesktop
         [DataMember] public string Text;
         [DataMember] public string When;
         [DataMember] public bool Said;
+        [DataMember] public string Id;
+        [DataMember] public bool DiscordSaid;
+        [DataMember] public bool DiscordAcknowledged;
+        [DataMember] public string DiscordNextAt;
         internal bool Late;
 
         internal DateTime Due { get { return DateTime.ParseExact(When, "o", CultureInfo.InvariantCulture, DateTimeStyles.None); } }
@@ -139,7 +143,7 @@ namespace CapriDesktop
                 DateTime when;
                 if (string.IsNullOrWhiteSpace(args.Text)) return "What should I remind you about?";
                 if (!Parse(args.When, Now(), out when)) return "What time should I remind you? Try in 20 minutes or on 5 December at 9am.";
-                changed.Add(new Reminder { Text = args.Text.Trim(), When = DateTime.SpecifyKind(when, DateTimeKind.Unspecified).ToString("o", CultureInfo.InvariantCulture) });
+                changed.Add(new Reminder { Id = Guid.NewGuid().ToString("N"), Text = args.Text.Trim(), When = DateTime.SpecifyKind(when, DateTimeKind.Unspecified).ToString("o", CultureInfo.InvariantCulture) });
                 remindersFile.Write(changed, ".new");
                 reminders = changed;
                 return "I'll remind you " + when.ToString("f") + ": " + args.Text.Trim();
@@ -152,12 +156,190 @@ namespace CapriDesktop
             {
                 List<Reminder> copy = new List<Reminder>();
                 foreach (Reminder item in reminders)
-                    if (item != null) copy.Add(new Reminder { Text = item.Text, When = item.When, Said = item.Said, Late = item.Late });
+                    if (item != null) copy.Add(new Reminder { Id = item.Id, Text = item.Text, When = item.When, Said = item.Said, DiscordSaid = item.DiscordSaid, DiscordAcknowledged = item.DiscordAcknowledged, DiscordNextAt = item.DiscordNextAt, Late = item.Late });
                 copy.Sort(delegate(Reminder left, Reminder right) { return left.Due.CompareTo(right.Due); });
                 return copy;
             }
         }
 
+        // Discord delivery is independent of desktop delivery.
+        internal List<Reminder> TakeForDiscord(DateTime now)
+        {
+            lock (gate)
+            {
+                List<Reminder> due = new List<Reminder>();
+                bool changed = false;
+
+                foreach (Reminder candidate in reminders)
+                {
+                    if (candidate == null || candidate.DiscordAcknowledged || candidate.Due > now) continue;
+
+                    DateTime next = candidate.Due;
+                    if (candidate.DiscordSaid && !string.IsNullOrEmpty(candidate.DiscordNextAt))
+                        DateTime.TryParseExact(candidate.DiscordNextAt, "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out next);
+
+                    if (next > now) continue;
+
+                    if (string.IsNullOrEmpty(candidate.Id))
+                        candidate.Id = Guid.NewGuid().ToString("N");
+
+                    candidate.DiscordSaid = true;
+                    candidate.DiscordNextAt = DateTime.SpecifyKind(now.AddMinutes(5), DateTimeKind.Unspecified).ToString("o", CultureInfo.InvariantCulture);
+                    changed = true;
+
+                    due.Add(new Reminder
+                    {
+                        Id = candidate.Id,
+                        Text = candidate.Text,
+                        When = candidate.When,
+                        Said = candidate.Said,
+                        DiscordSaid = true,
+                        DiscordAcknowledged = candidate.DiscordAcknowledged,
+                        DiscordNextAt = candidate.DiscordNextAt,
+                        Late = candidate.Late
+                    });
+                }
+
+                if (changed) remindersFile.Write(reminders, ".new");
+                due.Sort(delegate(Reminder left, Reminder right) { return left.Due.CompareTo(right.Due); });
+                return due;
+            }
+        }
+
+        internal string DiscordHandle(string said)
+        {
+            string text = Hands.Asked(said ?? "").Trim();
+
+            if (Regex.IsMatch(text, @"^(?:ack|acknowledge|done|got it|thanks, done|dismiss)(?: reminder)?[.! ]*$", RegexOptions.IgnoreCase))
+                return DiscordAcknowledge();
+
+            Match snooze = Regex.Match(text, @"^(?:snooze|snooze reminder)(?:\s+(?:for\s+)?(\d+)\s*(?:minutes?|mins?))?[.! ]*$", RegexOptions.IgnoreCase);
+            if (snooze.Success)
+            {
+                int minutes = 10;
+                int parsed;
+                if (snooze.Groups[1].Success && int.TryParse(snooze.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+                    minutes = Math.Max(1, Math.Min(1440, parsed));
+                return DiscordSnooze(minutes);
+            }
+
+            if (Regex.IsMatch(text, @"^(?:cancel reminder|cancel my reminder|forget reminder)$", RegexOptions.IgnoreCase))
+            {
+                lock (gate)
+                {
+                    Reminder pending = null;
+                    foreach (Reminder item in reminders)
+                        if (item != null && !item.Said && (pending == null || item.Due < pending.Due)) pending = item;
+
+                    if (pending == null) return "There isn't an active reminder to cancel.";
+
+                    List<Reminder> changed = new List<Reminder>(reminders);
+                    changed.Remove(pending);
+                    remindersFile.Write(changed, ".new");
+                    reminders = changed;
+                    return "Cancelled. You're free. For now. >:)";
+                }
+            }
+
+            if (Regex.IsMatch(text, @"^(?:my reminders|show me my reminders)$", RegexOptions.IgnoreCase))
+                return Remind(new ToolArguments { Action = "list" });
+
+            KeyValuePair<string, ToolArguments> routed = Route(said);
+            return routed.Key == "remind" ? Remind(routed.Value) : null;
+        }
+
+        internal string ImportDiscordReminder(string id, string text, string when, bool discordSaid, string nextAt)
+        {
+            lock (gate)
+            {
+                if (string.IsNullOrWhiteSpace(text)) return "Skipped an empty legacy reminder.";
+
+                DateTime due;
+                if (!DateTime.TryParseExact(when, "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out due))
+                    return "Skipped a legacy reminder with an invalid time.";
+
+                if (!string.IsNullOrEmpty(id) && reminders.Exists(item => item != null && item.Id == id))
+                    return "Already imported.";
+
+                DateTime next;
+                string nextText = null;
+                if (discordSaid && DateTime.TryParseExact(nextAt ?? "", "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out next))
+                    nextText = next.ToString("o", CultureInfo.InvariantCulture);
+
+                Reminder imported = new Reminder
+                {
+                    Id = string.IsNullOrEmpty(id) ? Guid.NewGuid().ToString("N") : id,
+                    Text = text.Trim(),
+                    When = due.ToString("o", CultureInfo.InvariantCulture),
+                    Said = false,
+                    DiscordSaid = discordSaid,
+                    DiscordAcknowledged = false,
+                    DiscordNextAt = nextText,
+                    Late = due <= Now()
+                };
+
+                List<Reminder> changed = new List<Reminder>(reminders);
+                changed.Add(imported);
+                remindersFile.Write(changed, ".new");
+                reminders = changed;
+                return "Imported.";
+            }
+        }
+
+        internal void DiscordDeliveryFailed(string id)
+        {
+            lock (gate)
+            {
+                if (string.IsNullOrEmpty(id)) return;
+                Reminder found = reminders.Find(item => item != null && item.Id == id);
+                if (found == null) return;
+
+                found.DiscordSaid = false;
+                found.DiscordNextAt = null;
+                remindersFile.Write(reminders, ".new");
+            }
+        }
+
+        internal string DiscordAcknowledge()
+        {
+            lock (gate)
+            {
+                Reminder pending = null;
+                foreach (Reminder item in reminders)
+                    if (item != null && item.DiscordSaid && !item.DiscordAcknowledged && (pending == null || item.Due < pending.Due))
+                        pending = item;
+
+                if (pending == null) return "You don't have a ringing reminder right now.";
+
+                pending.Said = true;
+                pending.DiscordAcknowledged = true;
+                remindersFile.Write(reminders, ".new");
+                return "Got it. Reminder dismissed :)";
+            }
+        }
+
+        internal string DiscordSnooze(int minutes)
+        {
+            lock (gate)
+            {
+                Reminder pending = null;
+                foreach (Reminder item in reminders)
+                    if (item != null && item.DiscordSaid && !item.DiscordAcknowledged && (pending == null || item.Due < pending.Due))
+                        pending = item;
+
+                if (pending == null) return "Nothing to snooze right now.";
+
+                minutes = Math.Max(1, Math.Min(1440, minutes));
+                pending.When = DateTime.SpecifyKind(Now().AddMinutes(minutes), DateTimeKind.Unspecified).ToString("o", CultureInfo.InvariantCulture);
+                pending.Said = false;
+                pending.DiscordSaid = false;
+                pending.DiscordAcknowledged = false;
+                pending.DiscordNextAt = null;
+                pending.Late = false;
+                remindersFile.Write(reminders, ".new");
+                return "Fine, snoozed for " + minutes + " minutes. Don't make me come back twice. :P";
+            }
+        }
         internal List<Routine> SnapshotRoutines()
         {
             lock (gate)

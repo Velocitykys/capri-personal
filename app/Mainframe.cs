@@ -2056,6 +2056,52 @@ namespace CapriDesktop
         private int wndDepth;
         private string outerMessage;
 
+        private const int HighlightHotkeyId = 0xCA71;
+        private const int WmHotkey = 0x0312;
+        private bool highlightHotkeyRegistered;
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool UnregisterHotKey(IntPtr window, int id);
+
+        private void RegisterHighlightHotkey()
+        {
+            if (!capri.ExperimentalFeatureOn("highlight_assistance")) { UnregisterHighlightHotkey(); return; }
+            if (highlightHotkeyRegistered || !IsHandleCreated) return;
+            highlightHotkeyRegistered = RegisterHotKey(Handle, HighlightHotkeyId, 0x0001 | 0x0002, (uint)Keys.E);
+        }
+
+        private void RefreshHighlightHotkey() { RegisterHighlightHotkey(); }
+
+        private void UnregisterHighlightHotkey()
+        {
+            if (!highlightHotkeyRegistered || !IsHandleCreated) return;
+            UnregisterHotKey(Handle, HighlightHotkeyId);
+            highlightHotkeyRegistered = false;
+        }
+
+        private void CaptureHighlightedText()
+        {
+            StartHighlightRegionSelection();
+        }
+
+        private HighlightAssistanceSheet highlightAssistance;
+        private void OpenHighlightAssistance(byte[] selectedImage)
+        {
+            if (highlightAssistance != null && !highlightAssistance.IsDisposed) highlightAssistance.Close();
+            highlightAssistance = new HighlightAssistanceSheet(this, zoom, selectedImage);
+            highlightAssistance.Show(this);
+            highlightAssistance.Activate();
+        }
+
+        private DashboardSheet dashboard;
+        private void OpenDashboard()
+        {
+            if (dashboard != null && !dashboard.IsDisposed && dashboard.Zoom != zoom) dashboard.Close();
+            if (dashboard == null || dashboard.IsDisposed) dashboard = new DashboardSheet(this, zoom);
+            dashboard.RefreshDashboard();
+            if (!dashboard.Visible) dashboard.Show(this);
+            dashboard.Activate();
+        }
+
         protected override void WndProc(ref Message message)
         {
             // The message a nested restore started from, for RestoredBy in smoke runs.
@@ -2067,6 +2113,11 @@ namespace CapriDesktop
 
         private void HandleMessage(ref Message message)
         {
+            if (message.Msg == WmHotkey && message.WParam.ToInt32() == HighlightHotkeyId)
+            {
+                CaptureHighlightedText();
+                return;
+            }
             if (message.Msg == 0x007E || message.Msg == 0x02E0) Panels.Forget();
             if (message.Msg == 0x02E0 && loaded)
             {
@@ -2096,6 +2147,7 @@ namespace CapriDesktop
             Rezoom(Wanted());
             ShowFrameSize();
             Arrange(expanded);
+            RegisterHighlightHotkey();
         }
 
         // Auto's size on the screen she's on, kept for Settings to show.
@@ -2113,7 +2165,13 @@ namespace CapriDesktop
             float shrunk = Companion.OnGitHub ? 1f : Panels.Shrink(Screen.FromControl(this), restoringFullScreen || capri.FullScreenDisplay);
             autoZoom = Math.Max(1f, Math.Min(2f, (float)Math.Round(shrunk / DeviceScale() * 20) / 20));
             int picked = capri.MainframeSize;
-            return picked > 0 ? picked / 100f : autoZoom;
+            float requested = picked > 0 ? picked / 100f : autoZoom;
+            Rectangle area = Screen.FromControl(this).WorkingArea;
+            float physicalScale = DeviceScale() * TextScale();
+            float requiredHeight = Tall + KeyRow + (expanded ? SetupHeight : 0);
+            if (voiceFilled >= 0) requiredHeight += InstallRow;
+            float heightLimit = area.Height / (requiredHeight * physicalScale);
+            return Math.Min(requested, Math.Max(0.5f, heightLimit));
         }
 
         private void ShowFrameSize()
@@ -2716,6 +2774,7 @@ namespace CapriDesktop
             if (disposing) { speakerMenu.Dispose(); screenMenu.Dispose(); if (miniMenu != null) miniMenu.Dispose(); }
             if (disposing) { Application.RemoveMessageFilter(this); modelMenu.Dispose(); freeKeyMenu.Dispose(); planMenu.Dispose(); voiceMenu.Dispose(); speechModelMenu.Dispose(); micMenu.Dispose(); languageMenu.Dispose(); freeMenu.Dispose(); careMenu.Dispose(); hearingMenu.Dispose(); mixInputMenu.Dispose(); mixOutputMenu.Dispose(); }
             if (disposing && languageFont != null) languageFont.Dispose();
+            if (disposing) UnregisterHighlightHotkey();
             base.Dispose(disposing);
             if (disposing) foreach (LayoutItem item in layout) item.Dispose();
         }

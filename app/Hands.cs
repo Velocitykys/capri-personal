@@ -791,7 +791,8 @@ namespace CapriDesktop
             "";
 #else
             "To arrange a window, use app_window: maximize, restore, snap it to half a monitor, move_to_screen for another monitor, or move and resize it. list_windows names their monitors, and with a name says where that app's window is and how big, so check it before a move or resize by pixels. Its result says where the window really ended up, so tell them that, like an app that won't go any smaller. " +
-            "media goes by what Windows says is playing, so pausing never starts the music, and now_playing says what any player has on, paused or not. A timer is a reminder: for set a timer for 10 minutes, call remind with when in 10 minutes. One app's own volume, like turning the game down so they can hear Discord, is app_volume; the whole PC's is media. When their PC or a game is slow or lagging, pc_status says how busy it is and what's using it, and internet_status says whether their connection is the problem. ";
+            "media goes by what Windows says is playing, so pausing never starts the music, and now_playing says what any player has on, paused or not. A timer is a reminder: for set a timer for 10 minutes, call remind with when in 10 minutes. One app's own volume, like turning the game down so they can hear Discord, is app_volume; the whole PC's is media. When their PC or a game is slow or lagging, pc_status says how busy it is and what's using it, and internet_status says whether their connection is the problem. " +
+            "To send a text message to the owner's own private Discord DM, use discord_message. It only sends to the configured owner, never to a server, channel or another person. Do not use it for screenshots or files. ";
 #endif
 
         // Her own settings, which every brain can change, on Mac and Linux too, where the ones only Windows has say so.
@@ -1144,6 +1145,8 @@ namespace CapriDesktop
             { "remind", "Save a reminder on their PC, list their reminders, or cancel a reminder. Times use their local clock. Give the reminder in their words; the PC works out when it is due.",
               "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"What to remind them about, or which reminder to cancel\"},\"when\":{\"type\":\"string\",\"description\":\"Local time, like in 20 minutes, in 3 days, at 5pm, tomorrow at 9, on 2026-12-05 at 9am or on 5 December at noon. Use YYYY-MM-DD for dates in any language\"},\"action\":{\"type\":\"string\",\"description\":\"What to do; save by default\",\"enum\":[\"save\",\"list\",\"cancel\"]}}}", "set reminders", "set reminders" },
 #if !CROSS
+            { "discord_message", "Send a text message to the owner's own private Discord DM. Only use when they explicitly ask you to send a message to their own Discord DM.",
+              "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"The exact text to send to the owner's private Discord DM\"}},\"required\":[\"text\"]}", "send a text message to your private Discord DM", "send a message to your own private Discord DM" },
             { "game_notes", "Keep controls or instructions the user teaches you for a game before you play it, or read them back. These are separate from what you learn while playing and you read them before every game job. Keep their actual controls in text.",
               "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"The game's window title, or leave out for the game open now\"},\"text\":{\"type\":\"string\",\"description\":\"Controls or instructions to keep in their words\"},\"action\":{\"type\":\"string\",\"description\":\"Save by default, or read the saved controls\",\"enum\":[\"save\",\"read\"]}}}", "keep game controls you teach her", "keep or read controls for a game" },
 #endif
@@ -1408,6 +1411,9 @@ namespace CapriDesktop
         internal static Func<string, KeyValuePair<string, ToolArguments>> Plan = delegate { return new KeyValuePair<string, ToolArguments>(); };
         internal static Func<ToolArguments, string> Remind = delegate { return "Couldn't open your reminders."; };
 #if !CROSS
+        internal static Func<string, string> DiscordMessage = delegate { return "Private Discord messaging isn't connected."; };
+#endif
+#if !CROSS
         internal static Func<ToolArguments, string> WatchFor = delegate { return "Couldn't watch the screen just now."; };
         internal static Func<string, string> WatchAlong = delegate { return "Couldn't start watching together just now."; };
 #endif
@@ -1646,6 +1652,9 @@ namespace CapriDesktop
                 if (tool == "read_file") return ReadFile(args.Path, args.Page, args.Offset);
                 if (tool == "watch_for") return WatchFor(args);
                 if (tool == "game_notes") return Valid(tool, args) ? GameNotes.Do(args) : "What game controls should I keep?";
+#endif
+#if !CROSS
+                if (tool == "discord_message") return Valid(tool, args) ? DiscordMessage(args.Text) : "What text should I send?";
 #endif
                 if (tool == "remind") return Remind(args);
                 if (tool == "routine") return Routine(args);
@@ -3854,6 +3863,9 @@ namespace CapriDesktop
             if (tool == "read_file") return Named(args.Path) && (!args.Page.HasValue || args.Page.Value >= 1) && (!args.Offset.HasValue || args.Offset.Value >= 0);
             if (tool == "watch_for") return (string.IsNullOrEmpty(args.Often) || args.Often == "once" || args.Often == "every_time") && (args.Action == "list" || args.Action == "stop" || ((string.IsNullOrEmpty(args.Action) || args.Action == "watch") && Named(args.Text)));
             if (tool == "game_notes") return args != null && (args.Action == "read" || (string.IsNullOrEmpty(args.Action) || args.Action == "save") && Named(args.Text));
+#endif
+#if !CROSS
+            if (tool == "discord_message") return Named(args.Text) && args.Text.Length <= 1800;
 #endif
             if (tool == "remind") return args.Action == "list" || (args.Action == "cancel" ? Named(args.Text) : (string.IsNullOrEmpty(args.Action) || args.Action == "save") && Named(args.Text) && Named(args.When));
             if (tool == "routine") return args.Action == "list" || (Named(args.Phrase) && (args.Action == "forget" || args.Action == "run" || ((string.IsNullOrEmpty(args.Action) || args.Action == "save") && Named(args.Steps))));
