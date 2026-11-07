@@ -29,7 +29,14 @@ namespace CapriDesktop
                 if (OperatingSystem.IsWindows()) return new WindowsDesk();
                 if (OperatingSystem.IsMacOS()) return new MacDesk();
                 if (OperatingSystem.IsLinux() && HyprDesk.Socket() != null) return new HyprDesk();
-                if (OperatingSystem.IsLinux() && Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") == null && Environment.GetEnvironmentVariable("DISPLAY") != null) return new X11Desk();
+                if (OperatingSystem.IsLinux() && Environment.GetEnvironmentVariable("DISPLAY") != null)
+                {
+                    // On Wayland, XWayland only knows where the mouse is while it's over an X window, such as her while she's held.
+                    Desk desk = new X11Desk();
+                    if (Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") == null) return desk;
+                    if (Program.Smoke == null && KWinBridge.Start()) return new KWinDesk { HeldAt = desk.Pointer };
+                    return new BareDesk { HeldAt = desk.Pointer };
+                }
             }
             catch (Exception) { }
             return new BareDesk();
@@ -43,6 +50,9 @@ namespace CapriDesktop
         internal virtual string Debug() { return ""; }
         // Where the mouse is on the whole desktop, in pixels, or null where the desktop won't say (Wayland).
         internal virtual PixelPoint? Pointer() { return null; }
+        // Where the mouse is while she's being dragged, read straight from the desktop, so a window move the desktop hasn't
+        // confirmed yet doesn't skew it. Null keeps the drag on her window's own idea of where it is.
+        internal virtual PixelPoint? Grabbed() { return null; }
 
         // Asks the window manager not to give this window the keyboard when it's shown.
         internal virtual void Unfocused(long window) { }
@@ -69,7 +79,10 @@ namespace CapriDesktop
 
     internal sealed class BareDesk : Desk
     {
+        internal Func<PixelPoint?> HeldAt;
+
         internal override string Name { get { return "screen edges only"; } }
+        internal override PixelPoint? Grabbed() { return HeldAt == null ? null : HeldAt(); }
         internal override List<Spot> Windows(ICollection<long> skip) { return new List<Spot>(); }
         internal override Spot Find(long window) { return null; }
         internal override bool Alive(long window) { return false; }
@@ -309,6 +322,8 @@ namespace CapriDesktop
         }
 
         internal override string Name { get { return "X11"; } }
+
+        internal override PixelPoint? Grabbed() { return Pointer(); }
 
         internal override PixelPoint? Pointer()
         {
@@ -611,6 +626,57 @@ namespace CapriDesktop
         {
             string reply = Ask("dispatch hl.dsp.window." + lua + "({ action = \"enable\", window = \"address:" + address + "\" })");
             if (reply.Trim() != "ok") Ask("dispatch " + classic + " address:" + address);
+        }
+    }
+
+    // KDE on Wayland won't tell an app where the mouse is, but KWin will tell a script. Her jobs ask it this way, only
+    // around a borrowed click, since it takes a few hundred milliseconds: a one-line script prints the cursor and the
+    // desktop's size to the journal under a fresh tag, and she reads it back. 0 to 1 across the desktop, or null.
+    internal static class KWinMouse
+    {
+        internal static bool Here
+        {
+            get
+            {
+                return OperatingSystem.IsLinux() && Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") != null
+                    && (Environment.GetEnvironmentVariable("XDG_CURRENT_DESKTOP") ?? "").IndexOf("KDE", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+        }
+
+        internal static double[] Ask()
+        {
+            if (!Here) return null;
+            string tag = "CAPRIPOS" + Guid.NewGuid().ToString("N").Substring(0, 12);
+            string path = Path.Combine(Path.GetTempPath(), tag.ToLowerInvariant() + ".js");
+            try
+            {
+                File.WriteAllText(path, "print(\"" + tag + " \" + workspace.cursorPos.x + \" \" + workspace.cursorPos.y + \" \" + workspace.virtualScreenSize.width + \" \" + workspace.virtualScreenSize.height);");
+                string loaded = Music.Run("dbus-send", new[] { "--session", "--print-reply", "--dest=org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", "string:" + path, "string:" + tag });
+                System.Text.RegularExpressions.Match id = System.Text.RegularExpressions.Regex.Match(loaded ?? "", @"int32\s+(\d+)");
+                if (!id.Success) return null;
+                Music.Run("dbus-send", new[] { "--session", "--print-reply", "--dest=org.kde.KWin", "/Scripting/Script" + id.Groups[1].Value, "org.kde.kwin.Script.run" });
+                double[] found = null;
+                for (int i = 0; i < 12 && found == null; i++)
+                {
+                    System.Threading.Thread.Sleep(60);
+                    string said = Music.Run("journalctl", new[] { "--user", "--since", "-10s", "-o", "cat", "--grep", tag });
+                    System.Text.RegularExpressions.Match line = System.Text.RegularExpressions.Regex.Match(said ?? "", tag + @" (-?[\d.]+) (-?[\d.]+) ([\d.]+) ([\d.]+)");
+                    if (!line.Success) continue;
+                    System.Globalization.CultureInfo plain = System.Globalization.CultureInfo.InvariantCulture;
+                    double x = double.Parse(line.Groups[1].Value, plain), y = double.Parse(line.Groups[2].Value, plain), w = double.Parse(line.Groups[3].Value, plain), h = double.Parse(line.Groups[4].Value, plain);
+                    if (w > 1 && h > 1) found = new[] { x / (w - 1), y / (h - 1) };
+                }
+                Music.Run("dbus-send", new[] { "--session", "--print-reply", "--dest=org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", "string:" + tag });
+                return found;
+            }
+            catch (Exception) { return null; }
+            finally
+            {
+                // Losing access to the cursor script must not discard a finished pointer query.
+                try { File.Delete(path); }
+                catch (IOException error) { Brain.Log("mouse", -1, error.Message); }
+                catch (UnauthorizedAccessException error) { Brain.Log("mouse", -1, error.Message); }
+            }
         }
     }
 }

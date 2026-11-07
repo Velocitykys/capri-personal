@@ -12,8 +12,19 @@ namespace CapriDesktop
     internal static class Chores
     {
         internal static Func<byte[]> Shoot = delegate { return Eyes.Shoot(); };
-        // Where the mouse is now, 0 to 1 across the desktop, or null where the desktop won't say.
+        // Where their mouse is now, 0 to 1 across the desktop, or null where the desktop won't say.
         internal static Func<double[]> Mouse = delegate { return null; };
+        // Her own pointer, like Windows': it glides to each target while their mouse stays put, ripples where she clicks,
+        // hides for her screenshots and parks when the job ends. Pet draws it; 0 to 1 across the desktop like Fingers.
+        internal static Action<double, double> Track = delegate { };
+        internal static Action Tapped = delegate { };
+        internal static Action<bool> Hidden = delegate { };
+        internal static Action Parked = delegate { };
+        // Her sign round the screen while a job has their mouse (#106) hides for her screenshots too, since Linux can't keep a
+        // window out of them. Pet draws it; true when it hid.
+        internal static Func<bool, bool> SignHidden = delegate { return false; };
+        private static double herX = -1, herY = -1;
+        internal const int StepMs = 15;
         // The smoke test watches what she'd do instead of moving the real mouse.
         internal static Action<string, JsonElement> Doing;
 
@@ -45,6 +56,17 @@ namespace CapriDesktop
         // Out loud and in her bubble, for her stream.
         internal static Action<string> Says;
 
+        // The skill mods that are on for a game, from her mods list, like Windows' game brief. Null tells her none.
+        internal static Func<string, string> Skills;
+
+        // What her skills say about the game open now. Empty with no game or no skill for it.
+        internal static string Skilled()
+        {
+            Func<string, string> skills = Skills;
+            string open = skills == null || Hands.GameOpen == null ? null : Hands.GameOpen();
+            return string.IsNullOrEmpty(open) ? "" : skills(open);
+        }
+
         // A job that isn't her stream stops after this many steps, so a brain that never says done can't keep her going for ever.
         internal const int MostSteps = 25;
 
@@ -70,22 +92,37 @@ namespace CapriDesktop
         internal static string Run(Brain brain, string job, string asked)
         {
             if (Hands.StreamAsked(job) || Hands.StreamAsked(asked)) Hands.Streaming = true;
-            try { return Steps(brain, job, asked); }
+            try { return Work(brain, job, asked); }
             finally { Hands.Streaming = false; }
+        }
+
+        // Her pointer parks however the job ends, even one that can't start. Her sign is up from her first look until the job
+        // ends, thinking included, like Windows' (#106).
+        private static string Work(Brain brain, string job, string asked)
+        {
+            try
+            {
+                string problem = Fingers.Problem;
+                if (problem != null && Doing == null) return problem;
+                if (brain.Model == null) return "Couldn't do that: your brain is offline.";
+                InControl.Begin();
+                try { return Steps(brain, job, asked); }
+                finally { InControl.End(); }
+            }
+            finally { Finish(); }
         }
 
         private static string Steps(Brain brain, string job, string asked)
         {
-            string problem = Fingers.Problem;
-            if (problem != null && Doing == null) return problem;
-            if (brain.Model == null) return "Couldn't do that: your brain is offline.";
             List<string> steps = new List<string>();
             Hands.StreamMinute minute = new Hands.StreamMinute();
             System.Diagnostics.Stopwatch live = System.Diagnostics.Stopwatch.StartNew();
+            string skilled = "";
             for (int step = 0; Hands.Streaming || step < MostSteps; step++)
             {
-                if (Grabbed()) return "You grabbed the mouse, so you stopped. Say what to do next.";
-                byte[] picture = Shoot();
+                // A job can open the game itself, so until a skill turns up she looks again every few steps.
+                if (skilled.Length == 0 && step % 5 == 0) skilled = Skilled();
+                byte[] picture = Shot();
                 byte[] shot = Eyes.Jpeg(picture, 1280);
                 if (shot == null) return Eyes.Missing;
                 int width, height;
@@ -98,7 +135,7 @@ namespace CapriDesktop
                     "\nScreenshot: " + width + " x " + height + " pixels." +
                     (steps.Count == 0 ? "\nNo steps yet." : "\nSteps so far:\n" + string.Join("\n", steps.GetRange(recent, steps.Count - recent).ToArray())) + (chatTime ? "\nIt's your chat time." : "") + "\nThe next step, as one JSON object:";
                 string reply;
-                try { reply = brain.See(shot, Hands.Streaming ? Allowed + StreamRules : Allowed, instruction, 160); }
+                try { reply = brain.See(shot, (Hands.Streaming ? Allowed + StreamRules : Allowed) + skilled, instruction, 160); }
                 catch (BrainException error) { return "Couldn't do that: " + error.Message; }
                 catch (System.Net.WebException error)
                 {
@@ -137,13 +174,85 @@ namespace CapriDesktop
             return said.Length == 0 ? otherwise : said;
         }
 
-        // They took the mouse back: it's away from where she last put it.
-        private static bool Grabbed()
+        // Her pointer and her sign stay out of her own screenshots, so her brain only ever sees their screen.
+        private static byte[] Shot()
         {
-            if (Fingers.LastX < 0) return false;
-            double[] now = Mouse();
-            if (now == null) return false;
-            return Math.Abs(now[0] - Fingers.LastX) > 0.03 || Math.Abs(now[1] - Fingers.LastY) > 0.03;
+            bool shown = herX >= 0;
+            if (shown) Hidden(true);
+            bool signed = SignHidden(true);
+            if (shown || signed) Thread.Sleep(90);
+            try { return Shoot(); }
+            finally
+            {
+                if (shown) Hidden(false);
+                if (signed) SignHidden(false);
+            }
+        }
+
+        // A job ended: hand the mouse back if it's still lent, and park her pointer.
+        private static void Finish()
+        {
+            herX = herY = -1;
+            Parked();
+        }
+
+        // Her pointer glides on a human path, as on Windows; their mouse doesn't come along.
+        internal static void Glide(double x, double y)
+        {
+            if (herX < 0) { double[] now = Mouse(); herX = now != null ? now[0] : 0.5; herY = now != null ? now[1] : 0.5; }
+            foreach (double[] next in Path(herX, herY, x, y, Environment.TickCount))
+            {
+                herX = next[0];
+                herY = next[1];
+                Track(herX, herY);
+                Thread.Sleep(StepMs);
+            }
+        }
+
+        // Windows' human path, in fractions of the desktop: a gentle curve, a slight overshoot on long moves, and more steps
+        // for longer ones.
+        internal static List<double[]> Path(double fromX, double fromY, double toX, double toY, int seed)
+        {
+            const double Wide = 1920, Tall = 1080;
+            List<double[]> points = new List<double[]>();
+            double dx = (toX - fromX) * Wide, dy = (toY - fromY) * Tall;
+            double distance = Math.Sqrt(dx * dx + dy * dy);
+            if (distance < 2) { points.Add(new[] { toX, toY }); return points; }
+            Random random = new Random(seed);
+            double milliseconds = 110 + 115 * Math.Log(distance / 24 + 1, 2);
+            int count = Math.Max(8, Math.Min(60, (int)(milliseconds / StepMs)));
+            double ux = dx / distance, uy = dy / distance;
+            double bend = distance * (0.06 + 0.1 * random.NextDouble()) * (random.Next(2) == 0 ? -1 : 1);
+            double past = distance > 400 ? Math.Min(14, distance * 0.025) : 0;
+            double sx = fromX * Wide, sy = fromY * Tall, endX = toX * Wide + ux * past, endY = toY * Tall + uy * past;
+            double c1x = sx + dx * 0.3 - uy * bend, c1y = sy + dy * 0.3 + ux * bend;
+            double c2x = sx + dx * 0.75 - uy * bend * 0.6, c2y = sy + dy * 0.75 + ux * bend * 0.6;
+            for (int i = 1; i <= count; i++)
+            {
+                double t = (double)i / count, eased = t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2, u = 1 - eased;
+                double px = u * u * u * sx + 3 * u * u * eased * c1x + 3 * u * eased * eased * c2x + eased * eased * eased * endX;
+                double py = u * u * u * sy + 3 * u * u * eased * c1y + 3 * u * eased * eased * c2y + eased * eased * eased * endY;
+                points.Add(new[] { px / Wide, py / Tall });
+            }
+            points.Add(new[] { toX, toY });
+            return points;
+        }
+
+        // Their real cursor is only borrowed for the instant of a press, drag or scroll, then handed back where they left
+        // it, unless they've moved it themselves meanwhile.
+        private static void Borrowed(double x, double y, Action press)
+        {
+            double[] theirs = Mouse();
+            Fingers.MoveTo(x, y);
+            try { press(); }
+            finally
+            {
+                if (theirs != null)
+                {
+                    double[] now = Mouse();
+                    if (now == null || (Math.Abs(now[0] - Fingers.LastX) < 0.004 && Math.Abs(now[1] - Fingers.LastY) < 0.004)) Fingers.MoveTo(theirs[0], theirs[1]);
+                }
+            }
         }
 
         internal static string Act(string what, JsonElement order, int width, int height)
@@ -153,17 +262,23 @@ namespace CapriDesktop
             if (Doing != null) { Doing(what, order); return what + at; }
             switch (what)
             {
-                case "click": Fingers.MoveTo(x, y); Fingers.Click("left", 1); return "clicked" + at;
-                case "double_click": Fingers.MoveTo(x, y); Fingers.Click("left", 2); return "double-clicked" + at;
-                case "right_click": Fingers.MoveTo(x, y); Fingers.Click("right", 1); return "right-clicked" + at;
-                case "move": Fingers.MoveTo(x, y); return "moved the mouse" + at;
+                case "click": Glide(x, y); Tapped(); Borrowed(x, y, delegate { Fingers.Click("left", 1); }); return "clicked" + at;
+                case "double_click": Glide(x, y); Tapped(); Borrowed(x, y, delegate { Fingers.Click("left", 2); }); return "double-clicked" + at;
+                case "right_click": Glide(x, y); Tapped(); Borrowed(x, y, delegate { Fingers.Click("right", 1); }); return "right-clicked" + at;
+                case "move": Glide(x, y); return "moved the mouse" + at;
                 case "drag":
-                    Fingers.Drag(x, y, Number(order, "to_x") / 1000, Number(order, "to_y") / 1000);
+                    double toX = Number(order, "to_x") / 1000, toY = Number(order, "to_y") / 1000;
+                    Glide(x, y);
+                    Borrowed(x, y, delegate { Fingers.Drag(x, y, toX, toY); });
+                    herX = toX;
+                    herY = toY;
+                    Track(toX, toY);
                     return "dragged from" + at.Substring(3) + " to " + (int)Number(order, "to_x") + ", " + (int)Number(order, "to_y");
                 case "scroll":
                     int notches = (int)Math.Max(-15, Math.Min(15, Number(order, "amount")));
-                    if (order.TryGetProperty("x", out _)) Fingers.MoveTo(x, y);
-                    Fingers.Scroll(notches == 0 ? 3 : notches);
+                    if (!order.TryGetProperty("x", out _)) { x = herX >= 0 ? herX : 0.5; y = herY >= 0 ? herY : 0.5; }
+                    Glide(x, y);
+                    Borrowed(x, y, delegate { Fingers.Scroll(notches == 0 ? 3 : notches); });
                     return "scrolled " + (notches < 0 ? "up " + -notches : "down " + (notches == 0 ? 3 : notches)) + at;
                 case "type":
                     string text = Text(order, "text");

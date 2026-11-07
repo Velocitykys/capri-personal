@@ -59,6 +59,13 @@ namespace CapriDesktop
         internal string OpenedId { get { return openedId; } }
         internal volatile bool Muted;
         internal volatile string Chosen;
+        // Power saver over a game (issue #111): her mics are polled and their routes checked less often. Every chunk still gets
+        // heard and decoded, so Hey Capri and Listen for Capri keep working; she might just take a moment longer to hear you.
+        internal static volatile bool Gentle;
+        // In ms: her WASAPI mic's and her beat listener's sleep between looks, and how often an open mic's route is checked.
+        internal static int MicPollMs { get { return Gentle ? 30 : 15; } }
+        internal static int BeatPollMs { get { return Gentle ? 30 : 10; } }
+        internal static int RouteMs { get { return Gentle ? 6000 : 2000; } }
         private IntPtr device;
         private IntPtr[] headers;
         private Thread worker;
@@ -116,7 +123,7 @@ namespace CapriDesktop
                 if (!running) return false;
                 if (Environment.TickCount - lastChunk > 5000 || (modern != null && !modern.Alive)) return true;
                 if (Environment.TickCount - routeAt < 0) return false;
-                routeAt = Environment.TickCount + 2000;
+                routeAt = Environment.TickCount + RouteMs;
                 return DeviceChanged;
             }
         }
@@ -174,6 +181,24 @@ namespace CapriDesktop
                     string name = key.GetValue("{b3f8fa53-0004-438e-9003-51a46e139bfc},6") as string;
                     if (string.IsNullOrEmpty(kind)) return string.IsNullOrEmpty(name) ? null : name;
                     return string.IsNullOrEmpty(name) ? kind : kind == "Microphone" ? name : kind + " (" + name + ")";
+                }
+            }
+            catch (Exception) { return null; }
+        }
+
+        // The name Windows' Sound settings, Discord and Roblox list an endpoint under, "Microphone (Steam Streaming Microphone)"
+        // where FullName says "Steam Streaming Microphone", or null.
+        internal static string ListedName(string id)
+        {
+            try
+            {
+                using (RegistryKey key = Properties(id))
+                {
+                    if (key == null) return null;
+                    string kind = key.GetValue("{a45c254e-df1c-4efd-8020-67d146a850e0},2") as string;
+                    string name = key.GetValue("{b3f8fa53-0004-438e-9003-51a46e139bfc},6") as string;
+                    if (string.IsNullOrEmpty(kind) || string.IsNullOrEmpty(name)) return string.IsNullOrEmpty(kind) ? (string.IsNullOrEmpty(name) ? null : name) : kind;
+                    return kind + " (" + name + ")";
                 }
             }
             catch (Exception) { return null; }
@@ -271,13 +296,17 @@ namespace CapriDesktop
             return null;
         }
 
+        private const string MicConsent = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
+
+        // Their switch for her: Let desktop apps for a normal install, and her own line on that page for a Store copy.
+        internal static string MicSwitch { get { return MicConsent + @"\" + (Packaged.Family ?? "NonPackaged"); } }
+
         internal static bool PrivacyBlocked()
         {
-            const string path = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
             try
             {
-                using (RegistryKey machine = Registry.LocalMachine.OpenSubKey(path))
-                using (RegistryKey desktop = Registry.CurrentUser.OpenSubKey(path + @"\NonPackaged"))
+                using (RegistryKey machine = Registry.LocalMachine.OpenSubKey(MicConsent))
+                using (RegistryKey desktop = Registry.CurrentUser.OpenSubKey(MicSwitch))
                     return Denied(machine == null ? null : machine.GetValue("Value") as string, desktop == null ? null : desktop.GetValue("Value") as string);
             }
             catch (Exception) { return false; }
@@ -293,12 +322,15 @@ namespace CapriDesktop
             if (result == unchecked((int)0x80070005)) return Dictation.MicBlocked;
             if (result == 4 || result == unchecked((int)0x8889000A)) return "Can't open your mic: another app has it to itself. Close it, or untick exclusive mode in your mic's Sound settings.";
             if (result == 2 || result == 6 || result == unchecked((int)0x80070490) || result == unchecked((int)0x88890004)) return Dictation.NoMic;
-            return "Can't open your mic (Windows error 0x" + result.ToString("X8") + "). Check Settings > System > Sound > Input, or pick another under VOICE.";
+            // Windows' code goes in errors.txt with the step that failed, not in the line people see.
+            return Unopened;
         }
+
+        internal const string Unopened = "Windows wouldn't open your mic. Check Settings > System > Sound > Input, or pick another under VOICE.";
 
         private static void CheckWave(int result, string operation)
         {
-            if (result != 0) throw new VoiceException("WaveIn " + operation + " failed (" + result + "). " + Problem(result));
+            if (result != 0) throw new VoiceException(Problem(result), "WaveIn " + operation + " failed (" + result + ").");
         }
 
         internal void Start()
@@ -370,7 +402,7 @@ namespace CapriDesktop
                     running = false;
                     CloseWave();
                     preferModern = true;
-                    Brain.Log("ears", -1, "WaveIn couldn't open " + name + " as 16000 Hz mono 16-bit PCM: " + error.Message + " Trying WASAPI.");
+                    Brain.Log("ears", -1, "WaveIn couldn't open " + name + " as 16000 Hz mono 16-bit PCM: " + VoiceException.Logged(error) + " Trying WASAPI.");
                 }
             }
             try
@@ -384,9 +416,11 @@ namespace CapriDesktop
             catch (Exception error)
             {
                 running = false;
-                Brain.Log("ears", -1, "WASAPI couldn't open " + name + " [" + openedId + "]: " + error.Message);
-                if (Changed != null) Changed(error.Message);
-                throw new VoiceException(error.Message);
+                Brain.Log("ears", -1, "WASAPI couldn't open " + name + " [" + openedId + "]: " + VoiceException.Logged(error));
+                // Only her own plain lines reach the hearing line and her bubble; anything else Windows threw is errors.txt's.
+                string plain = error is VoiceException ? error.Message : Unopened;
+                if (Changed != null) Changed(plain);
+                throw new VoiceException(plain);
             }
         }
 
@@ -454,7 +488,7 @@ namespace CapriDesktop
                     }
                 }
             }
-            catch (Exception error) { if (running) { lastChunk = Environment.TickCount - 6000; Brain.Log("ears", -1, "Her mic stopped: " + error.Message); } }
+            catch (Exception error) { if (running) { lastChunk = Environment.TickCount - 6000; Brain.Log("ears", -1, "Her mic stopped: " + VoiceException.Logged(error)); } }
         }
 
         private void Receive(short[] chunk)
@@ -563,7 +597,7 @@ namespace CapriDesktop
         private readonly Thread worker;
         private readonly ManualResetEvent ready = new ManualResetEvent(false);
         private volatile bool stopped, alive;
-        private volatile string failure;
+        private volatile string failure, failureDetail;
         private string format;
 
         internal SoundIn(string id, Action<short[]> hear) : this(id, hear, null, null) { }
@@ -574,8 +608,8 @@ namespace CapriDesktop
             worker = new Thread(Run) { IsBackground = true, Name = "Capri WASAPI mic" };
             worker.SetApartmentState(ApartmentState.STA);
             worker.Start();
-            if (!ready.WaitOne(3000)) { stopped = true; throw new VoiceException("Windows took too long to open your mic."); }
-            if (failure != null) throw new VoiceException(failure);
+            if (!ready.WaitOne(3000)) { stopped = true; throw new VoiceException("Windows took too long to open your mic. Plug it in again or pick another under VOICE, then try again."); }
+            if (failure != null) throw new VoiceException(failure, failureDetail);
         }
 
         internal bool Alive { get { return alive; } }
@@ -583,7 +617,14 @@ namespace CapriDesktop
 
         private static void Check(int result, string operation)
         {
-            if (result < 0) throw new VoiceException("WASAPI mic " + operation + " failed (0x" + result.ToString("X8") + "). " + Ears.Problem(result));
+            if (result < 0) throw new VoiceException(Ears.Problem(result), "WASAPI mic " + operation + " failed (0x" + result.ToString("X8") + ").");
+        }
+
+        // A plain line for people, with Windows' own words and code kept for errors.txt.
+        private void Failed(Exception error)
+        {
+            failure = error is VoiceException ? error.Message : Ears.Unopened;
+            failureDetail = error is VoiceException ? ((VoiceException)error).Detail : error.GetType().Name + ": " + error.Message;
         }
 
         private static void Release(object value) { try { if (value != null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value); } catch (Exception) { } }
@@ -611,7 +652,7 @@ namespace CapriDesktop
                         client = (ISoundClient)found;
                     }
                     Check(client.GetMixFormat(out native), "format");
-                    if (native == IntPtr.Zero) throw new VoiceException("Windows returned no mic format.");
+                    if (native == IntPtr.Zero) throw new VoiceException("Windows didn't say how your mic records. Plug it in again or pick another under VOICE.", "WASAPI mic format was empty.");
                     pcm = new MicPcm(native);
                     format = pcm.Format;
                     Check(client.Initialize(0, 0, 1000000, 0, native, IntPtr.Zero), "initialize");
@@ -627,24 +668,24 @@ namespace CapriDesktop
                     started = true;
                     alive = true;
                 }
-                catch (Exception error) { failure = error.Message; return; }
+                catch (Exception error) { Failed(error); return; }
                 finally { ready.Set(); }
                 while (!stopped)
                 {
                     int waiting;
                     Check(capture.GetNextPacketSize(out waiting), "packet size");
-                    if (waiting == 0) { Thread.Sleep(15); continue; }
+                    if (waiting == 0) { Thread.Sleep(Ears.MicPollMs); continue; }
                     IntPtr data;
                     int frames, flags;
                     long position, time;
                     int result = capture.GetBuffer(out data, out frames, out flags, out position, out time);
-                    if (result == 0x08890001) { Thread.Sleep(15); continue; }
+                    if (result == 0x08890001) { Thread.Sleep(Ears.MicPollMs); continue; }
                     Check(result, "get buffer");
                     try { pcm.Read(data, frames, (flags & 2) != 0, hear); }
                     finally { Check(capture.ReleaseBuffer(frames), "release buffer"); }
                 }
             }
-            catch (Exception error) { failure = error.Message; if (!stopped) Brain.Log("ears", -1, "Her WASAPI mic stopped: " + failure); }
+            catch (Exception error) { Failed(error); if (!stopped) Brain.Log("ears", -1, "Her WASAPI mic stopped: " + VoiceException.Logged(error)); }
             finally
             {
                 alive = false;
@@ -665,9 +706,22 @@ namespace CapriDesktop
     {
         // Makes Open act as if Windows' wave API failed, so a test can try her WASAPI speakers.
         internal static bool SkipWave;
+        internal static string Chosen;
+        internal static string DefaultId;
+        internal static string WaveDefaultId;
+        internal static Action<string> Missing;
+        internal static Func<List<Output>> Devices = ReadDevices;
+        private static readonly object gate = new object();
+        private static Func<List<Output>> listed;
+        private static List<Output> outputs;
+        // Each read of Windows' outputs is numbered, so one that answers after a newer one doesn't replace it.
+        private static int reads, kept;
+        private static string missingId;
         private static bool fellBack;
         private readonly bool silent;
-        private readonly Func<int, SoundOut> open;
+        private readonly Func<int, string, SoundOut> open;
+        private string openedId;
+        private int openedIndex;
         internal bool Plain;
         private readonly List<IntPtr> pending = new List<IntPtr>();
         private readonly List<int> shapes = new List<int>();
@@ -681,6 +735,7 @@ namespace CapriDesktop
         private long until;
         // How loud each twelfth of a second of what she's playing is, so her ears know how much of the mic is her.
         private readonly List<double> levels = new List<double>();
+        private MicAnswer answer;
 
         [DllImport("winmm.dll")] private static extern int waveOutOpen(out IntPtr device, int id, ref WaveFormat format, IntPtr callback, IntPtr instance, int flags);
         [DllImport("winmm.dll")] private static extern int waveOutPrepareHeader(IntPtr device, IntPtr header, int size);
@@ -688,10 +743,137 @@ namespace CapriDesktop
         [DllImport("winmm.dll")] private static extern int waveOutWrite(IntPtr device, IntPtr header, int size);
         [DllImport("winmm.dll")] private static extern int waveOutReset(IntPtr device);
         [DllImport("winmm.dll")] private static extern int waveOutClose(IntPtr device);
+        [DllImport("winmm.dll")] private static extern int waveOutGetNumDevs();
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)] private static extern int waveOutGetDevCaps(IntPtr id, ref OutputCaps caps, int size);
+        [DllImport("winmm.dll")] private static extern int waveOutMessage(IntPtr device, int message, out int size, IntPtr unused);
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)] private static extern int waveOutMessage(IntPtr device, int message, StringBuilder text, IntPtr size);
 
-        internal Speaker(bool quiet) : this(quiet, delegate(int sampleRate) { return new SoundOut(sampleRate); }) { }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct OutputCaps
+        {
+            internal short Maker, Product;
+            internal int Driver;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] internal string Name;
+            internal int Formats;
+            internal short Channels, Reserved;
+            internal int Support;
+        }
 
-        internal Speaker(bool quiet, Func<int, SoundOut> output) { silent = quiet; open = output; }
+        [ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IOutputs
+        {
+            [PreserveSig] int GetCount(out int count);
+            [PreserveSig] int Item(int index, out ISoundDevice device);
+        }
+
+        internal sealed class Output
+        {
+            internal readonly string Id, Name;
+            internal readonly int Index;
+
+            internal Output(string id, string name, int index = -2) { Id = id; Name = name; Index = index; }
+        }
+
+        internal static Output Find(string id, List<Output> devices)
+        {
+            if (string.IsNullOrEmpty(id)) return null;
+            return devices.Find(delegate(Output output) { return string.Equals(output.Id, id, StringComparison.OrdinalIgnoreCase); });
+        }
+
+        internal static Output Resolve(List<Output> devices)
+        {
+            string id;
+            Output found;
+            Action<string> missing = null;
+            lock (gate)
+            {
+                id = Chosen;
+                found = Find(id, devices);
+                if (found != null || string.IsNullOrEmpty(id)) missingId = null;
+                else if (!string.Equals(missingId, id, StringComparison.OrdinalIgnoreCase))
+                {
+                    missingId = id;
+                    missing = Missing;
+                }
+            }
+            if (missing != null) missing(id);
+            return found;
+        }
+
+        // Windows' outputs: the last read, or a fresh one. A fresh read happens outside the lock, so a speaker that's slow to answer,
+        // like a Bluetooth headset waking up, never holds up her voice, which takes the last read meanwhile (#100).
+        internal static List<Output> List(bool fresh = false)
+        {
+            Func<List<Output>> read;
+            int reading;
+            lock (gate)
+            {
+                read = Devices;
+                if (!fresh && listed == read) return outputs;
+                reading = ++reads;
+            }
+            List<Output> found = read();
+            lock (gate)
+            {
+                if (reading > kept) { outputs = found; listed = read; kept = reading; }
+                return found;
+            }
+        }
+
+        private static List<Output> ReadDevices()
+        {
+            List<Output> wave = new List<Output>(), found = new List<Output>();
+            for (int i = 0; i < waveOutGetNumDevs(); i++)
+            {
+                OutputCaps caps = new OutputCaps();
+                int size;
+                if (waveOutGetDevCaps(new IntPtr(i), ref caps, Marshal.SizeOf(typeof(OutputCaps))) != 0 || waveOutMessage(new IntPtr(i), 0x0812, out size, IntPtr.Zero) != 0 || size <= 0) continue;
+                StringBuilder text = new StringBuilder(size / 2 + 1);
+                if (waveOutMessage(new IntPtr(i), 0x0811, text, new IntPtr(size)) != 0 || text.Length == 0) continue;
+                string id = text.ToString();
+                wave.Add(new Output(id, Ears.FullName(id) ?? caps.Name, i));
+            }
+            ISoundDevices devices = null;
+            IOutputs outputs = null;
+            IntPtr listed = IntPtr.Zero;
+            try
+            {
+                devices = (ISoundDevices)new SoundDevices();
+                if (devices.EnumAudioEndpoints(0, 1, out listed) != 0 || listed == IntPtr.Zero) return wave;
+                outputs = (IOutputs)Marshal.GetObjectForIUnknown(listed);
+                int count;
+                if (outputs.GetCount(out count) != 0) return wave;
+                for (int i = 0; i < count; i++)
+                {
+                    ISoundDevice device = null;
+                    try
+                    {
+                        string id;
+                        if (outputs.Item(i, out device) != 0 || device == null || device.GetId(out id) != 0 || string.IsNullOrEmpty(id)) continue;
+                        Output old = Find(id, wave);
+                        found.Add(new Output(id, Ears.ListedName(id) ?? Ears.FullName(id) ?? (old == null ? "Output " + (i + 1) : old.Name), old == null ? -2 : old.Index));
+                    }
+                    finally { if (device != null) Marshal.ReleaseComObject(device); }
+                }
+                return found;
+            }
+            catch (Exception) { return wave; }
+            finally
+            {
+                if (outputs != null) Marshal.ReleaseComObject(outputs);
+                if (listed != IntPtr.Zero) Marshal.Release(listed);
+                if (devices != null) Marshal.ReleaseComObject(devices);
+            }
+        }
+
+        internal Speaker(bool quiet) : this(quiet, delegate(int sampleRate, string id) { return new SoundOut(sampleRate, id); }) { }
+
+        internal Speaker(bool quiet, Func<int, SoundOut> output) : this(quiet, delegate(int sampleRate, string id) { return output(sampleRate); }) { }
+
+        internal Speaker(bool quiet, Func<int, string, SoundOut> output) { silent = quiet; open = output; }
+
+        internal string OpenedId { get { return openedId; } }
+        internal int OpenedIndex { get { return openedIndex; } }
 
         internal static double Loudness(short[] samples, int start, int count)
         {
@@ -703,23 +885,30 @@ namespace CapriDesktop
 
         internal void Open(int sampleRate)
         {
-            if (sampleRate == rate && (silent || device != IntPtr.Zero || (modern != null && modern.Alive))) return;
-            Close();
+            Output picked = string.IsNullOrEmpty(Chosen) ? null : Resolve(List());
+            string id = picked == null ? (modern == null ? WaveDefaultId : DefaultId) : picked.Id;
+            int index = picked == null ? -1 : picked.Index;
+            if (sampleRate == rate && string.Equals(openedId, id, StringComparison.OrdinalIgnoreCase) && openedIndex == index && (silent || device != IntPtr.Zero || (modern != null && modern.Alive))) return;
+            Close(false);
             rate = sampleRate;
+            openedId = id;
+            openedIndex = index;
             if (silent) return;
             WaveFormat format = WaveFormat.Mono(rate);
-            int failed = SkipWave ? 6 : waveOutOpen(out device, -1, ref format, IntPtr.Zero, IntPtr.Zero, 0);
-            if (failed == 0) { Mixer.NoDucking(null, 0); return; }
+            int failed = SkipWave || index == -2 ? 6 : waveOutOpen(out device, index, ref format, IntPtr.Zero, IntPtr.Zero, 0);
+            if (failed == 0) { Mixer.NoDucking(picked == null ? null : picked.Id, 0); return; }
             device = IntPtr.Zero;
             // Some PCs play every other app fine but won't open the wave API for her, so she tries WASAPI, which most apps use now.
             try
             {
-                modern = open(rate);
+                modern = open(rate, picked == null ? null : picked.Id);
+                openedId = picked == null ? DefaultId : picked.Id;
                 if (!fellBack && !SkipWave) Brain.Log("Speakers", -1, "Windows' wave API wouldn't open the speakers (error " + failed + "), so she plays through WASAPI. Process " + Process.GetCurrentProcess().Id + ", " + rate + " Hz mono PCM.");
                 fellBack = !SkipWave;
                 return;
             }
             catch (Exception error) { Brain.Log("Speakers", -1, "Windows' wave API wouldn't open the speakers (error " + failed + ") and nor would WASAPI: " + error.Message); }
+            if (picked != null && Resolve(List(true)) == null) { Open(sampleRate); return; }
             throw new VoiceException(Speakers(failed));
         }
 
@@ -745,10 +934,24 @@ namespace CapriDesktop
             lock (PcEars.VoiceGate) if (!PcEars.Capturing) Write(samples);
         }
 
+        internal void BeginAnswer()
+        {
+            EndAnswer();
+            if (!Plain && MicMix.Current != null) answer = new MicAnswer();
+        }
+
+        internal void EndAnswer()
+        {
+            MicAnswer done = answer;
+            answer = null;
+            if (done != null) done.End();
+        }
+
         private void Write(short[] samples)
         {
             if (rate == 0 || samples.Length == 0) return;
-            if (modern != null && !modern.Alive) Open(rate);
+            Output picked = string.IsNullOrEmpty(Chosen) ? null : Resolve(List());
+            if (!string.Equals(openedId, picked == null ? (modern == null ? WaveDefaultId : DefaultId) : picked.Id, StringComparison.OrdinalIgnoreCase) || (picked != null && openedIndex != picked.Index) || (modern != null && !modern.Alive)) Open(rate);
             Sweep();
             long now = Stopwatch.GetTimestamp();
             if (now >= Interlocked.Read(ref until)) { began = now; shapes.Clear(); leftover.Clear(); lock (levels) levels.Clear(); Interlocked.Exchange(ref until, now); }
@@ -768,13 +971,34 @@ namespace CapriDesktop
             leftover.RemoveRange(0, at);
             if (!Plain)
             {
+                // Her voice in their mic (F66): everything she says goes into the cable too while the switch is on, at her own
+                // level rather than her speakers' volume, for the mix to bring to a speaking level. Her sound effects play
+                // through Plain speakers, so they stay out.
+                if (answer == null) BeginAnswer();
+                if (answer != null) answer.Give(samples.Length, rate);
+                MicMix.Hear(this, samples, rate, answer);
                 samples = Voice.Louder(samples);
-                // Her voice in their mic (F66): everything she says goes into VB-CABLE too while the switch is on, at her volume.
-                // Her sound effects play through Plain speakers, so they stay out.
-                MicMix.Hear(this, samples, rate);
             }
+            Send(samples);
+        }
+
+        private bool ReopenGone()
+        {
+            if (!string.IsNullOrEmpty(Chosen) && Resolve(Devices()) != null) return false;
+            if (string.Equals(openedId, Chosen ?? (modern == null ? WaveDefaultId : DefaultId), StringComparison.OrdinalIgnoreCase)) return false;
+            Open(rate);
+            return true;
+        }
+
+        private void Send(short[] samples)
+        {
             if (silent || (device == IntPtr.Zero && modern == null)) return;
-            if (modern != null) { modern.Write(samples); return; }
+            if (modern != null)
+            {
+                try { modern.Write(samples); }
+                catch (VoiceException) { if (!ReopenGone()) throw; Send(samples); }
+                return;
+            }
             int size = Marshal.SizeOf(typeof(WaveHeader));
             WaveHeader header = new WaveHeader { Data = Marshal.AllocHGlobal(samples.Length * 2), Length = samples.Length * 2 };
             Marshal.Copy(samples, 0, header.Data, samples.Length);
@@ -787,6 +1011,7 @@ namespace CapriDesktop
                 if (prepared == 0) waveOutUnprepareHeader(device, pointer, size);
                 Marshal.FreeHGlobal(header.Data);
                 Marshal.FreeHGlobal(pointer);
+                if (ReopenGone()) { Send(samples); return; }
                 Clear();
                 string problem = "Windows' wave API " + (prepared == 0 ? "write" : "prepare") + " failed (error " + written + ", " + rate + " Hz, " + samples.Length + " samples).";
                 Brain.Log("Speakers", -1, problem);
@@ -816,9 +1041,14 @@ namespace CapriDesktop
 
         internal void Clear()
         {
+            Clear(true);
+        }
+
+        private void Clear(bool cut)
+        {
             if (device != IntPtr.Zero) waveOutReset(device);
             if (modern != null) modern.Clear();
-            MicMix.Hush(this);
+            if (cut) { MicMix.Hush(this); EndAnswer(); }
             Sweep();
             shapes.Clear();
             leftover.Clear();
@@ -842,7 +1072,12 @@ namespace CapriDesktop
 
         internal void Close()
         {
-            Clear();
+            Close(true);
+        }
+
+        internal void Close(bool cut)
+        {
+            Clear(cut);
             if (device != IntPtr.Zero) waveOutClose(device);
             device = IntPtr.Zero;
             if (modern != null) modern.Dispose();
@@ -860,6 +1095,7 @@ namespace CapriDesktop
     {
         internal const int ConvertFlags = unchecked((int)0x88000000);
         private readonly int rate;
+        private readonly string id;
         private readonly ISoundClient suppliedClient;
         private readonly ISoundRender suppliedRender;
         private readonly object gate = new object();
@@ -875,11 +1111,16 @@ namespace CapriDesktop
         internal long Fed;
         internal long Played;
 
-        internal SoundOut(int rate) : this(rate, null, null) { }
+        internal SoundOut(int rate) : this(rate, null, null, null) { }
 
-        internal SoundOut(int rate, ISoundClient output, ISoundRender writer)
+        internal SoundOut(int rate, string id) : this(rate, id, null, null) { }
+
+        internal SoundOut(int rate, ISoundClient output, ISoundRender writer) : this(rate, null, output, writer) { }
+
+        internal SoundOut(int rate, string id, ISoundClient output, ISoundRender writer)
         {
             this.rate = rate;
+            this.id = id;
             suppliedClient = output;
             suppliedRender = writer;
             feeder = new Thread(Run) { IsBackground = true, Name = "Capri speakers" };
@@ -946,7 +1187,7 @@ namespace CapriDesktop
                     if (client == null)
                     {
                         devices = (ISoundDevices)new SoundDevices();
-                        Check(devices.GetDefaultAudioEndpoint(0, 1, out device), "default speakers");
+                        Check(string.IsNullOrEmpty(id) ? devices.GetDefaultAudioEndpoint(0, 1, out device) : devices.GetDevice(id, out device), "speakers");
                         if (device == null) throw new VoiceException("Windows found no WASAPI speakers.");
                         Guid clientId = typeof(ISoundClient).GUID;
                         object found;
@@ -1414,22 +1655,185 @@ namespace CapriDesktop
         }
     }
 
-    // Her own ears: NVIDIA's Parakeet TDT 0.6B (CC-BY-4.0), run by the sherpa-onnx her free voice ships. v2 hears English;
-    // v3 hears 25 European languages and works out which one it's hearing. They hear whichever mic is picked, offline,
-    // without Windows' online speech setting.
+    // Her own tar reader, for a Windows without tar.exe or one whose tar can't read the archive (a modified Windows 10, #60).
+    // Only files and folders come out, and only inside the folder she's unpacking into.
+    internal static class TarReader
+    {
+        private static IOException Damaged() { return new IOException("The ears download is damaged."); }
+
+        private static void Read(Stream from, byte[] buffer, int count)
+        {
+            int at = 0;
+            while (at < count)
+            {
+                int read = from.Read(buffer, at, count - at);
+                if (read == 0) throw Damaged();
+                at += read;
+            }
+        }
+
+        private static int Copy(Stream from, Stream into, long size, byte[] buffer)
+        {
+            int last = -1;
+            while (size > 0)
+            {
+                int count = (int)Math.Min(size, buffer.Length);
+                Read(from, buffer, count);
+                if (into != null) into.Write(buffer, 0, count);
+                last = buffer[count - 1];
+                size -= count;
+            }
+            return last;
+        }
+
+        private static long Number(byte[] header, int at, int count)
+        {
+            long value = 0;
+            bool ended = false, digits = false;
+            for (int i = at; i < at + count; i++)
+            {
+                byte c = header[i];
+                if (c == 0 || c == 32) { if (digits) ended = true; continue; }
+                if (ended || c < '0' || c > '7' || value > (long.MaxValue >> 3)) throw Damaged();
+                value = (value << 3) + c - '0';
+                digits = true;
+            }
+            return value;
+        }
+
+        private static string Text(byte[] bytes, int at, int count)
+        {
+            int end = at;
+            while (end < at + count && bytes[end] != 0) end++;
+            return Encoding.UTF8.GetString(bytes, at, end - at);
+        }
+
+        private static string Target(string root, string name)
+        {
+            if (string.IsNullOrEmpty(name) || name[0] == '/' || name[0] == '\\' || name.IndexOf(':') >= 0) throw Damaged();
+            foreach (string part in name.Replace('\\', '/').Split('/'))
+                if (part == ".." || (part != "." && part.TrimEnd(' ', '.') != part)) throw Damaged();
+            string path;
+            try { path = Path.GetFullPath(Path.Combine(root, name.Replace('/', Path.DirectorySeparatorChar))); }
+            catch (ArgumentException) { throw Damaged(); }
+            catch (NotSupportedException) { throw Damaged(); }
+            catch (PathTooLongException) { throw Damaged(); }
+            if (path != root.TrimEnd(Path.DirectorySeparatorChar) && !path.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw Damaged();
+            return path;
+        }
+
+        private static string Pax(Stream from, long size, byte[] buffer)
+        {
+            string path = null;
+            while (size > 0)
+            {
+                long available = size, length = 0;
+                int head = 0;
+                for (;;)
+                {
+                    if (size-- == 0) throw Damaged();
+                    int c = from.ReadByte();
+                    head++;
+                    if (c == ' ' && head > 1) break;
+                    if (c < '0' || c > '9' || length > (long.MaxValue - 9) / 10) throw Damaged();
+                    length = length * 10 + c - '0';
+                }
+                if (length <= head || length > available) throw Damaged();
+                long count = length - head;
+                int prefix = (int)Math.Min(5, count);
+                Read(from, buffer, prefix);
+                int last = buffer[prefix - 1];
+                if (prefix == 5 && Encoding.ASCII.GetString(buffer, 0, 5) == "path=")
+                {
+                    long text = count - prefix;
+                    if (text < 1 || text > buffer.Length) throw Damaged();
+                    Read(from, buffer, (int)text);
+                    last = buffer[(int)text - 1];
+                    path = Encoding.UTF8.GetString(buffer, 0, (int)text - 1);
+                }
+                else if (count > prefix) last = Copy(from, null, count - prefix, buffer);
+                if (last != '\n') throw Damaged();
+                size -= count;
+            }
+            return path;
+        }
+
+        internal static void Unpack(Stream from, string into)
+        {
+            bool complete = false;
+            try
+            {
+                string root = Path.GetFullPath(into).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                Directory.CreateDirectory(into);
+                byte[] header = new byte[512], buffer = new byte[1 << 20];
+                string longName = null, paxPath = null;
+                for (;;)
+                {
+                    Read(from, header, header.Length);
+                    bool zero = true;
+                    int sum = 0;
+                    for (int i = 0; i < header.Length; i++)
+                    {
+                        if (header[i] != 0) zero = false;
+                        sum += i >= 148 && i < 156 ? 32 : header[i];
+                    }
+                    if (zero) { complete = true; return; }
+                    if (Number(header, 148, 8) != sum) throw Damaged();
+                    long size = Number(header, 124, 12);
+                    char kind = (char)header[156];
+                    string name = Text(header, 0, 100), prefix = Text(header, 257, 6) == "ustar" ? Text(header, 345, 155) : "";
+                    if (prefix.Length > 0) name = prefix + "/" + name;
+                    if (kind == 'L')
+                    {
+                        if (size > buffer.Length) throw Damaged();
+                        Read(from, buffer, (int)size);
+                        longName = Text(buffer, 0, (int)size);
+                        Target(root, longName);
+                    }
+                    else if (kind == 'x')
+                    {
+                        string path = Pax(from, size, buffer);
+                        if (path != null) { Target(root, path); paxPath = path; }
+                    }
+                    else if (kind == 'g') Copy(from, null, size, buffer);
+                    else
+                    {
+                        string path = Target(root, paxPath ?? longName ?? name);
+                        longName = paxPath = null;
+                        if (kind == '5') Directory.CreateDirectory(path);
+                        if (kind == '0' || kind == '\0')
+                        {
+                            Directory.CreateDirectory(Path.GetDirectoryName(path));
+                            using (FileStream file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20)) Copy(from, file, size, buffer);
+                        }
+                        else Copy(from, null, size, buffer);
+                    }
+                    Copy(from, null, (512 - size % 512) % 512, buffer);
+                }
+            }
+            finally { if (!complete && Directory.Exists(into)) Directory.Delete(into, true); }
+        }
+    }
+
+    // Her own ears: Parakeet TDT 0.6B (CC-BY-4.0), run by the sherpa-onnx her free voice ships. NVIDIA's v2 hears English;
+    // Ultra, NVIDIA's v3 trained further by Moondream, hears 25 European languages and works out which one it's hearing.
+    // They hear whichever mic is picked, offline, without Windows' online speech setting.
     internal sealed class LocalEars : IDisposable
     {
+        // Capri's own copies of the exact packs she was tested on. sherpa-onnx re-uploaded theirs on 7 Nov 2026, and a changed
+        // file can't pass the size and hash pinned here, so every copy of Capri lost her ears at once.
+        internal const string Hosted = "https://github.com/lachydotmcg/capri-desktop/releases/download/ears-pack-1/";
         internal const string Pack = "parakeet-tdt-0.6b-v2-int8";
-        internal static string PackUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2";
+        internal static string PackUrl = Hosted + "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2";
         internal static string PackSha = "157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad";
         internal static long PackSize = 482468385;
         private const string Inside = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
-        internal const string EuropeanPack = "parakeet-tdt-0.6b-v3-int8";
-        internal static string EuropeanUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2";
-        internal static string EuropeanSha = "5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf";
-        internal static long EuropeanSize = 487170055;
-        private const string EuropeanInside = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8";
-        // What v3 hears, as two-letter language codes.
+        internal const string EuropeanPack = "parakeet-tdt-0.6b-ultra-int8";
+        internal static string EuropeanUrl = Hosted + "sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8.tar.bz2";
+        internal static string EuropeanSha = "9f84fa1a60bc6c55455bf24241bacd1ec76171321e0086c4bef829472f128dc7";
+        internal static long EuropeanSize = 487131623;
+        private const string EuropeanInside = "sherpa-onnx-nemo-parakeet-tdt-0.6b-ultra-int8";
+        // What Ultra hears, as two-letter language codes.
         internal static readonly string[] European = { "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk" };
         internal static readonly string[] Needed = { "encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt" };
         private readonly string root;
@@ -1454,7 +1858,7 @@ namespace CapriDesktop
 
         internal bool Fits { get { return IntPtr.Size == 8 && Array.IndexOf(European, language) >= 0; } }
 
-        // The pack that hears their language: v2 for English, v3 for its other languages, none for the rest, which keep Windows speech.
+        // The pack that hears their language: v2 for English, Ultra for its other languages, none for the rest, which keep Windows speech.
         internal string Model { get { return !Fits ? null : language == "en" ? Pack : EuropeanPack; } }
 
         internal long Size { get { return Model == EuropeanPack ? EuropeanSize : PackSize; } }
@@ -1504,17 +1908,20 @@ namespace CapriDesktop
         }
 
         internal static bool SystemBzip = true;
+        internal static int TarTimeout = 600000;
+        internal static Func<ProcessStartInfo, Process> StartTar = Process.Start;
+        internal static string TarPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "tar.exe");
 
         // Windows 10 and 11 ship bsdtar, but only Windows 11's reads bzip2. When tar can't, she unpacks the bzip2 layer herself and tar gets the plain archive.
-        // The checksum was already matched, so this is the known archive.
+        // With no tar.exe, or one that fails on the plain archive, her own reader unpacks it. The checksum was already matched, so this is the known archive.
         internal static void Untar(string tarball, string into)
         {
-            string tar = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "tar.exe");
-            if (!File.Exists(tar)) throw new IOException("Windows is missing tar.exe, which unpacks her ears.");
-            if (SystemBzip && Tar(tar, "-xjf \"" + tarball + "\" -C \"" + into + "\"") == null) return;
+            string tar = TarPath;
             string plain = Path.ChangeExtension(tarball, null);
+            bool complete = false;
             try
             {
+                if (File.Exists(tar) && SystemBzip && Tar(tar, "-xjf \"" + tarball + "\" -C \"" + into + "\"", into) == null) { complete = true; return; }
                 using (FileStream packed = new FileStream(tarball, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20))
                 using (FileStream opened = new FileStream(plain, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
                 {
@@ -1523,23 +1930,91 @@ namespace CapriDesktop
                     catch (Exception) { throw new IOException("The ears download is damaged."); }
                 }
                 File.Delete(tarball);
-                Directory.Delete(into, true);
+                if (Directory.Exists(into)) Directory.Delete(into, true);
                 Directory.CreateDirectory(into);
-                string problem = Tar(tar, "-xf \"" + plain + "\" -C \"" + into + "\"");
-                if (problem != null) throw new IOException("Couldn't unpack her ears: " + Voice.Short(problem));
+                if (!File.Exists(tar) || Tar(tar, "-xf \"" + plain + "\" -C \"" + into + "\"", into) != null)
+                {
+                    if (Directory.Exists(into)) Directory.Delete(into, true);
+                    using (FileStream archive = new FileStream(plain, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20)) TarReader.Unpack(archive, into);
+                }
+                complete = true;
             }
-            finally { if (File.Exists(plain)) File.Delete(plain); }
+            finally
+            {
+                if (File.Exists(plain)) File.Delete(plain);
+                if (!complete && Directory.Exists(into)) Directory.Delete(into, true);
+            }
         }
 
-        private static string Tar(string tar, string arguments)
+        private static string Tar(string tar, string arguments, string into)
         {
-            ProcessStartInfo start = new ProcessStartInfo(tar, arguments) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
-            using (Process unpacking = Process.Start(start))
+            bool complete = false;
+            try
             {
-                string problem = unpacking.StandardError.ReadToEnd();
-                unpacking.WaitForExit();
-                return unpacking.ExitCode == 0 ? null : problem.Trim();
+                ProcessStartInfo start = new ProcessStartInfo(tar, arguments) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
+                Process child;
+                try { child = StartTar(start); }
+                catch (System.ComponentModel.Win32Exception) { return "Windows tar couldn't start."; }
+                using (Process unpacking = child)
+                {
+                    if (unpacking == null) return "Windows tar couldn't start.";
+                    StringBuilder problem = new StringBuilder();
+                    Thread errors = ReadTar(unpacking.StandardError, problem), output = ReadTar(unpacking.StandardOutput, null);
+                    Stopwatch waited = Stopwatch.StartNew();
+                    int timeout = Math.Max(1, TarTimeout);
+                    if (!unpacking.WaitForExit(timeout) || !errors.Join((int)Math.Max(0, timeout - waited.ElapsedMilliseconds)) || !output.Join((int)Math.Max(0, timeout - waited.ElapsedMilliseconds)))
+                    {
+                        StopTar(unpacking);
+                        errors.Join(1000);
+                        output.Join(1000);
+                        return "Windows tar took too long.";
+                    }
+                    string error = problem.ToString().Trim();
+                    if (unpacking.ExitCode != 0) return error.Length == 0 ? "Windows tar couldn't unpack the download." : error;
+                    complete = true;
+                    return null;
+                }
             }
+            finally { if (!complete && Directory.Exists(into)) Directory.Delete(into, true); }
+        }
+
+        private static Thread ReadTar(StreamReader stream, StringBuilder text)
+        {
+            Thread reader = new Thread(delegate()
+            {
+                try
+                {
+                    char[] buffer = new char[1024];
+                    int read;
+                    while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                        if (text != null && text.Length < 4096) text.Append(buffer, 0, Math.Min(read, 4096 - text.Length));
+                }
+                catch (IOException) { }
+                catch (ObjectDisposedException) { }
+            });
+            reader.IsBackground = true;
+            reader.Start();
+            return reader;
+        }
+
+        private static void StopTar(Process unpacking)
+        {
+            try
+            {
+                string taskkill = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe");
+                using (Process stopping = Process.Start(new ProcessStartInfo(taskkill, "/PID " + unpacking.Id.ToString(CultureInfo.InvariantCulture) + " /T /F") { UseShellExecute = false, CreateNoWindow = true }))
+                {
+                    if (!stopping.WaitForExit(5000))
+                    {
+                        stopping.Kill();
+                        stopping.WaitForExit(1000);
+                        throw new IOException("Windows tar wouldn't stop.");
+                    }
+                    if (stopping.ExitCode != 0 && !unpacking.HasExited) throw new IOException("Windows tar wouldn't stop.");
+                }
+                if (!unpacking.WaitForExit(5000)) throw new IOException("Windows tar wouldn't stop.");
+            }
+            catch (System.ComponentModel.Win32Exception) { throw new IOException("Windows tar wouldn't stop."); }
         }
 
         internal void Warm() { lock (gate) Open(); }
@@ -2133,7 +2608,7 @@ namespace CapriDesktop
     {
         internal static Func<bool> CanListen = delegate { return true; };
         internal static Func<int> Generation = delegate { return 0; };
-        internal const string CallOnly = "PC audio was left out because call mode is conversation only or changed while listening.";
+        internal const string CallOnly = "PC audio was left out because the call changed or this turn cannot use it.";
         internal static readonly object VoiceGate = new object();
         private static readonly object gate = new object();
         internal static Func<bool> Speaking = delegate { return false; };
@@ -2352,7 +2827,8 @@ namespace CapriDesktop
                 double heardAt = now(), checkedAt = heardAt, openedAt = -10, estimateAt = heardAt + 1;
                 while (playing == run)
                 {
-                    Thread.Sleep(10);
+                    // Its 100 ms of buffer leaves room for Power saver's slower pace.
+                    Thread.Sleep(Ears.BeatPollMs);
                     double at = now();
                     if (tap != null && at - checkedAt > 5)
                     {
@@ -2396,7 +2872,7 @@ namespace CapriDesktop
     internal sealed class WakeWord : IDisposable
     {
         internal const string Pack = "kws-zipformer-gigaspeech-3.3M-2024-01-01";
-        internal static string PackUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2";
+        internal static string PackUrl = LocalEars.Hosted + "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2";
         internal static string PackSha = "f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a";
         internal static long PackSize = 17626723;
         private const string Inside = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";

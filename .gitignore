@@ -2,3 +2,6 @@ out/
 cross/bin/
 cross/obj/
 node_modules/
+worker/.codes-secret
+
+discord-bot/.env

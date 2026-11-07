@@ -43,7 +43,7 @@ namespace CapriDesktop
         // Sections run inside another, so --only can name a child and its parent still runs to reach it.
         private static readonly Dictionary<string, string[]> Children = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
         {
-            { "SmokeReactions", new[] { "SmokeReactQuick", "SmokeReactFeed", "SmokeReactFade", "SmokeReactMoods", "SmokeReactBrain", "SmokeReactVoice", "SmokeReactMotion", "SmokeReactSwitch", "SmokeReactBanners" } },
+            { "SmokeReactions", new[] { "SmokeReactQuick", "SmokeReactFeed", "SmokeReactFade", "SmokeReactMoods", "SmokeReactWritten", "SmokeReactBrain", "SmokeReactVoice", "SmokeReactMotion", "SmokeReactSwitch", "SmokeReactBanners" } },
             { "SmokeThrows", new[] { "SmokeThrowReads", "SmokeThrowSlow", "SmokeThrowFast", "SmokeThrowUp", "SmokeThrowSlam", "SmokeThrowStanding", "SmokeThrowCatch", "SmokeThrowCalm", "SmokeThrowGrudge", "SmokeThrowDodges", "SmokeThrowSorry", "SmokeThrowPat", "SmokeThrowAlone" } },
             { "SmokeCloudPicker", new[] { "SmokePickerRejectedKeys", "SmokePickerGemini", "SmokePickerClears", "SmokePickerSavedGemini", "SmokePickerQueuedChoices", "SmokePickerLegacyKeys", "SmokePickerPending-new-key", "SmokePickerPending-unrecognised-key", "SmokePickerPending-tier", "SmokePickerPending-forget", "SmokePickerPending-local", "SmokePickerRefresh", "SmokePickerOldRefresh" } }
         };
@@ -59,7 +59,35 @@ namespace CapriDesktop
         private static readonly Stack<bool> selected = new Stack<bool>();
         // What each open section interrupted, so leaving a child goes back to its parent's (or step's) deadline.
         private static readonly Stack<string[]> outer = new Stack<string[]>();
+        private sealed class SectionTime
+        {
+            internal long Started, Children, Recovered;
+            internal string Name, Parent;
+        }
+        private static readonly Stack<SectionTime> timings = new Stack<SectionTime>();
         internal static bool Worker { get { return Environment.GetEnvironmentVariable(WorkerVariable) == "1"; } }
+        private static string ownAsync;
+        // The last time she showed or moved one of her own windows in a way Windows carries out later on its thread, and from where.
+        internal static string OwnAsync { get { return Volatile.Read(ref ownAsync); } }
+
+        internal static void NoteAsync(IntPtr window, string what)
+        {
+            if (!Worker) return;
+            int process;
+            Native.GetWindowThreadProcessId(window, out process);
+            if (process != Process.GetCurrentProcess().Id) return;
+            List<string> found = new List<string>();
+            foreach (string line in Environment.StackTrace.Split('\n'))
+            {
+                string frame = line.Trim();
+                if (frame.StartsWith("at ", StringComparison.Ordinal)) frame = frame.Substring(3);
+                int place = frame.IndexOf(" in ", StringComparison.Ordinal);
+                if (place > 0) frame = frame.Substring(0, place);
+                if (frame.StartsWith("CapriDesktop.", StringComparison.Ordinal) && frame.IndexOf(".NoteAsync", StringComparison.Ordinal) < 0) found.Add(frame);
+                if (found.Count == 6) break;
+            }
+            Volatile.Write(ref ownAsync, what + " on thread " + Thread.CurrentThread.ManagedThreadId + " from " + string.Join(" < ", found.ToArray()));
+        }
         internal static int NextStep
         {
             get { int next = 0; while (stepsDone.ContainsKey(next)) next++; return next; }
@@ -69,7 +97,7 @@ namespace CapriDesktop
         {
             folder = output;
             options = settings;
-            matched.Clear(); sectionsDone.Clear(); stepsDone.Clear(); selected.Clear(); outer.Clear();
+            matched.Clear(); sectionsDone.Clear(); stepsDone.Clear(); selected.Clear(); outer.Clear(); timings.Clear();
             string path = Path.Combine(folder, "sections-done.txt");
             if (File.Exists(path)) foreach (string name in File.ReadAllLines(path)) sectionsDone.Add(name);
             path = Path.Combine(folder, "steps-done.txt");
@@ -146,11 +174,13 @@ namespace CapriDesktop
             selected.Push(whole);
             outer.Push(new[] { kind, current, limit.ToString(CultureInfo.InvariantCulture) });
             Begin("section", name, 180);
+            timings.Push(new SectionTime { Started = Stopwatch.GetTimestamp(), Name = name, Parent = timings.Count == 0 ? "" : timings.Peek().Name, Recovered = RecoveredChildren(name) });
             return true;
         }
 
         internal static void LeaveSection(string name, List<string> checks)
         {
+            RecordTime(name);
             Flush(checks);
             sectionsDone.Add(name);
             File.AppendAllText(Path.Combine(folder, "sections-done.txt"), name + Environment.NewLine);
@@ -158,6 +188,62 @@ namespace CapriDesktop
             string[] back = outer.Pop();
             if (back[0] == "section" || back[0] == "step") { kind = null; Begin(back[0], back[1], int.Parse(back[2], CultureInfo.InvariantCulture)); }
             else Begin("startup", "between sections", 60);
+        }
+
+        private static List<string> SavedTimes()
+        {
+            string path = Path.Combine(folder, "smoke-timings.txt");
+            List<string> lines = new List<string>();
+            if (!File.Exists(path)) return lines;
+            string[] saved = File.ReadAllText(path).Split('\n');
+            for (int i = 1; i < saved.Length - 1; i++) lines.Add(saved[i].TrimEnd('\r'));
+            return lines;
+        }
+
+        private static long RecoveredChildren(string name)
+        {
+            List<string> lines;
+            try { lines = SavedTimes(); }
+            catch (IOException) { return 0; }
+            catch (UnauthorizedAccessException) { return 0; }
+            string depth = (timings.Count + 1).ToString(CultureInfo.InvariantCulture);
+            long recovered = 0;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string[] parts = lines[i].Split('\t');
+                double milliseconds;
+                if (parts.Length == 5 && parts[1] == depth && string.Equals(parts[4], name, StringComparison.OrdinalIgnoreCase)
+                    && double.TryParse(parts[2], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out milliseconds))
+                    recovered += (long)Math.Round(milliseconds * Stopwatch.Frequency / 1000.0);
+            }
+            return recovered;
+        }
+
+        private static void RecordTime(string name)
+        {
+            SectionTime time = timings.Pop();
+            long elapsed = Stopwatch.GetTimestamp() - time.Started;
+            long total = elapsed + time.Recovered;
+            if (timings.Count != 0)
+            {
+                timings.Peek().Children += elapsed;
+                timings.Peek().Recovered += time.Recovered;
+            }
+            double milliseconds = 1000.0 / Stopwatch.Frequency;
+            string row = name + "\t" + timings.Count.ToString(CultureInfo.InvariantCulture)
+                + "\t" + (total * milliseconds).ToString("F3", CultureInfo.InvariantCulture)
+                + "\t" + (Math.Max(0L, elapsed - time.Children) * milliseconds).ToString("F3", CultureInfo.InvariantCulture)
+                + "\t" + time.Parent;
+            try
+            {
+                string path = Path.Combine(folder, "smoke-timings.txt");
+                List<string> lines = new List<string>(new[] { "section\tdepth\tinclusive_ms\town_ms\tparent" });
+                lines.AddRange(SavedTimes());
+                lines.Add(row);
+                AtomicLines(path, lines.ToArray());
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
 
         internal static void ValidateSelection(List<string> checks)
@@ -219,7 +305,9 @@ namespace CapriDesktop
             // Step 0 exercises many UI/render paths and two media joins. Step 1 includes four 60 s transcode waits,
             // a 30 s fake voice-server wait, and the Mainframe/voice integration checks. Step 22 runs the talk, Listen for
             // Capri, voice switch and gaming checks, each waiting on her voice, which took over 60 s on a busy PC.
-            return step == 0 ? 180 : step == 1 ? 600 : step == 22 ? 180 : 60;
+            // Step 1 had 600 s until 5 Nov, when a three-screen PC ran out of it twice about two thirds through, its
+            // thread busy redrawing the Mainframe the whole time, so it gets 25 minutes. A real hang still fails.
+            return step == 0 ? 180 : step == 1 ? 1500 : step == 22 ? 180 : 60;
         }
 
         // 0-13 exchange asynchronous chat/voice results. Glances (14) and screen/cloud checks (17) have their own fixtures.
@@ -290,6 +378,9 @@ namespace CapriDesktop
             folder = output;
             foreach (string name in new[] { "smoke-test.txt", "failure.txt", "progress.txt", "sections-done.txt", "steps-done.txt", "hangs.txt" })
                 File.Delete(Path.Combine(folder, name));
+            try { File.Delete(Path.Combine(folder, "smoke-timings.txt")); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
             List<string> checks = new List<string>();
             try
             {

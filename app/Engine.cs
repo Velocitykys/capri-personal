@@ -94,10 +94,13 @@ namespace CapriDesktop
                             }
                             catch (System.Security.SecurityException) { }
                             catch (UnauthorizedAccessException) { }
+                            // A display driver can remove its registry key while her startup worker reads it.
+                            catch (IOException error) { Brain.Log("machine", -1, error.Message); }
                         }
             }
             catch (System.Security.SecurityException) { }
             catch (UnauthorizedAccessException) { }
+            catch (IOException error) { Brain.Log("machine", -1, error.Message); }
             return machine;
         }
 
@@ -195,6 +198,9 @@ namespace CapriDesktop
 
         internal bool Crashed { get { lock (gate) return server != null && server.HasExited; } }
 
+        // The zip passed its checksum, so a missing server means antivirus took it (owner flag A14). Fits the BRAIN note.
+        internal const string ServerGone = "Your antivirus likely took llama-server.exe. Allow it, then try again.";
+
         internal void Install(Pick pick, Action<string, long, long> progress)
         {
             Directory.CreateDirectory(root);
@@ -208,7 +214,7 @@ namespace CapriDesktop
                 string staging = Folder + ".new";
                 if (Directory.Exists(staging)) Directory.Delete(staging, true);
                 ZipFile.ExtractToDirectory(zip, staging);
-                if (!File.Exists(Path.Combine(staging, "llama-server.exe"))) throw new IOException("The engine download is missing llama-server.exe.");
+                if (!File.Exists(Path.Combine(staging, "llama-server.exe"))) throw new IOException(ServerGone);
                 if (Directory.Exists(Folder)) Directory.Delete(Folder, true);
                 Directory.Move(staging, Folder);
                 File.Delete(zip);
@@ -220,12 +226,18 @@ namespace CapriDesktop
             }
         }
 
+        // A download's three ways to fail, in one place, so the lines that shorten them can tell which it was.
+        internal static string Stalled(string label) { return "The download of " + label + " keeps stopping. Check your connection and try again."; }
+        internal static string WrongSize(string label) { return "The download of " + label + " came out the wrong size. Try again."; }
+        internal static string Unmatched(string label) { return "The download of " + label + " didn't match its checksum. Try again."; }
+
         internal static void Fetch(string url, string target, long size, string sha256, string label, Action<string, long, long> progress, Func<bool> stopped)
         {
             ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
             string part = target + ".part";
             long have = File.Exists(part) ? new FileInfo(part).Length : 0;
             if (have > size) { File.Delete(part); have = 0; }
+            bool resumed = have > 0;
             int stalls = 0;
             while (have < size)
             {
@@ -261,13 +273,19 @@ namespace CapriDesktop
                 if (have < size)
                 {
                     stalls = have > before ? 0 : stalls + 1;
-                    if (stalls >= 4) throw new IOException("The download of " + label + " keeps stopping. Check your connection and try again.");
+                    if (stalls >= 4) throw new IOException(Stalled(label));
                     Thread.Sleep(1500 * stalls);
                 }
             }
-            if (have != size) { File.Delete(part); throw new IOException(label + " came down the wrong size. Try again."); }
+            if (have != size) { File.Delete(part); throw new IOException(WrongSize(label)); }
             progress("Checking " + label, size, size);
-            if (!string.Equals(Hash(part), sha256, StringComparison.OrdinalIgnoreCase)) { File.Delete(part); throw new IOException(label + " failed its checksum. Try again."); }
+            if (!string.Equals(Hash(part), sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(part);
+                // The part it carried on from may have come from a different file, so it starts clean, once.
+                if (resumed) { Fetch(url, target, size, sha256, label, progress, stopped); return; }
+                throw new IOException(Unmatched(label));
+            }
             if (File.Exists(target)) File.Delete(target);
             File.Move(part, target);
         }

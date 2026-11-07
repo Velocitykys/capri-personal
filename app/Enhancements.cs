@@ -3,19 +3,202 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.Serialization.Json;
 using System.Runtime.Serialization;
+using System.Globalization;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Windows.Forms;
 
 namespace CapriDesktop
 {
+    [DataContract]
+    internal sealed class DashboardTask
+    {
+        [DataMember] internal string Id;
+        [DataMember] internal string Text;
+        [DataMember] internal string Due;
+        [DataMember] internal bool Done;
+        internal DateTime? DueAt
+        {
+            get { DateTime value; return DateTime.TryParseExact(Due, "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out value) ? (DateTime?)value : null; }
+        }
+        public override string ToString()
+        {
+            DateTime? due = DueAt;
+            return (Done ? "✓  " : "○  ") + Text + (due.HasValue ? "    ·    " + due.Value.ToString("ddd d MMM, HH:mm") : "    ·    No due date");
+        }
+    }
+
     // Experimental switches and their options are kept outside settings.json, so an experiment can never damage
     // Capri's established preferences.
     internal sealed partial class Companion
     {
         private readonly object enhancementGate = new object();
         private Dictionary<string, bool> enhancementFlags;
+
+        internal string EnhancementSeeImage(byte[] image, string instruction)
+        {
+            if (image == null || image.Length == 0) throw new ArgumentException("The selected image is empty.", "image");
+            return brain.See(image, Brain.Persona + Brain.Speech() + Brain.Remembered(), instruction, 1200);
+        }
+
+        // Highlight assistance uses the same spoken-remark path as Capri's other replies.
+        // Pass bubbleOnly=false explicitly: this answer must be spoken, not just shown as text.
+        internal void EnhancementSpeak(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            Post(delegate
+            {
+                if (!IsDisposed) Remark("highlight assistance", text, false);
+            });
+        }
         private Dictionary<string, string> enhancementOptions;
+
+        internal List<Reminder> EnhancementReminders()
+        {
+            return reminders == null ? new List<Reminder>() : reminders.SnapshotReminders();
+        }
+
+        internal List<Routine> EnhancementRoutines()
+        {
+            return reminders == null ? new List<Routine>() : reminders.SnapshotRoutines();
+        }
+
+        internal string EnhancementSaveRoutine(string phrase, string steps)
+        {
+            return reminders == null ? "Couldn't access saved commands." : reminders.Routine(new ToolArguments { Phrase = phrase, Steps = steps });
+        }
+
+        internal string EnhancementSaveReminder(string text, string when)
+        {
+            return reminders == null ? "Couldn't access reminders." : reminders.Remind(new ToolArguments { Text = text, When = when });
+        }
+
+        internal string EnhancementRunRoutine(string phrase)
+        {
+            return RoutineTool(new ToolArguments { Action = "run", Phrase = phrase });
+        }
+
+        internal bool EnhancementForgetRoutine(string phrase)
+        {
+            return reminders != null && reminders.Routine(new ToolArguments { Action = "forget", Phrase = phrase }).StartsWith("Forgot your routine:", StringComparison.Ordinal);
+        }
+
+        internal bool EnhancementCancelReminder(string reminderText)
+        {
+            return reminders != null && reminders.Remind(new ToolArguments { Action = "cancel", Text = reminderText }).StartsWith("Cancelled your reminder:", StringComparison.Ordinal);
+        }
+
+        private readonly object dashboardGate = new object();
+        private List<DashboardTask> dashboardTasks;
+
+        private string DashboardFile
+        {
+            get
+            {
+                string folder = null;
+                try { folder = Path.GetDirectoryName(Brain.MemoriesPath); } catch (Exception) { }
+                if (string.IsNullOrEmpty(folder)) folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Capri");
+                return Path.Combine(folder, "dashboard.json");
+            }
+        }
+
+        private List<DashboardTask> ReadDashboardTasks()
+        {
+            try
+            {
+                string path = DashboardFile;
+                if (!File.Exists(path)) return new List<DashboardTask>();
+                using (FileStream stream = File.OpenRead(path))
+                {
+                    List<DashboardTask> saved = (List<DashboardTask>)new DataContractJsonSerializer(typeof(List<DashboardTask>)).ReadObject(stream);
+                    return saved ?? new List<DashboardTask>();
+                }
+            }
+            catch (Exception) { return new List<DashboardTask>(); }
+        }
+
+        private bool WriteDashboardTasks(List<DashboardTask> value)
+        {
+            string path = DashboardFile, temporary = path + ".new";
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                using (FileStream stream = File.Create(temporary)) new DataContractJsonSerializer(typeof(List<DashboardTask>)).WriteObject(stream, value);
+                if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+                return true;
+            }
+            catch (Exception)
+            {
+                try { if (File.Exists(temporary)) File.Delete(temporary); } catch (Exception) { }
+                return false;
+            }
+        }
+
+        internal List<DashboardTask> EnhancementTasks()
+        {
+            lock (dashboardGate)
+            {
+                if (dashboardTasks == null) dashboardTasks = ReadDashboardTasks();
+                List<DashboardTask> copy = new List<DashboardTask>();
+                foreach (DashboardTask item in dashboardTasks)
+                    if (item != null && !string.IsNullOrWhiteSpace(item.Id) && !string.IsNullOrWhiteSpace(item.Text))
+                        copy.Add(new DashboardTask { Id = item.Id, Text = item.Text, Due = item.Due, Done = item.Done });
+                copy.Sort(delegate(DashboardTask left, DashboardTask right)
+                {
+                    DateTime? a = left.DueAt, b = right.DueAt;
+                    if (!a.HasValue) return !b.HasValue ? string.Compare(left.Text, right.Text, StringComparison.CurrentCultureIgnoreCase) : 1;
+                    if (!b.HasValue) return -1;
+                    return a.Value.CompareTo(b.Value);
+                });
+                return copy;
+            }
+        }
+
+        internal bool EnhancementAddTask(string text, DateTime? due)
+        {
+            text = (text ?? "").Trim();
+            if (text.Length == 0) return false;
+            lock (dashboardGate)
+            {
+                if (dashboardTasks == null) dashboardTasks = ReadDashboardTasks();
+                List<DashboardTask> changed = new List<DashboardTask>(dashboardTasks);
+                changed.Add(new DashboardTask { Id = Guid.NewGuid().ToString("N"), Text = text, Due = due.HasValue ? due.Value.ToString("o", CultureInfo.InvariantCulture) : "", Done = false });
+                if (!WriteDashboardTasks(changed)) return false;
+                dashboardTasks = changed;
+                return true;
+            }
+        }
+
+        internal bool EnhancementSetTaskDone(string id, bool done)
+        {
+            lock (dashboardGate)
+            {
+                if (dashboardTasks == null) dashboardTasks = ReadDashboardTasks();
+                List<DashboardTask> changed = new List<DashboardTask>(dashboardTasks);
+                DashboardTask item = changed.Find(task => task.Id == id);
+                if (item == null) return false;
+                item.Done = done;
+                if (!WriteDashboardTasks(changed)) return false;
+                dashboardTasks = changed;
+                return true;
+            }
+        }
+
+        internal bool EnhancementDeleteTask(string id)
+        {
+            lock (dashboardGate)
+            {
+                if (dashboardTasks == null) dashboardTasks = ReadDashboardTasks();
+                List<DashboardTask> changed = new List<DashboardTask>(dashboardTasks);
+                DashboardTask item = changed.Find(task => task.Id == id);
+                if (item == null) return false;
+                changed.Remove(item);
+                if (!WriteDashboardTasks(changed)) return false;
+                dashboardTasks = changed;
+                return true;
+            }
+        }
 
         internal bool ExperimentalFeatureOn(string id)
         {
@@ -25,8 +208,8 @@ namespace CapriDesktop
                 if (enhancementFlags == null) enhancementFlags = ReadEnhancementFlags();
                 bool on;
                 if (enhancementFlags.TryGetValue(id, out on)) return on;
-                return id == "custom_commands" || id == "better_timers"
-                    || id == "memory_explorer" || id == "pc_health_monitor";
+                return id == "custom_commands" || id == "highlight_assistance"
+                    || id == "personal_dashboard" || id == "pc_health_monitor";
             }
         }
 
@@ -99,7 +282,16 @@ namespace CapriDesktop
                 using (FileStream stream = File.OpenRead(settingsPath + ".enhancements.json"))
                 {
                     Dictionary<string, bool> saved = (Dictionary<string, bool>)new DataContractJsonSerializer(typeof(Dictionary<string, bool>)).ReadObject(stream);
-                    return saved ?? new Dictionary<string, bool>();
+                    if (saved == null) saved = new Dictionary<string, bool>();
+                    bool oldTimers, dashboardEnabled;
+                    if (saved.TryGetValue("better_timers", out oldTimers) && oldTimers)
+                    {
+                        saved.TryGetValue("personal_dashboard", out dashboardEnabled);
+                        saved["personal_dashboard"] = dashboardEnabled || oldTimers;
+                    }
+                    foreach (string retired in new string[] { "notification_centre", "shared_music_discovery", "milestones", "command_history", "immersive_routines", "better_timers", "memory_explorer" })
+                        saved.Remove(retired);
+                    return saved;
                 }
             }
             catch (Exception) { return new Dictionary<string, bool>(); }
@@ -161,6 +353,142 @@ namespace CapriDesktop
             enhancements.Activate();
         }
 
+        private SavedManagerSheet savedManager;
+
+        private void OpenSavedManager(bool routines)
+        {
+            if (savedManager != null && !savedManager.IsDisposed && savedManager.Zoom != zoom) savedManager.Close();
+            if (savedManager == null || savedManager.IsDisposed || savedManager.Routines != routines)
+                savedManager = new SavedManagerSheet(this, zoom, routines);
+            savedManager.RefreshItems();
+            if (!savedManager.Visible) savedManager.Show(this);
+            savedManager.Activate();
+        }
+
+        private sealed class SavedManagerSheet : Form
+        {
+            internal readonly float Zoom;
+            internal readonly bool Routines;
+            private readonly Mainframe owner;
+            private readonly ListBox items;
+            private readonly Note description;
+            private readonly Key remove;
+            private readonly Key add;
+            private readonly Key run;
+
+            internal SavedManagerSheet(Mainframe owner, float zoom, bool routines)
+            {
+                this.owner = owner; Zoom = zoom; Routines = routines;
+                Text = routines ? "Saved commands" : "Timers and reminders";
+                Icon = owner.Icon; ShowInTaskbar = false; TopMost = true;
+                FormBorderStyle = FormBorderStyle.None; StartPosition = FormStartPosition.Manual;
+                AutoScaleMode = AutoScaleMode.None; BackColor = Ground; ForeColor = White;
+                ClientSize = new Size(Z(520), Z(430));
+                Heading(this, routines ? "SAVED COMMANDS" : "TIMERS & REMINDERS", new Point(Z(22), Z(18)), Display(14f * zoom), Rose, 0);
+                description = new Note();
+                description.Bounds = Box(24, 48, 470, 30); description.Text = routines ? "Choose a phrase to inspect or remove its saved action." : "Your saved reminders and timers stay on this PC.";
+                description.ForeColor = Faint; description.BackColor = Ground; description.Font = Type(8.5f * zoom); Controls.Add(description);
+                items = new ListBox();
+                items.Bounds = Box(22, 88, 476, 270); items.BackColor = Field; items.ForeColor = White;
+                items.BorderStyle = BorderStyle.FixedSingle; items.Font = Type(9f * zoom); items.IntegralHeight = false;
+                items.SelectedIndexChanged += delegate { UpdateSelection(); }; Controls.Add(items);
+                add = new Key(); add.Text = routines ? "New command" : "New reminder"; add.Accent = Cyan;
+                add.Bounds = Box(22, 374, 112, 28); add.Click += delegate { AddItem(); }; Controls.Add(add);
+                run = new Key(); run.Text = "Run"; run.Bounds = Box(142, 374, 70, 28);
+                run.Click += delegate { RunSelected(); }; Controls.Add(run);
+                remove = new Key(); remove.Text = routines ? "Forget" : "Cancel"; remove.Accent = Hot;
+                remove.Bounds = Box(220, 374, 82, 28); remove.Click += delegate { RemoveSelected(); }; Controls.Add(remove);
+                Key refresh = new Key(); refresh.Text = "Refresh"; refresh.Bounds = Box(310, 374, 78, 28);
+                refresh.Click += delegate { RefreshItems(); }; Controls.Add(refresh);
+                Key close = new Key(); close.Text = "Done"; close.Accent = Cyan; close.Loud = true;
+                close.Bounds = Box(398, 374, 100, 28); close.Click += delegate { Close(); }; Controls.Add(close);
+                RefreshItems();
+            }
+
+            internal void RefreshItems()
+            {
+                string selected = items.SelectedItem == null ? null : items.SelectedItem.ToString();
+                items.Items.Clear();
+                if (Routines)
+                    foreach (Routine routine in owner.capri.EnhancementRoutines()) items.Items.Add(routine.Phrase + "  —  " + routine.Steps);
+                else
+                    foreach (Reminder reminder in owner.capri.EnhancementReminders())
+                        if (!reminder.Said) items.Items.Add(reminder.Due.ToString("ddd, d MMM  HH:mm") + "  —  " + reminder.Text);
+                if (items.Items.Count == 0) items.Items.Add(Routines ? "No saved commands yet." : "No upcoming reminders.");
+                for (int i = 0; i < items.Items.Count; i++)
+                    if (selected != null && string.Equals(items.Items[i].ToString(), selected, StringComparison.Ordinal)) { items.SelectedIndex = i; break; }
+                UpdateSelection();
+            }
+
+            private void UpdateSelection()
+            {
+                bool valid = items.SelectedIndex >= 0 && items.Items.Count > 0
+                    && !items.Items[items.SelectedIndex].ToString().StartsWith("No saved", StringComparison.Ordinal)
+                    && !items.Items[items.SelectedIndex].ToString().StartsWith("No upcoming", StringComparison.Ordinal);
+                remove.Enabled = valid;
+                run.Enabled = valid && Routines;
+                description.Text = valid ? items.Items[items.SelectedIndex].ToString()
+                    : Routines ? "Create a command Capri can run when you say its trigger phrase." : "Add a reminder using a time like in 20 minutes or tomorrow at 9.";
+            }
+
+            private void AddItem()
+            {
+                using (SavedItemEditorSheet editor = new SavedItemEditorSheet(Zoom, Routines))
+                {
+                    if (editor.ShowDialog(this) != DialogResult.OK) return;
+                    string result = Routines ? owner.capri.EnhancementSaveRoutine(editor.First, editor.Second)
+                        : owner.capri.EnhancementSaveReminder(editor.First, editor.Second);
+                    MessageBox.Show(this, result, Routines ? "Saved command" : "Reminder", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshItems();
+                }
+            }
+
+            private void RunSelected()
+            {
+                if (!Routines || items.SelectedIndex < 0) return;
+                string selected = items.SelectedItem.ToString();
+                if (selected.StartsWith("No saved", StringComparison.Ordinal)) return;
+                string phrase = selected.Split(new string[] { "  —  " }, StringSplitOptions.None)[0];
+                string result = owner.capri.EnhancementRunRoutine(phrase);
+                MessageBox.Show(this, result, "Run command", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                RefreshItems();
+            }
+
+            private void RemoveSelected()
+            {
+                if (items.SelectedIndex < 0) return;
+                string selected = items.SelectedItem.ToString();
+                if (selected.StartsWith("No saved", StringComparison.Ordinal) || selected.StartsWith("No upcoming", StringComparison.Ordinal)) return;
+                bool removed;
+                if (Routines)
+                {
+                    string phrase = selected.Split(new string[] { "  —  " }, StringSplitOptions.None)[0];
+                    removed = owner.capri.EnhancementForgetRoutine(phrase);
+                }
+                else
+                {
+                    string value = selected.Substring(selected.IndexOf("  —  ", StringComparison.Ordinal) + 5);
+                    removed = owner.capri.EnhancementCancelReminder(value);
+                }
+                if (!removed) MessageBox.Show(this, "Capri couldn't remove that item. Refresh and try again.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                RefreshItems();
+            }
+
+            private int Z(int value) { return (int)Math.Round(value * Zoom); }
+            private Rectangle Box(int x, int y, int width, int height) { return new Rectangle(Z(x), Z(y), Z(width), Z(height)); }
+            protected override void OnLoad(EventArgs e)
+            {
+                base.OnLoad(e); Rectangle area = Screen.FromControl(owner).WorkingArea;
+                int x = owner.Left + (owner.Width - Width) / 2, y = owner.Top + (int)(48 * ScaleOf(this));
+                Location = new Point(Math.Max(area.Left, Math.Min(area.Right - Width, x)), Math.Max(area.Top, Math.Min(area.Bottom - Height, y)));
+            }
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                base.OnPaint(e); float scale = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                Backdrop(e.Graphics, this, scale); Edging(e.Graphics, this, scale);
+            }
+        }
+
         private sealed class EnhancementOption
         {
             internal readonly string Id, Name, Default;
@@ -189,36 +517,20 @@ namespace CapriDesktop
             private readonly Enhancement[] features =
             {
                 new Enhancement("custom_commands", "Custom Commands", "PRODUCTIVITY",
-                    "Save your own trigger phrases and have Capri run a sequence of actions. Her existing routine engine is the starting point.",
-                    "EXISTING ROUTINE ENGINE",
-                    new EnhancementOption("confirm", "Confirm before running", "Risky actions", "Every command", "Risky actions", "Never")),
-                new Enhancement("immersive_routines", "Immersive Routines", "AUTOMATION",
-                    "Let Capri adapt to your day with routines that can respond to time, the apps you open and your activity.",
-                    "AUTOMATIC TRIGGERS IN DEVELOPMENT",
-                    new EnhancementOption("triggers", "Routine triggers", "Time + apps", "Manual only", "Time only", "Time + apps", "Context-aware")),
-                new Enhancement("better_timers", "Better Timers & Reminders", "PRODUCTIVITY",
-                    "Manage multiple timers, recurring reminders, snooze and rescheduling. Existing reminders are being extended rather than replaced.",
-                    "EXISTING REMINDER ENGINE",
-                    new EnhancementOption("snooze", "Default snooze", "10 minutes", "5 minutes", "10 minutes", "15 minutes", "30 minutes"),
-                    new EnhancementOption("sound", "Reminder sound", "On", "On", "Off")),
+                    "Save a trigger phrase and the sequence of actions Capri should run when you say it. Create, run and forget commands here.",
+                    "SAVED PHRASES · MULTI-STEP ACTIONS"),
                 new Enhancement("highlight_assistance", "Highlight Assistance", "PRODUCTIVITY",
-                    "Select text in an app and ask Capri to explain, summarise, translate or rewrite just that selection instead of analysing your whole screen.",
-                    "SELECTION CAPTURE IN DEVELOPMENT",
-                    new EnhancementOption("shortcut", "Activation shortcut", "Ctrl + Alt + E", "Ctrl + Alt + E", "Ctrl + Shift + E", "Ctrl + Alt + H")),
+                    "Press Ctrl + Alt + E, drag over any on-screen area, then ask Capri to explain, simplify, translate, summarise or follow your own instruction.",
+                    "SCREEN REGION · WINDOWS OCR · CAPRI"),
                 new Enhancement("personal_dashboard", "Personal Dashboard", "PRODUCTIVITY",
-                    "A dedicated workspace for your calendar, tasks, reminders and upcoming events. Capri will be able to add and manage events from chat.",
-                    "DASHBOARD IN DEVELOPMENT",
-                    new EnhancementOption("view", "Default calendar view", "Week", "Day", "Week", "Month"),
-                    new EnhancementOption("week_start", "Week starts on", "Monday", "Monday", "Sunday")),
-                new Enhancement("memory_explorer", "Memory Explorer", "COMPANION",
-                    "Browse, search and manage what Capri remembers, including her notes and older chat transcripts. Nothing is uploaded by this panel.",
-                    "EXISTING LOCAL MEMORY FILES",
-                    new EnhancementOption("scope", "Search scope", "Memories + transcripts", "Memories only", "Memories + transcripts")),
+                    "One workspace for your calendar, tasks, timers and reminders. Add, review, complete or cancel everything from the dashboard.",
+                    "LOCAL TASKS · CALENDAR · TIMERS · REMINDERS"),
                 new Enhancement("pc_health_monitor", "PC Health Monitor", "SYSTEM",
-                    "See CPU load, memory use, running apps, drive space and battery status. Capri already has a PC usage reader and status tool.",
-                    "EXISTING PC STATUS READER",
-                    new EnhancementOption("refresh", "Refresh interval", "15 seconds", "5 seconds", "15 seconds", "30 seconds"),
-                    new EnhancementOption("alerts", "High-usage alerts", "On", "On", "Off"))
+                    "Check current CPU load, memory use, running apps, drive space and battery status using Capri's local PC usage reader.",
+                    "ON-DEMAND READOUT · NO BACKGROUND MONITORING"),
+                new Enhancement("conversational_continuity", "Conversational Continuity", "VOICE",
+                    "After Capri answers in hands-free voice chat, keep the conversation open briefly so natural follow-ups work without saying her name again. Requires a clear follow-up after Capri has been addressed; ignores casual greetings and nearby conversation.",
+                    "5-SECOND FOLLOW-UP WINDOW · HANDS-FREE VOICE")
             };
 
             private readonly Panel list;
@@ -322,6 +634,7 @@ namespace CapriDesktop
                 toggles[index] = new Toggle();
                 toggles[index].Text = feature.Name;
                 toggles[index].Font = Type(9.5f * Zoom, true);
+                toggles[index].Enabled = true;
                 toggles[index].Switch = 96;
                 toggles[index].Bounds = Box(16, 14, 450, 24);
                 toggles[index].AccessibleName = feature.Name + ". " + feature.Description;
@@ -333,7 +646,7 @@ namespace CapriDesktop
                         MessageBox.Show(this, "Couldn't save that switch. Its previous value has been restored.", "Enhancements", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         Sync();
                     }
-                    else Sync();
+                    else { owner.RefreshHighlightHotkey(); Sync(); }
                 };
                 list.Controls.Add(toggles[index]);
 
@@ -402,12 +715,12 @@ namespace CapriDesktop
                     optionMenus[index][optionIndex] = choices;
                 }
 
-                if (feature.Id == "memory_explorer" || feature.Id == "pc_health_monitor")
+                if (feature.Id == "custom_commands" || feature.Id == "highlight_assistance" || feature.Id == "personal_dashboard" || feature.Id == "pc_health_monitor")
                 {
                     Key action = new Key();
                     action.Font = Type(8f * Zoom);
                     action.Accent = Cyan;
-                    action.Text = feature.Id == "memory_explorer" ? "Open memory files" : "Check PC now";
+                    action.Text = feature.Id == "custom_commands" ? "Manage saved commands" : feature.Id == "highlight_assistance" ? "Select screen area" : feature.Id == "personal_dashboard" ? "Open dashboard" : "Check PC now";
                     action.AccessibleName = action.Text;
                     action.Click += delegate
                     {
@@ -416,7 +729,9 @@ namespace CapriDesktop
                             MessageBox.Show(this, "Turn this feature on first.", "Enhancements", MessageBoxButtons.OK, MessageBoxIcon.Information);
                             return;
                         }
-                        if (feature.Id == "memory_explorer") owner.capri.OpenMemories();
+                        if (feature.Id == "custom_commands") owner.OpenSavedManager(true);
+                        else if (feature.Id == "highlight_assistance") owner.StartHighlightRegionSelection();
+                        else if (feature.Id == "personal_dashboard") owner.OpenDashboard();
                         else ShowPcHealth();
                     };
                     list.Controls.Add(action);
@@ -512,6 +827,7 @@ namespace CapriDesktop
 
             internal void Sync()
             {
+                owner.RefreshHighlightHotkey();
                 syncing = true;
                 for (int i = 0; i < features.Length; i++)
                     toggles[i].Checked = owner.capri.ExperimentalFeatureOn(features[i].Id);
@@ -565,6 +881,466 @@ namespace CapriDesktop
                         if (menus != null) foreach (ContextMenuStrip menu in menus) if (menu != null) menu.Dispose();
                 base.Dispose(disposing);
             }
+        }
+
+        private ScreenRegionSelector regionSelector;
+
+        internal void StartHighlightRegionSelection()
+        {
+            if (regionSelector != null && !regionSelector.IsDisposed) regionSelector.Close();
+            regionSelector = new ScreenRegionSelector(this);
+            regionSelector.Show(this);
+            regionSelector.Activate();
+        }
+
+        internal void CaptureHighlightRegion(Rectangle region)
+        {
+            if (region.Width < 6 || region.Height < 6) return;
+            System.Threading.Tasks.Task.Run(delegate
+            {
+                byte[] captured = null;
+                try
+                {
+                    System.Threading.Thread.Sleep(160);
+                    using (Bitmap frame = new Bitmap(region.Width, region.Height))
+                    using (Graphics graphics = Graphics.FromImage(frame))
+                    using (MemoryStream stream = new MemoryStream())
+                    {
+                        graphics.CopyFromScreen(region.Location, Point.Empty, region.Size, CopyPixelOperation.SourceCopy);
+                        frame.Save(stream, ImageFormat.Jpeg);
+                        captured = stream.ToArray();
+                    }
+                }
+                catch (Exception) { }
+                try
+                {
+                    if (captured != null && !IsDisposed && IsHandleCreated)
+                        BeginInvoke(new Action(delegate { OpenHighlightAssistance(captured); }));
+                }
+                catch (Exception) { }
+            });
+        }
+
+        private sealed class ScreenRegionSelector : Form
+        {
+            private readonly Mainframe owner;
+            private Point anchor, current;
+            private bool dragging;
+
+            internal ScreenRegionSelector(Mainframe owner)
+            {
+                this.owner = owner;
+                Rectangle virtualScreen = SystemInformation.VirtualScreen;
+                Bounds = virtualScreen;
+                Text = "Select an area for Capri";
+                ShowInTaskbar = false;
+                TopMost = true;
+                FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual;
+                AutoScaleMode = AutoScaleMode.None;
+                BackColor = Color.Black;
+                Opacity = 0.28;
+                DoubleBuffered = true;
+                KeyPreview = true;
+                Cursor = Cursors.Cross;
+            }
+
+            private Rectangle Selection
+            {
+                get
+                {
+                    return Rectangle.FromLTRB(Math.Min(anchor.X, current.X), Math.Min(anchor.Y, current.Y),
+                        Math.Max(anchor.X, current.X), Math.Max(anchor.Y, current.Y));
+                }
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                if (e.Button != MouseButtons.Left) { Close(); return; }
+                anchor = current = PointToScreen(e.Location);
+                dragging = true;
+                Capture = true;
+                Invalidate();
+                base.OnMouseDown(e);
+            }
+
+            protected override void OnMouseMove(MouseEventArgs e)
+            {
+                if (dragging)
+                {
+                    current = PointToScreen(e.Location);
+                    Invalidate();
+                }
+                base.OnMouseMove(e);
+            }
+
+            protected override void OnMouseUp(MouseEventArgs e)
+            {
+                if (dragging && e.Button == MouseButtons.Left)
+                {
+                    current = PointToScreen(e.Location);
+                    Rectangle selected = Selection;
+                    dragging = false;
+                    Capture = false;
+                    Hide();
+                    Close();
+                    if (selected.Width >= 6 && selected.Height >= 6) owner.CaptureHighlightRegion(selected);
+                }
+                base.OnMouseUp(e);
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Escape) { e.Handled = true; Close(); return; }
+                base.OnKeyDown(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                base.OnPaint(e);
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                using (Font hint = new Font("Segoe UI", 12f, FontStyle.Bold))
+                using (SolidBrush brush = new SolidBrush(Color.FromArgb(230, 255, 255, 255)))
+                    e.Graphics.DrawString("DRAG TO SELECT AN AREA  ·  ESC TO CANCEL", hint, brush, new PointF(24, 22));
+                if (dragging)
+                {
+                    Rectangle area = Selection;
+                    area.Offset(-Bounds.Left, -Bounds.Top);
+                    using (SolidBrush fill = new SolidBrush(Color.FromArgb(35, 0, 210, 230)))
+                    using (Pen edge = new Pen(Color.FromArgb(245, 0, 220, 245), 2f))
+                    {
+                        e.Graphics.FillRectangle(fill, area);
+                        e.Graphics.DrawRectangle(edge, area);
+                    }
+                }
+            }
+        }
+
+        private sealed class HighlightAssistanceSheet : Form
+        {
+            private readonly Mainframe owner;
+            private readonly float scale;
+            private readonly byte[] selectedImage;
+            private readonly TextBox instruction;
+            private bool thinking;
+
+            internal HighlightAssistanceSheet(Mainframe owner, float zoom, byte[] image)
+            {
+                this.owner = owner; scale = zoom; selectedImage = image;
+                Text = "Ask Capri"; Icon = owner.Icon;
+                ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
+                BackColor = Ground; ForeColor = White;
+                // One compact action strip: no heading, decorative close button, or oversized empty padding.
+                ClientSize = new Size(Z(462), Z(88));
+
+                string[] names = { "Read text", "Explain", "Translate", "Simplify", "Summarise", "Rewrite" };
+                for (int i = 0; i < names.Length; i++)
+                {
+                    string action = names[i];
+                    Key button = new Key();
+                    button.Text = action; button.Font = Type(7.2f * scale); button.Accent = Cyan;
+                    button.Bounds = Box(10 + i * 74, 8, 68, 28);
+                    button.Click += delegate { AskCapri(action); };
+                    Controls.Add(button);
+                }
+
+                instruction = new TextBox();
+                instruction.BorderStyle = BorderStyle.FixedSingle;
+                instruction.Bounds = Box(10, 46, 342, 30);
+                instruction.BackColor = Field; instruction.ForeColor = White;
+                instruction.Font = Type(8.5f * scale);
+                instruction.AccessibleName = "Custom instructions for Capri";
+                instruction.KeyDown += delegate(object sender, KeyEventArgs key)
+                {
+                    if (key.KeyCode == Keys.Enter) { key.SuppressKeyPress = true; AskCapri(instruction.Text); }
+                    else if (key.KeyCode == Keys.Escape) { key.SuppressKeyPress = true; Close(); }
+                };
+                Controls.Add(instruction);
+
+                Key ask = new Key(); ask.Text = "Ask Capri"; ask.Accent = Rose; ask.Loud = true;
+                ask.Bounds = Box(360, 46, 92, 30);
+                ask.Click += delegate { AskCapri(instruction.Text); };
+                Controls.Add(ask);
+            }
+
+            private void AskCapri(string action)
+            {
+                if (thinking) return;
+                string task = (action ?? "").Trim();
+                if (task.Length == 0) { instruction.Focus(); return; }
+                thinking = true;
+                Close();
+
+                string prompt = task + "\n\nYou are looking at a user-selected screenshot region. Carefully inspect the actual image, not just an assumed OCR transcript. If asked to read or translate, transcribe all legible visible text faithfully, including profanity, insults, slurs, sexual language, and other offensive wording; do not censor, sanitize, or silently omit words. Preserve the original wording and explain or translate it accurately into English where useful. Mention uncertainty for unclear text. Describe relevant visible content as well as text when the instruction calls for it. Speak directly to the user in your usual personality. Keep the answer clear and reasonably concise.";
+                System.Threading.Tasks.Task.Run(delegate
+                {
+                    string result;
+                    try { result = owner.capri.EnhancementSeeImage(selectedImage, prompt); }
+                    catch (Exception error) { result = "I couldn't read that selection: " + Voice.Short(error.Message); }
+                    if (string.IsNullOrWhiteSpace(result)) result = "I couldn't make out anything clear in that selection.";
+
+                    // Queue Capri's normal spoken-reply pipeline first. The transcript is a separate,
+                    // readable copy of exactly what she was asked to say.
+                    owner.capri.EnhancementSpeak(result);
+                    try
+                    {
+                        if (!owner.IsDisposed && owner.IsHandleCreated)
+                            owner.BeginInvoke(new Action(delegate
+                            {
+                                if (owner.IsDisposed) return;
+                                HighlightAnswerSheet answer = new HighlightAnswerSheet(owner, scale);
+                                answer.SetAnswer(result);
+                                answer.Show(owner);
+                                answer.Activate();
+                            }));
+                    }
+                    catch (Exception) { }
+                });
+            }
+
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
+            protected override void OnLoad(EventArgs e)
+            {
+                base.OnLoad(e);
+                Rectangle area = Screen.FromPoint(Cursor.Position).WorkingArea;
+                Point at = Cursor.Position;
+                int x = Math.Max(area.Left, Math.Min(area.Right - Width, at.X + Z(14)));
+                int y = Math.Max(area.Top, Math.Min(area.Bottom - Height, at.Y + Z(14)));
+                Location = new Point(x, y);
+            }
+            protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); float z = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Backdrop(e.Graphics, this, z); Edging(e.Graphics, this, z); }
+            protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Escape) { Close(); e.Handled = true; return; } base.OnKeyDown(e); }
+        }
+
+        private sealed class HighlightAnswerSheet : Form
+        {
+            private readonly float scale;
+            private readonly TextBox response;
+            internal HighlightAnswerSheet(Mainframe owner, float zoom)
+            {
+                scale = zoom;
+                Text = "Capri · Answer"; Icon = owner.Icon;
+                ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(390), Z(166));
+                Label title = new Label { Text = "CAPRI · RESPONSE", Bounds = Box(16, 10, 320, 20), ForeColor = Cyan, BackColor = Ground, Font = Look.Mono(9f * scale, FontStyle.Bold, GraphicsUnit.Point) };
+                Controls.Add(title);
+                Key close = new Key(); close.Text = "×"; close.Accent = Hot; close.Bounds = Box(362, 7, 22, 23);
+                close.Click += delegate { Close(); }; Controls.Add(close);
+                response = new TextBox(); response.Multiline = true; response.ReadOnly = true;
+                response.ScrollBars = ScrollBars.Vertical; response.WordWrap = true;
+                response.Bounds = Box(14, 38, 362, 116); response.BackColor = Field;
+                response.ForeColor = White; response.BorderStyle = BorderStyle.FixedSingle;
+                response.Font = Type(9f * scale); response.Text = "She's looking at your selection...";
+                Controls.Add(response);
+            }
+            internal void SetAnswer(string text) { if (!IsDisposed) response.Text = text ?? ""; }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
+            protected override void OnLoad(EventArgs e)
+            {
+                base.OnLoad(e);
+                Rectangle area = Screen.FromPoint(Cursor.Position).WorkingArea;
+                Point at = Cursor.Position;
+                int x = Math.Max(area.Left, Math.Min(area.Right - Width, at.X + Z(14)));
+                int y = Math.Max(area.Top, Math.Min(area.Bottom - Height, at.Y + Z(14)));
+                Location = new Point(x, y);
+            }
+            protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); float z = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Backdrop(e.Graphics, this, z); Edging(e.Graphics, this, z); }
+        }
+
+        private sealed class DashboardSheet : Form
+        {
+            internal readonly float Zoom;
+            private readonly Mainframe owner;
+            private readonly MonthCalendar calendar;
+            private readonly ListBox tasks;
+            private readonly ListBox reminders;
+            private readonly Label summary;
+            private List<DashboardTask> shownTasks = new List<DashboardTask>();
+            private List<Reminder> shownReminders = new List<Reminder>();
+            private bool allTasksShown;
+            internal DashboardSheet(Mainframe owner, float zoom)
+            {
+                this.owner = owner; Zoom = zoom; Text = "Personal Dashboard"; Icon = owner.Icon;
+                ShowInTaskbar = false; TopMost = true; FormBorderStyle = FormBorderStyle.None;
+                StartPosition = FormStartPosition.Manual; AutoScaleMode = AutoScaleMode.None;
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(760), Z(620));
+                Label title = Head("PERSONAL DASHBOARD", 22, 18, 15f, Cyan); Controls.Add(title);
+                summary = new Note(); summary.Text = ""; summary.Bounds = Box(24, 48, 710, 22);
+                summary.ForeColor = Faint; summary.BackColor = Ground; summary.Font = Type(8.5f * scale); Controls.Add(summary);
+                Label day = Head("CALENDAR", 22, 82, 8f, Rose); Controls.Add(day);
+                calendar = new MonthCalendar(); calendar.Bounds = Box(22, 108, 230, 190);
+                calendar.MaxSelectionCount = 1; calendar.DateSelected += delegate { RefreshDashboard(); }; Controls.Add(calendar);
+                Label taskHead = Head("TASKS", 278, 82, 8f, Rose); Controls.Add(taskHead);
+                tasks = new ListBox(); tasks.Bounds = Box(278, 108, 456, 190); tasks.BackColor = Field;
+                tasks.ForeColor = White; tasks.BorderStyle = BorderStyle.FixedSingle; tasks.Font = Type(8.5f * scale);
+                tasks.IntegralHeight = false; Controls.Add(tasks);
+                Key add = new Key(); add.Text = "Add task"; add.Accent = Cyan; add.Bounds = Box(278, 310, 104, 28); add.Click += delegate { AddTask(); }; Controls.Add(add);
+                Key done = new Key(); done.Text = "Complete / undo"; done.Bounds = Box(392, 310, 132, 28); done.Click += delegate { ToggleTask(); }; Controls.Add(done);
+                Key delete = new Key(); delete.Text = "Delete"; delete.Accent = Hot; delete.Bounds = Box(534, 310, 90, 28); delete.Click += delegate { DeleteTask(); }; Controls.Add(delete);
+                Key all = new Key(); all.Text = "Show all"; all.Bounds = Box(634, 310, 100, 28); all.Click += delegate { calendar.SetDate(DateTime.Today); RefreshDashboard(true); }; Controls.Add(all);
+                Label reminderHead = Head("TIMERS & REMINDERS", 22, 366, 8f, Rose); Controls.Add(reminderHead);
+                reminders = new ListBox(); reminders.Bounds = Box(22, 392, 712, 154); reminders.BackColor = Field;
+                reminders.ForeColor = White; reminders.BorderStyle = BorderStyle.FixedSingle; reminders.Font = Type(8.5f * scale);
+                reminders.IntegralHeight = false; Controls.Add(reminders);
+                Key addReminder = new Key(); addReminder.Text = "Add timer / reminder"; addReminder.Accent = Cyan;
+                addReminder.Bounds = Box(22, 562, 164, 28); addReminder.Click += delegate { AddReminder(); }; Controls.Add(addReminder);
+                Key cancelReminder = new Key(); cancelReminder.Text = "Cancel selected"; cancelReminder.Accent = Hot;
+                cancelReminder.Bounds = Box(196, 562, 132, 28); cancelReminder.Click += delegate { CancelSelectedReminder(); }; Controls.Add(cancelReminder);
+                Key refresh = new Key(); refresh.Text = "Refresh"; refresh.Bounds = Box(338, 562, 90, 28); refresh.Click += delegate { RefreshDashboard(); }; Controls.Add(refresh);
+                Key close = new Key(); close.Text = "Done"; close.Accent = Cyan; close.Loud = true;
+                close.Bounds = Box(634, 562, 100, 28); close.Click += delegate { Close(); }; Controls.Add(close);
+                RefreshDashboard();
+            }
+            private float scale { get { return Zoom; } }
+            internal void RefreshDashboard(bool allTasks = false)
+            {
+                allTasksShown = allTasks;
+                shownTasks = owner.capri.EnhancementTasks();
+                tasks.Items.Clear();
+                DateTime selected = calendar.SelectionStart.Date;
+                List<DashboardTask> visible = shownTasks.FindAll(item => allTasks || !item.DueAt.HasValue || item.DueAt.Value.Date == selected || (!item.Done && item.DueAt.Value.Date < DateTime.Today));
+                int done = shownTasks.FindAll(item => item.Done).Count;
+                summary.Text = DateTime.Today.ToString("dddd, d MMMM yyyy") + "   ·   " + done + " / " + shownTasks.Count + " tasks complete   ·   " + (shownTasks.Count - done) + " remaining";
+                foreach (DashboardTask item in visible) tasks.Items.Add(item.ToString());
+                if (visible.Count == 0) tasks.Items.Add("No tasks for this day. Add one when you're ready.");
+                shownReminders = owner.capri.EnhancementReminders().FindAll(item => !item.Said);
+                reminders.Items.Clear();
+                foreach (Reminder item in shownReminders) reminders.Items.Add(item.Due.ToString("ddd d MMM  ·  HH:mm") + "    " + item.Text);
+                if (shownReminders.Count == 0) reminders.Items.Add("No upcoming reminders.");
+            }
+            private void AddTask()
+            {
+                using (DashboardTaskEditor editor = new DashboardTaskEditor(Zoom))
+                {
+                    if (editor.ShowDialog(this) != DialogResult.OK) return;
+                    if (!owner.capri.EnhancementAddTask(editor.TaskText, editor.HasDue ? (DateTime?)editor.Due : null))
+                        MessageBox.Show(this, "Couldn't save that task. Check the local dashboard file permissions.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshDashboard();
+                }
+            }
+            private void AddReminder()
+            {
+                using (SavedItemEditorSheet editor = new SavedItemEditorSheet(Zoom, false))
+                {
+                    if (editor.ShowDialog(this) != DialogResult.OK) return;
+                    string result = owner.capri.EnhancementSaveReminder(editor.First, editor.Second);
+                    if (string.IsNullOrEmpty(result) || !result.StartsWith("I'll remind you ", StringComparison.Ordinal))
+                        MessageBox.Show(this, result ?? "Couldn't save that reminder.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshDashboard();
+                }
+            }
+            private void CancelSelectedReminder()
+            {
+                int index = reminders.SelectedIndex;
+                if (index < 0 || index >= shownReminders.Count) return;
+                Reminder item = shownReminders[index];
+                if (!owner.capri.EnhancementCancelReminder(item.Text))
+                    MessageBox.Show(this, "Couldn't cancel that timer or reminder. Refresh and try again.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                RefreshDashboard();
+            }
+            private DashboardTask SelectedTask()
+            {
+                int index = tasks.SelectedIndex;
+                if (index < 0 || index >= shownTasks.Count) return null;
+                DateTime selected = calendar.SelectionStart.Date;
+                List<DashboardTask> visible = shownTasks.FindAll(item => allTasksShown || !item.DueAt.HasValue || item.DueAt.Value.Date == selected || (!item.Done && item.DueAt.Value.Date < DateTime.Today));
+                return index < visible.Count ? visible[index] : null;
+            }
+            private void ToggleTask() { DashboardTask item = SelectedTask(); if (item == null) return; owner.capri.EnhancementSetTaskDone(item.Id, !item.Done); RefreshDashboard(); }
+            private void DeleteTask() { DashboardTask item = SelectedTask(); if (item == null) return; if (MessageBox.Show(this, "Delete “" + item.Text + "”?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes) { owner.capri.EnhancementDeleteTask(item.Id); RefreshDashboard(); } }
+            private Label Head(string text, int x, int y, float size, Color colour) { return new Label { Text = text, Bounds = Box(x, y, 500, 18), ForeColor = colour, BackColor = Ground, Font = Look.Mono(size * scale, FontStyle.Bold, GraphicsUnit.Point) }; }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
+            protected override void OnLoad(EventArgs e)
+            {
+                base.OnLoad(e); Rectangle area = Screen.FromControl(owner).WorkingArea;
+                int x = owner.Left + (owner.Width - Width) / 2, y = owner.Top + (int)(48 * ScaleOf(this));
+                Location = new Point(Math.Max(area.Left, Math.Min(area.Right - Width, x)), Math.Max(area.Top, Math.Min(area.Bottom - Height, y)));
+            }
+            protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); float s = ScaleOf(this); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; Backdrop(e.Graphics, this, s); Edging(e.Graphics, this, s); }
+            protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Escape) { Close(); e.Handled = true; return; } base.OnKeyDown(e); }
+        }
+
+        private sealed class DashboardTaskEditor : Form
+        {
+            private readonly float scale;
+            private readonly TextBox task;
+            private readonly CheckBox useDue;
+            private readonly DateTimePicker due;
+            internal string TaskText { get { return task.Text.Trim(); } }
+            internal bool HasDue { get { return useDue.Checked; } }
+            internal DateTime Due { get { return due.Value; } }
+            internal DashboardTaskEditor(float zoom)
+            {
+                scale = zoom; Text = "Add task"; FormBorderStyle = FormBorderStyle.FixedDialog;
+                StartPosition = FormStartPosition.CenterParent; ShowInTaskbar = false; MinimizeBox = false; MaximizeBox = false;
+                BackColor = Ground; ForeColor = White; ClientSize = new Size(Z(420), Z(190));
+                Label label = new Label { Text = "TASK", Bounds = Box(18, 16, 380, 18), ForeColor = Cyan, BackColor = Ground, Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point) }; Controls.Add(label);
+                task = new TextBox(); task.Bounds = Box(18, 38, 384, 28); task.BackColor = Field; task.ForeColor = White; task.BorderStyle = BorderStyle.FixedSingle; task.Font = Type(9f * zoom); Controls.Add(task);
+                useDue = new CheckBox(); useDue.Text = "Add a due date"; useDue.Bounds = Box(18, 78, 130, 24); useDue.ForeColor = White; useDue.BackColor = Ground; Controls.Add(useDue);
+                due = new DateTimePicker(); due.Format = DateTimePickerFormat.Custom; due.CustomFormat = "ddd, d MMM yyyy  HH:mm"; due.Bounds = Box(158, 78, 244, 24); due.Value = DateTime.Now.AddHours(1); Controls.Add(due);
+                useDue.CheckedChanged += delegate { due.Enabled = useDue.Checked; }; due.Enabled = false;
+                Button save = new Button { Text = "SAVE", DialogResult = DialogResult.OK, Bounds = Box(302, 138, 100, 28), Enabled = false, FlatStyle = FlatStyle.Flat, BackColor = Field, ForeColor = Cyan, Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point) };
+                save.FlatAppearance.BorderColor = Edge; task.TextChanged += delegate { save.Enabled = TaskText.Length > 0; }; Controls.Add(save); AcceptButton = save;
+                Button cancel = new Button { Text = "CANCEL", DialogResult = DialogResult.Cancel, Bounds = Box(192, 138, 100, 28), FlatStyle = FlatStyle.Flat, BackColor = Field, ForeColor = White, Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point) };
+                cancel.FlatAppearance.BorderColor = Edge; Controls.Add(cancel); CancelButton = cancel;
+            }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int w, int h) { return new Rectangle(Z(x), Z(y), Z(w), Z(h)); }
+        }
+
+        private sealed class SavedItemEditorSheet : Form
+        {
+            internal string First { get { return first.Text.Trim(); } }
+            internal string Second { get { return second.Text.Trim(); } }
+            private readonly TextBox first;
+            private readonly TextBox second;
+            private readonly bool routines;
+            private readonly float scale;
+
+            internal SavedItemEditorSheet(float zoom, bool routines)
+            {
+                this.routines = routines; scale = zoom;
+                Text = routines ? "New command" : "New reminder";
+                FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent;
+                ShowInTaskbar = false; MinimizeBox = false; MaximizeBox = false; BackColor = Ground; ForeColor = White;
+                ClientSize = new Size(Z(440), Z(routines ? 260 : 210));
+                Label heading = new Note(); heading.Text = routines ? "TRIGGER PHRASE" : "REMIND ME ABOUT";
+                heading.ForeColor = Cyan; heading.BackColor = Ground; heading.Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point);
+                heading.Bounds = Box(18, 16, 400, 18); Controls.Add(heading);
+                first = new TextBox(); first.Bounds = Box(18, 38, 404, 28); first.Font = Type(9f * zoom);
+                first.BackColor = Field; first.ForeColor = White; first.BorderStyle = BorderStyle.FixedSingle; Controls.Add(first);
+                Label secondLabel = new Note(); secondLabel.Text = routines ? "WHAT SHOULD CAPRI DO?" : "WHEN?  (e.g. IN 20 MINUTES / TOMORROW AT 9)";
+                secondLabel.ForeColor = Cyan; secondLabel.BackColor = Ground; secondLabel.Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point);
+                secondLabel.Bounds = Box(18, 78, 404, 18); Controls.Add(secondLabel);
+                if (routines)
+                {
+                    second = new TextBox(); second.Multiline = true; second.ScrollBars = ScrollBars.Vertical;
+                    second.Bounds = Box(18, 100, 404, 92); second.Font = Type(9f * zoom); second.BackColor = Field;
+                    second.ForeColor = White; second.BorderStyle = BorderStyle.FixedSingle; Controls.Add(second);
+                }
+                else
+                {
+                    second = new TextBox(); second.Bounds = Box(18, 100, 404, 28); second.Font = Type(9f * zoom);
+                    second.BackColor = Field; second.ForeColor = White; second.BorderStyle = BorderStyle.FixedSingle; Controls.Add(second);
+                }
+                Button save = new Button(); save.Text = "SAVE"; save.DialogResult = DialogResult.OK; save.Bounds = Box(322, routines ? 210 : 156, 100, 28);
+                save.FlatStyle = FlatStyle.Flat; save.BackColor = Field; save.ForeColor = Cyan; save.FlatAppearance.BorderColor = Edge;
+                save.Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point);
+                save.Enabled = false; first.TextChanged += delegate { save.Enabled = First.Length > 0 && Second.Length > 0; };
+                second.TextChanged += delegate { save.Enabled = First.Length > 0 && Second.Length > 0; };
+                Controls.Add(save); AcceptButton = save;
+                Button cancel = new Button(); cancel.Text = "CANCEL"; cancel.DialogResult = DialogResult.Cancel;
+                cancel.FlatStyle = FlatStyle.Flat; cancel.BackColor = Field; cancel.ForeColor = White; cancel.FlatAppearance.BorderColor = Edge;
+                cancel.Font = Look.Mono(8f * zoom, FontStyle.Bold, GraphicsUnit.Point);
+                cancel.Bounds = Box(212, routines ? 210 : 156, 100, 28); Controls.Add(cancel); CancelButton = cancel;
+            }
+            private int Z(int value) { return (int)Math.Round(value * scale); }
+            private Rectangle Box(int x, int y, int width, int height) { return new Rectangle(Z(x), Z(y), Z(width), Z(height)); }
         }
     }
 }

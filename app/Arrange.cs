@@ -270,8 +270,10 @@ namespace CapriDesktop
             bool raised;
             try { raised = Raised(handle); }
             catch (Exception) { raised = false; }
-            return raised ? "Couldn't " + verb + " " + label + ": it's running as admin, and Windows only lets me move admin windows when I run as admin too." : null;
+            return raised ? Admin(verb, label) : null;
         }
+
+        internal static string Admin(string verb, string label) { return "Couldn't " + verb + " " + label + ": it runs as administrator, and Windows only lets me move it when I do too. To run me that way, " + Computer.AsAdmin + "."; }
 
         // Waits for a window to finish maximizing or restoring, and reads it.
         private static Spot Settle(IntPtr handle, Predicate<Spot> done)
@@ -582,6 +584,7 @@ namespace CapriDesktop
 
         private static bool ShapeWindow(IntPtr window, string how, Rectangle wanted)
         {
+            if (how == "maximize" || how == "restore") SmokeRun.NoteAsync(window, "Arrange " + how);
             if (how == "maximize") return ShowWindowAsync(window, 3);
             if (how == "restore") return ShowWindowAsync(window, 9);
             // A window that crosses to a monitor of another scale resizes itself to keep its size as it looks, so it's placed again

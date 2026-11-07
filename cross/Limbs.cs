@@ -26,17 +26,21 @@ namespace CapriDesktop
         {
             ThreadPool.QueueUserWorkItem(delegate
             {
-                string path = Path.Combine(Path.GetTempPath(), "capri-sound-" + Guid.NewGuid().ToString("N") + ".wav");
+                string path = null;
+                // A temp folder without write access used to end her on the sound worker.
                 try
                 {
+                    path = Path.Combine(Path.GetTempPath(), "capri-sound-" + Guid.NewGuid().ToString("N") + ".wav");
                     File.WriteAllBytes(path, Voice.Wave(samples, Sfx.Rate));
                     Music.Run(Player(), new[] { path });
                 }
-                catch (IOException) { }
+                catch (IOException error) { Brain.Log("sound", -1, error.Message); }
+                catch (UnauthorizedAccessException error) { Brain.Log("sound", -1, error.Message); }
                 finally
                 {
-                    try { File.Delete(path); }
-                    catch (IOException) { }
+                    try { if (path != null) File.Delete(path); }
+                    catch (IOException error) { Brain.Log("sound", -1, error.Message); }
+                    catch (UnauthorizedAccessException error) { Brain.Log("sound", -1, error.Message); }
                 }
             });
         }
@@ -53,9 +57,10 @@ namespace CapriDesktop
             int turn = Interlocked.Increment(ref speeches);
             ThreadPool.QueueUserWorkItem(delegate
             {
-                string path = Path.Combine(Path.GetTempPath(), "capri-voice-" + Guid.NewGuid().ToString("N") + ".wav");
+                string path = null;
                 try
                 {
+                    path = Path.Combine(Path.GetTempPath(), "capri-voice-" + Guid.NewGuid().ToString("N") + ".wav");
                     File.WriteAllBytes(path, wav);
                     ProcessStartInfo start = new ProcessStartInfo(Player()) { UseShellExecute = false, CreateNoWindow = true };
                     start.ArgumentList.Add(path);
@@ -68,11 +73,13 @@ namespace CapriDesktop
                         if (speaker == process) speaker = null;
                     }
                 }
-                catch (Exception) { }
+                catch (Exception error) { Brain.Log("voice", -1, error.Message); }
                 finally
                 {
-                    try { File.Delete(path); }
-                    catch (IOException) { }
+                    // Losing access to a voice file during playback must not end her in cleanup.
+                    try { if (path != null) File.Delete(path); }
+                    catch (IOException error) { Brain.Log("voice", -1, error.Message); }
+                    catch (UnauthorizedAccessException error) { Brain.Log("voice", -1, error.Message); }
                 }
             });
         }
@@ -280,6 +287,16 @@ namespace CapriDesktop
             catch (Exception) { return false; }
         }
 
+        // The copy to start again: an AppImage runs from a temporary mount, so the file they keep is the one that lasts.
+        internal static string SelfPath()
+        {
+            string image = Environment.GetEnvironmentVariable("APPIMAGE");
+            string dir = Environment.GetEnvironmentVariable("APPDIR");
+            string self = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(image) || string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(self) || !self.StartsWith(dir.TrimEnd('/') + "/", StringComparison.Ordinal)) return self;
+            return image;
+        }
+
         // Start at login: a LaunchAgent on Mac, an XDG autostart entry on Linux. Either one starts this copy of Capri.
         internal static string LoginFile()
         {
@@ -363,7 +380,7 @@ namespace CapriDesktop
         }
 
         // Her app_window tool. On Mac it's the apps in the Dock, through System Events; on Linux it's the windows wmctrl lists,
-        // which on Wayland are only the apps running through XWayland.
+        // which on Wayland are only the apps running through XWayland, except on KDE, where KWin lists them all.
         private static readonly Dictionary<string, string> Bundles = new Dictionary<string, string>();
         // Why the last listing found nothing it could read, for her window tool to say; what's playing just sees no windows.
         internal static volatile string Blind;
@@ -397,6 +414,18 @@ namespace CapriDesktop
                 }
                 return found;
             }
+            if (KWinBridge.Live)
+            {
+                Blind = null;
+                foreach (KWinWindow window in KWinBridge.Stack())
+                {
+                    if (window.Pid == Environment.ProcessId || !window.Normal) continue;
+                    string name = ProcessName(window.Pid);
+                    if (name.Length == 0) name = window.Class.Substring(window.Class.LastIndexOf('.') + 1).ToLowerInvariant();
+                    found.Add(new OpenWindow(new IntPtr(window.Id), window.Title, name));
+                }
+                return found;
+            }
             string windows = Music.Run("wmctrl", new[] { "-lpx" });
             Blind = windows == null ? "Closing and switching apps on Linux needs wmctrl. Install it (sudo apt install wmctrl, or your distro's package), then ask again." : null;
             if (windows == null) return found;
@@ -417,6 +446,11 @@ namespace CapriDesktop
         internal static IntPtr Front(bool mac)
         {
             if (mac) return IntPtr.Zero;
+            if (KWinBridge.Live)
+            {
+                foreach (KWinWindow window in KWinBridge.Stack()) if (window.Active) return new IntPtr(window.Id);
+                return IntPtr.Zero;
+            }
             string active = Music.Run("xprop", new[] { "-root", "_NET_ACTIVE_WINDOW" });
             Match id = Regex.Match(active ?? "", @"\b0x([0-9a-fA-F]+)\b");
             long handle;
@@ -444,6 +478,24 @@ namespace CapriDesktop
                 }
                 if (Music.Run("osascript", new[] { "-e", "tell " + app + " to activate" }) == null) return false;
                 return action != "close_tab" || Music.Run("osascript", new[] { "-e", "tell application \"System Events\" to keystroke \"w\" using command down" }) != null;
+            }
+            if (KWinBridge.Live)
+            {
+                long id = window.Handle.ToInt64();
+                if (action == "close")
+                {
+                    if (!KWinBridge.Act(id, "close")) return false;
+                    for (int i = 0; i < 10; i++)
+                    {
+                        if (KWinBridge.Get(id) == null) return true;
+                        Thread.Sleep(200);
+                    }
+                    return false;
+                }
+                if (!KWinBridge.Act(id, action == "minimize" ? "minimize" : "switch_to")) return false;
+                if (action != "close_tab") return true;
+                Thread.Sleep(150);
+                return Fingers.Problem == null && Fingers.Keys("ctrl+w");
             }
             string handle = "0x" + window.Handle.ToInt64().ToString("x8");
             if (action == "minimize") return Music.Run("xdotool", new[] { "windowminimize", handle }) != null || Music.Run("wmctrl", new[] { "-i", "-r", handle, "-b", "add,hidden" }) != null;
@@ -527,7 +579,7 @@ namespace CapriDesktop
             if (action == "sleep") return new[] { new[] { "systemctl", "suspend" }, new[] { "loginctl", "suspend" } };
             if (action == "lock") return new[] { new[] { "loginctl", "lock-session" }, new[] { "xdg-screensaver", "lock" } };
             if (action != "sign_out") return null;
-            List<string[]> signOut = new List<string[]> { new[] { "gnome-session-quit", "--logout", "--no-prompt" }, new[] { "qdbus", "org.kde.ksmserver", "/KSMServer", "logout", "0", "0", "0" } };
+            List<string[]> signOut = new List<string[]> { new[] { "gnome-session-quit", "--logout", "--no-prompt" }, new[] { "qdbus6", "org.kde.ksmserver", "/KSMServer", "logout", "0", "0", "0" }, new[] { "qdbus", "org.kde.ksmserver", "/KSMServer", "logout", "0", "0", "0" } };
             string session = Environment.GetEnvironmentVariable("XDG_SESSION_ID");
             if (!string.IsNullOrEmpty(session)) signOut.Add(new[] { "loginctl", "terminate-session", session });
             return signOut.ToArray();

@@ -6,15 +6,78 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace CapriDesktop
 {
+    // A saved list she can't read, or one with entries she can't read, is copied to <name>.unreadable.json before anything
+    // saves over it, like her settings, and she carries on with the entries she could read. They hear about it once, ahead of
+    // her next reply about that list. While the copy keeps failing, she doesn't save over the file.
+    internal sealed class SavedList<T>
+    {
+        private readonly string path, label, kept;
+        private string note;
+        private bool uncopied;
+
+        internal SavedList(string path, string label)
+        {
+            this.path = path;
+            this.label = label;
+            kept = Path.GetFileNameWithoutExtension(path) + ".unreadable.json";
+        }
+
+        internal List<T> Read(Predicate<T> readable)
+        {
+            if (!File.Exists(path)) return new List<T>();
+            List<T> saved = null;
+            Exception error = null;
+            try { using (FileStream input = File.OpenRead(path)) saved = (List<T>)new DataContractJsonSerializer(typeof(List<T>)).ReadObject(input); }
+            catch (Exception reading) { error = reading; }
+            if (saved == null) saved = new List<T>();
+            int count = saved.Count;
+            saved.RemoveAll(item => item == null || !readable(item));
+            if (error == null && saved.Count == count) return saved;
+            Exception copying = Companion.CopyUnreadable(path, kept);
+            uncopied = copying != null;
+            // Only the kind of error goes in errors.txt: its message can quote the file.
+            Brain.Log("startup", -1, Path.GetFileName(path) + (error == null ? " had entries she couldn't read" : " couldn't be read (" + error.GetType().Name + ")")
+                + (uncopied ? " or copied (" + copying.GetType().Name + "), so she won't save over it until she can copy it." : ". The old file is kept as " + kept + "."));
+            note = (saved.Count == 0 ? "Your saved " + label + " couldn't be read, so I started a new list." : "Some of your saved " + label + " couldn't be read, so I kept the rest.")
+                + (uncopied ? " I couldn't keep a copy of the old file yet, so I won't save over it until I can." : " The old file is kept as " + kept + " in %LocalAppData%\\Capri.");
+            return saved;
+        }
+
+        internal void Write(List<T> items, string ending)
+        {
+            if (uncopied)
+            {
+                if (Companion.CopyUnreadable(path, kept) != null) throw new IOException("Couldn't keep a copy of your old " + Path.GetFileName(path) + ", so I didn't save over it. Try again in a moment.");
+                uncopied = false;
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            string temporary = path + ending;
+            using (FileStream output = File.Create(temporary)) new DataContractJsonSerializer(typeof(List<T>)).WriteObject(output, items);
+            if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
+        }
+
+        // Her reply, with what happened to the file ahead of it the first time.
+        internal string Told(string reply)
+        {
+            string told = Interlocked.Exchange(ref note, null);
+            return told == null ? reply : told + "\n" + reply;
+        }
+    }
+
     [DataContract]
     internal sealed class Reminder
     {
         [DataMember] public string Text;
         [DataMember] public string When;
         [DataMember] public bool Said;
+        [DataMember] public string Id;
+        [DataMember] public bool DiscordSaid;
+        [DataMember] public bool DiscordAcknowledged;
+        [DataMember] public string DiscordNextAt;
         internal bool Late;
 
         internal DateTime Due { get { return DateTime.ParseExact(When, "o", CultureInfo.InvariantCulture, DateTimeStyles.None); } }
@@ -30,8 +93,8 @@ namespace CapriDesktop
     internal sealed class Reminders
     {
         private readonly object gate = new object();
-        private readonly string remindersPath, routinesPath;
-        private readonly string remindersError, routinesError;
+        private readonly SavedList<Reminder> remindersFile;
+        private readonly SavedList<Routine> routinesFile;
         private List<Reminder> reminders;
         private List<Routine> routines;
         [ThreadStatic] private static HashSet<string> running;
@@ -39,56 +102,24 @@ namespace CapriDesktop
 
         internal Reminders(string folder, DateTime started)
         {
-            remindersPath = Path.Combine(folder, "reminders.json");
-            routinesPath = Path.Combine(folder, "routines.json");
-            reminders = Read<Reminder>(remindersPath, out remindersError);
-            routines = Read<Routine>(routinesPath, out routinesError);
-            foreach (Reminder reminder in reminders)
+            remindersFile = new SavedList<Reminder>(Path.Combine(folder, "reminders.json"), "reminders");
+            routinesFile = new SavedList<Routine>(Path.Combine(folder, "routines.json"), "routines");
+            reminders = remindersFile.Read(delegate(Reminder reminder)
             {
                 DateTime due;
-                if (reminder == null || string.IsNullOrWhiteSpace(reminder.Text) || !DateTime.TryParseExact(reminder.When, "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out due))
-                {
-                    remindersError = "Couldn't read a saved reminder.";
-                    break;
-                }
+                if (string.IsNullOrWhiteSpace(reminder.Text) || !DateTime.TryParseExact(reminder.When, "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out due)) return false;
                 reminder.Late = !reminder.Said && due <= started;
-            }
-            foreach (Routine routine in routines)
-                if (routine == null || Key(routine.Phrase).Length == 0 || string.IsNullOrWhiteSpace(routine.Steps)) { routinesError = "Couldn't read a saved routine."; break; }
+                return true;
+            });
+            routines = routinesFile.Read(routine => Key(routine.Phrase).Length > 0 && !string.IsNullOrWhiteSpace(routine.Steps));
         }
 
-        private static List<T> Read<T>(string path, out string problem)
-        {
-            problem = null;
-            try
-            {
-                if (!File.Exists(path)) return new List<T>();
-                using (FileStream input = File.OpenRead(path))
-                {
-                    List<T> saved = (List<T>)new DataContractJsonSerializer(typeof(List<T>)).ReadObject(input);
-                    if (saved == null) throw new SerializationException("The saved list is empty.");
-                    return saved;
-                }
-            }
-            catch (IOException readIo) { problem = "Couldn't read " + Path.GetFileName(path) + ": " + readIo.Message; }
-            catch (UnauthorizedAccessException readAccess) { problem = "Couldn't read " + Path.GetFileName(path) + ": " + readAccess.Message; }
-            catch (SerializationException readJson) { problem = "Couldn't read " + Path.GetFileName(path) + ": " + readJson.Message; }
-            return new List<T>();
-        }
+        internal string Remind(ToolArguments args) { return remindersFile.Told(RemindReply(args)); }
 
-        private static void Write<T>(string path, List<T> saved)
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            string temporary = path + ".new";
-            using (FileStream output = File.Create(temporary)) new DataContractJsonSerializer(typeof(List<T>)).WriteObject(output, saved);
-            if (File.Exists(path)) File.Replace(temporary, path, null); else File.Move(temporary, path);
-        }
-
-        internal string Remind(ToolArguments args)
+        private string RemindReply(ToolArguments args)
         {
             lock (gate)
             {
-                if (remindersError != null) return remindersError;
                 if (args.Action == "list")
                 {
                     List<Reminder> waiting = reminders.FindAll(pending => !pending.Said);
@@ -105,17 +136,219 @@ namespace CapriDesktop
                         ?? changed.Find(part => !part.Said && (" " + Key(part.Text) + " ").Contains(" " + wanted + " "));
                     if (cancelled == null) return "Couldn't find that reminder.";
                     changed.Remove(cancelled);
-                    Write(remindersPath, changed);
+                    remindersFile.Write(changed, ".new");
                     reminders = changed;
                     return "Cancelled your reminder: " + cancelled.Text;
                 }
                 DateTime when;
                 if (string.IsNullOrWhiteSpace(args.Text)) return "What should I remind you about?";
-                if (!Parse(args.When, Now(), out when)) return "What time should I remind you? Try in 20 minutes, at 5pm or tomorrow at 9.";
-                changed.Add(new Reminder { Text = args.Text.Trim(), When = DateTime.SpecifyKind(when, DateTimeKind.Unspecified).ToString("o", CultureInfo.InvariantCulture) });
-                Write(remindersPath, changed);
+                if (!Parse(args.When, Now(), out when)) return "What time should I remind you? Try in 20 minutes or on 5 December at 9am.";
+                changed.Add(new Reminder { Id = Guid.NewGuid().ToString("N"), Text = args.Text.Trim(), When = DateTime.SpecifyKind(when, DateTimeKind.Unspecified).ToString("o", CultureInfo.InvariantCulture) });
+                remindersFile.Write(changed, ".new");
                 reminders = changed;
                 return "I'll remind you " + when.ToString("f") + ": " + args.Text.Trim();
+            }
+        }
+
+        internal List<Reminder> SnapshotReminders()
+        {
+            lock (gate)
+            {
+                List<Reminder> copy = new List<Reminder>();
+                foreach (Reminder item in reminders)
+                    if (item != null) copy.Add(new Reminder { Id = item.Id, Text = item.Text, When = item.When, Said = item.Said, DiscordSaid = item.DiscordSaid, DiscordAcknowledged = item.DiscordAcknowledged, DiscordNextAt = item.DiscordNextAt, Late = item.Late });
+                copy.Sort(delegate(Reminder left, Reminder right) { return left.Due.CompareTo(right.Due); });
+                return copy;
+            }
+        }
+
+        // Discord delivery is independent of desktop delivery.
+        internal List<Reminder> TakeForDiscord(DateTime now)
+        {
+            lock (gate)
+            {
+                List<Reminder> due = new List<Reminder>();
+                bool changed = false;
+
+                foreach (Reminder candidate in reminders)
+                {
+                    if (candidate == null || candidate.DiscordAcknowledged || candidate.Due > now) continue;
+
+                    DateTime next = candidate.Due;
+                    if (candidate.DiscordSaid && !string.IsNullOrEmpty(candidate.DiscordNextAt))
+                        DateTime.TryParseExact(candidate.DiscordNextAt, "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out next);
+
+                    if (next > now) continue;
+
+                    if (string.IsNullOrEmpty(candidate.Id))
+                        candidate.Id = Guid.NewGuid().ToString("N");
+
+                    candidate.DiscordSaid = true;
+                    candidate.DiscordNextAt = DateTime.SpecifyKind(now.AddMinutes(5), DateTimeKind.Unspecified).ToString("o", CultureInfo.InvariantCulture);
+                    changed = true;
+
+                    due.Add(new Reminder
+                    {
+                        Id = candidate.Id,
+                        Text = candidate.Text,
+                        When = candidate.When,
+                        Said = candidate.Said,
+                        DiscordSaid = true,
+                        DiscordAcknowledged = candidate.DiscordAcknowledged,
+                        DiscordNextAt = candidate.DiscordNextAt,
+                        Late = candidate.Late
+                    });
+                }
+
+                if (changed) remindersFile.Write(reminders, ".new");
+                due.Sort(delegate(Reminder left, Reminder right) { return left.Due.CompareTo(right.Due); });
+                return due;
+            }
+        }
+
+        internal string DiscordHandle(string said)
+        {
+            string text = Hands.Asked(said ?? "").Trim();
+
+            if (Regex.IsMatch(text, @"^(?:ack|acknowledge|done|got it|thanks, done|dismiss)(?: reminder)?[.! ]*$", RegexOptions.IgnoreCase))
+                return DiscordAcknowledge();
+
+            Match snooze = Regex.Match(text, @"^(?:snooze|snooze reminder)(?:\s+(?:for\s+)?(\d+)\s*(?:minutes?|mins?))?[.! ]*$", RegexOptions.IgnoreCase);
+            if (snooze.Success)
+            {
+                int minutes = 10;
+                int parsed;
+                if (snooze.Groups[1].Success && int.TryParse(snooze.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+                    minutes = Math.Max(1, Math.Min(1440, parsed));
+                return DiscordSnooze(minutes);
+            }
+
+            if (Regex.IsMatch(text, @"^(?:cancel reminder|cancel my reminder|forget reminder)$", RegexOptions.IgnoreCase))
+            {
+                lock (gate)
+                {
+                    Reminder pending = null;
+                    foreach (Reminder item in reminders)
+                        if (item != null && !item.Said && (pending == null || item.Due < pending.Due)) pending = item;
+
+                    if (pending == null) return "There isn't an active reminder to cancel.";
+
+                    List<Reminder> changed = new List<Reminder>(reminders);
+                    changed.Remove(pending);
+                    remindersFile.Write(changed, ".new");
+                    reminders = changed;
+                    return "Cancelled. You're free. For now. >:)";
+                }
+            }
+
+            if (Regex.IsMatch(text, @"^(?:my reminders|show me my reminders)$", RegexOptions.IgnoreCase))
+                return Remind(new ToolArguments { Action = "list" });
+
+            KeyValuePair<string, ToolArguments> routed = Route(said);
+            return routed.Key == "remind" ? Remind(routed.Value) : null;
+        }
+
+        internal string ImportDiscordReminder(string id, string text, string when, bool discordSaid, string nextAt)
+        {
+            lock (gate)
+            {
+                if (string.IsNullOrWhiteSpace(text)) return "Skipped an empty legacy reminder.";
+
+                DateTime due;
+                if (!DateTime.TryParseExact(when, "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out due))
+                    return "Skipped a legacy reminder with an invalid time.";
+
+                if (!string.IsNullOrEmpty(id) && reminders.Exists(item => item != null && item.Id == id))
+                    return "Already imported.";
+
+                DateTime next;
+                string nextText = null;
+                if (discordSaid && DateTime.TryParseExact(nextAt ?? "", "o", CultureInfo.InvariantCulture, DateTimeStyles.None, out next))
+                    nextText = next.ToString("o", CultureInfo.InvariantCulture);
+
+                Reminder imported = new Reminder
+                {
+                    Id = string.IsNullOrEmpty(id) ? Guid.NewGuid().ToString("N") : id,
+                    Text = text.Trim(),
+                    When = due.ToString("o", CultureInfo.InvariantCulture),
+                    Said = false,
+                    DiscordSaid = discordSaid,
+                    DiscordAcknowledged = false,
+                    DiscordNextAt = nextText,
+                    Late = due <= Now()
+                };
+
+                List<Reminder> changed = new List<Reminder>(reminders);
+                changed.Add(imported);
+                remindersFile.Write(changed, ".new");
+                reminders = changed;
+                return "Imported.";
+            }
+        }
+
+        internal void DiscordDeliveryFailed(string id)
+        {
+            lock (gate)
+            {
+                if (string.IsNullOrEmpty(id)) return;
+                Reminder found = reminders.Find(item => item != null && item.Id == id);
+                if (found == null) return;
+
+                found.DiscordSaid = false;
+                found.DiscordNextAt = null;
+                remindersFile.Write(reminders, ".new");
+            }
+        }
+
+        internal string DiscordAcknowledge()
+        {
+            lock (gate)
+            {
+                Reminder pending = null;
+                foreach (Reminder item in reminders)
+                    if (item != null && item.DiscordSaid && !item.DiscordAcknowledged && (pending == null || item.Due < pending.Due))
+                        pending = item;
+
+                if (pending == null) return "You don't have a ringing reminder right now.";
+
+                pending.Said = true;
+                pending.DiscordAcknowledged = true;
+                remindersFile.Write(reminders, ".new");
+                return "Got it. Reminder dismissed :)";
+            }
+        }
+
+        internal string DiscordSnooze(int minutes)
+        {
+            lock (gate)
+            {
+                Reminder pending = null;
+                foreach (Reminder item in reminders)
+                    if (item != null && item.DiscordSaid && !item.DiscordAcknowledged && (pending == null || item.Due < pending.Due))
+                        pending = item;
+
+                if (pending == null) return "Nothing to snooze right now.";
+
+                minutes = Math.Max(1, Math.Min(1440, minutes));
+                pending.When = DateTime.SpecifyKind(Now().AddMinutes(minutes), DateTimeKind.Unspecified).ToString("o", CultureInfo.InvariantCulture);
+                pending.Said = false;
+                pending.DiscordSaid = false;
+                pending.DiscordAcknowledged = false;
+                pending.DiscordNextAt = null;
+                pending.Late = false;
+                remindersFile.Write(reminders, ".new");
+                return "Fine, snoozed for " + minutes + " minutes. Don't make me come back twice. :P";
+            }
+        }
+        internal List<Routine> SnapshotRoutines()
+        {
+            lock (gate)
+            {
+                List<Routine> copy = new List<Routine>();
+                foreach (Routine item in routines)
+                    if (item != null) copy.Add(new Routine { Phrase = item.Phrase, Steps = item.Steps });
+                copy.Sort(delegate(Routine left, Routine right) { return string.Compare(left.Phrase, right.Phrase, StringComparison.CurrentCultureIgnoreCase); });
+                return copy;
             }
         }
 
@@ -123,23 +356,23 @@ namespace CapriDesktop
         {
             lock (gate)
             {
-                if (remindersError != null) return null;
                 Reminder next = null;
                 foreach (Reminder candidate in reminders)
                     if (!candidate.Said && candidate.Due <= now && (next == null || candidate.Due < next.Due)) next = candidate;
                 if (next == null) return null;
                 next.Said = true;
-                try { Write(remindersPath, reminders); }
+                try { remindersFile.Write(reminders, ".new"); }
                 catch { next.Said = false; throw; }
                 return next.Late ? "Late reminder, due " + next.Due.ToString("f") + ": " + next.Text : "Reminder: " + next.Text;
             }
         }
 
-        internal string Routine(ToolArguments args)
+        internal string Routine(ToolArguments args) { return routinesFile.Told(RoutineReply(args)); }
+
+        private string RoutineReply(ToolArguments args)
         {
             lock (gate)
             {
-                if (routinesError != null) return routinesError;
                 if (args.Action == "list")
                 {
                     List<string> lines = routines.ConvertAll(listedRoutine => listedRoutine.Phrase + ": " + listedRoutine.Steps);
@@ -160,7 +393,7 @@ namespace CapriDesktop
                     if (existing != null) changed.Remove(existing);
                     changed.Add(new Routine { Phrase = phrase, Steps = args.Steps.Trim() });
                 }
-                Write(routinesPath, changed);
+                routinesFile.Write(changed, ".new");
                 routines = changed;
                 return args.Action == "forget" ? "Forgot your routine: " + phrase : "When you say " + phrase + ", I'll " + args.Steps.Trim();
             }
@@ -170,7 +403,6 @@ namespace CapriDesktop
         {
             lock (gate)
             {
-                if (routinesError != null) return null;
                 Routine found = routines.Find(item => Key(item.Phrase) == Key(phrase));
                 return found == null ? null : found.Steps;
             }
@@ -179,7 +411,7 @@ namespace CapriDesktop
         internal string Run(string phrase, Func<string, string> run)
         {
             string steps = Steps(phrase);
-            if (steps == null) return "Couldn't find that routine.";
+            if (steps == null) return routinesFile.Told("Couldn't find that routine.");
             if (running == null) running = new HashSet<string>();
             string key = Key(phrase);
             if (!running.Add(key)) return "Already doing that routine.";
@@ -301,14 +533,15 @@ namespace CapriDesktop
         {
             when = now;
             string plain = Fold(text).TrimEnd('.', ',', '!', '?');
-            Match relative = Regex.Match(plain, @"^(?:in|en|dans|za|em|dentro de|daqui a)\s+(.*?)\s*(minutes?|mins?|minutos?|minuten|minut(?:e|y|a)?|hours?|hrs?|horas?|heures?|stunden?|godzin(?:e|y|a)?|seconds?|secs?|segundos?|secondes?|sekunden?|sekund(?:e|y|a)?)$");
+            if (plain.StartsWith("on ", StringComparison.Ordinal) || Regex.IsMatch(plain, @"^\d{4}-\d{2}-\d{2}(?:\s|$)")) return Calendar(plain, now, out when);
+            Match relative = Regex.Match(plain, @"^(?:in|en|dans|za|em|dentro de|daqui a)\s+(.*?)\s*(minutes?|mins?|minutos?|minuten|minut(?:e|y|a)?|hours?|hrs?|horas?|heures?|stunden?|godzin(?:e|y|a)?|seconds?|secs?|segundos?|secondes?|sekunden?|sekund(?:e|y|a)?|days?|weeks?)$");
             if (relative.Success)
             {
                 string amount = relative.Groups[1].Value.Trim().TrimEnd('-');
                 double count = amount.Length == 0 ? 1 : Number(amount);
                 if (count <= 0) return false;
                 // Seconds are for timers, like a 30 second one.
-                double minutes = Regex.IsMatch(relative.Groups[2].Value, @"^(?:h|stund|godzin)") ? count * 60 : Regex.IsMatch(relative.Groups[2].Value, @"^(?:sec|seg|sek)") ? count / 60 : count;
+                double minutes = Regex.IsMatch(relative.Groups[2].Value, @"^weeks?$") ? count * 10080 : Regex.IsMatch(relative.Groups[2].Value, @"^days?$") ? count * 1440 : Regex.IsMatch(relative.Groups[2].Value, @"^(?:h|stund|godzin)") ? count * 60 : Regex.IsMatch(relative.Groups[2].Value, @"^(?:sec|seg|sek)") ? count / 60 : count;
                 try { when = now.AddMinutes(minutes); return when > now; }
                 catch (ArgumentOutOfRangeException) { return false; }
             }
@@ -333,6 +566,28 @@ namespace CapriDesktop
                 return true;
             }
             catch (ArgumentOutOfRangeException) { return false; }
+        }
+
+        private static bool Calendar(string text, DateTime now, out DateTime when)
+        {
+            when = now;
+            Match date = Regex.Match(text, @"^(?:on )?(\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)? [a-z]+(?: \d{4})?|[a-z]+ \d{1,2}(?:st|nd|rd|th)?(?:,? \d{4})?)(?: (?:at )?(.+))?$");
+            if (!date.Success) return false;
+            string day = Regex.Replace(date.Groups[1].Value.Replace(",", ""), @"(?<=\d)(?:st|nd|rd|th)\b", "");
+            int hour = 9, minute = 0;
+            bool meridiem;
+            if (date.Groups[2].Success && !Clock(date.Groups[2].Value, out hour, out minute, out meridiem)) return false;
+            bool year = Regex.IsMatch(day, @"\b\d{4}\b");
+            string[] formats = { "yyyy-MM-dd", "d MMMM yyyy", "d MMM yyyy", "MMMM d yyyy", "MMM d yyyy" };
+            for (int next = 0; next <= (year ? 0 : 8) && now.Year + next <= 9999; next++)
+            {
+                DateTime picked;
+                if (!DateTime.TryParseExact(year ? day : day + " " + (now.Year + next).ToString(CultureInfo.InvariantCulture), formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out picked)) continue;
+                when = picked.AddHours(hour).AddMinutes(minute);
+                if (when > now) return true;
+            }
+            when = now;
+            return false;
         }
 
         private static bool Clock(string text, out int hour, out int minute, out bool meridiem)

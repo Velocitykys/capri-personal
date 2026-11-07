@@ -44,8 +44,18 @@ namespace CapriDesktop
     internal sealed class VoiceException : Exception
     {
         internal readonly int Status;
+        // Windows' own words and codes for what went wrong, for errors.txt only. The message is what people see.
+        internal readonly string Detail;
 
         internal VoiceException(string message, int status = 0) : base(message) { Status = status; }
+        internal VoiceException(string message, string detail) : base(message) { Detail = detail; }
+
+        // What errors.txt keeps: Windows' detail first, then the plain line.
+        internal static string Logged(Exception error)
+        {
+            VoiceException voice = error as VoiceException;
+            return voice != null && !string.IsNullOrEmpty(voice.Detail) ? voice.Detail + " " + error.Message : error.Message;
+        }
     }
 
     internal sealed class VoiceListing
@@ -97,6 +107,10 @@ namespace CapriDesktop
         }
 
         internal bool Ready { get { return Key != null && VoiceId != null; } }
+
+#if !CROSS
+        internal bool Busy { get { return player.Busy; } }
+#endif
 
 #if CROSS
         internal static string Protect(string key) { throw new PlatformNotSupportedException("Saving keys isn't ready on this system yet."); }
@@ -304,10 +318,12 @@ namespace CapriDesktop
         internal const string RestrictHint = " Still failing? Make a new key with Restrict key turned off.";
         internal const string Refused = "ElevenLabs turned her voice away (error 403) without saying why. A VPN or proxy can do that." + RestrictHint;
 
-        internal static string Short(string text)
+        internal static string Short(string text) { return Short(text, 72); }
+
+        internal static string Short(string text, int room)
         {
             text = (text ?? "").Trim();
-            return text.Length > 72 ? text.Substring(0, 69) + "..." : text;
+            return text.Length > room ? text.Substring(0, room - 3) + "..." : text;
         }
 
         internal static T Read<T>(byte[] json) { using (MemoryStream stream = new MemoryStream(json)) return (T)new DataContractJsonSerializer(typeof(T)).ReadObject(stream); }
@@ -392,6 +408,10 @@ namespace CapriDesktop
             }
             return quoted.Append('"').ToString();
         }
+
+        // Quote is JSON for her brain. Text people read or hear in quotes, like "Should I send "hi"?", shows as typed: line
+        // breaks and tabs are spaces, with no \u000a or doubled backslashes.
+        internal static string InQuotes(string value) { return "\"" + Regex.Replace(value ?? "", @"\s+", " ").Trim() + "\""; }
 
         internal static short[] Samples(byte[] wav, out int rate)
         {
@@ -493,14 +513,14 @@ namespace CapriDesktop
             lock (PcEars.VoiceGate)
             {
                 if (PcEars.Capturing) { Brain.Log("Voice playback", -1, "Speech held while she records the PC's sound."); return; }
-                Stop();
                 int rate;
                 short[] samples = Samples(wav, out rate);
                 if (samples.Length == 0) throw new VoiceException("Her voice returned no PCM samples to play.");
                 if (Loudness == 0) Brain.Log("Voice playback", -1, "Her voice volume is 0%; speech is muted, while her other sounds have their own volume.");
                 else if (Speaker.Loudness(samples, 0, samples.Length) == 0) Brain.Log("Voice playback", -1, "Her voice returned silent PCM: " + samples.Length + " samples at " + rate + " Hz.");
-                player.Open(rate);
-                player.Play(samples);
+                player.BeginAnswer();
+                try { player.Open(rate); player.Play(samples); }
+                finally { player.EndAnswer(); }
             }
 #endif
         }
@@ -520,6 +540,8 @@ namespace CapriDesktop
         }
 
 #if !CROSS
+        internal void Finish() { player.EndAnswer(); player.Close(false); }
+
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         private static string Stopper()
         {
@@ -2575,7 +2597,7 @@ namespace CapriDesktop
                 try { tts = SherpaOnnxCreateOfflineTts(ref config); }
                 finally { File.Delete(opening); }
             }
-            catch (IOException error) { throw new VoiceException(error.Message); }
+            catch (IOException error) { throw new VoiceException(Told(error)); }
             finally { foreach (IntPtr pointer in held) Marshal.FreeHGlobal(pointer); }
             if (tts == IntPtr.Zero) throw new VoiceException("Her free voice wouldn't start.");
             british = gb;
@@ -2586,6 +2608,12 @@ namespace CapriDesktop
         // so sherpa-onnx gets there through a plain-named junction.
         private static readonly object plainGate = new object();
         private static string plainRoot, plainAlias;
+        internal const string SpecialLetters = "Her voice files are in a folder with special letters in its name, and her voice can't read those.";
+        // When no junction could be made, her voices on this PC can't start there, and a cloud voice reads nothing from it.
+        internal const string SpecialVoice = "Her voice files are in a folder with special letters in its name, and her voices on this PC can't read those. A voice under CLOUD VOICE still works.";
+
+        // What a voice that couldn't open its files says: the special-letters folder gets its next step.
+        internal static string Told(IOException error) { return error.Message == SpecialLetters ? SpecialVoice : error.Message; }
 
         internal static string Plain(string value)
         {
@@ -2595,7 +2623,7 @@ namespace CapriDesktop
             {
                 if (plainRoot != root) { plainAlias = Junction(root); plainRoot = root; }
                 string plain = value.Replace(root, plainAlias);
-                if (!IsPlain(plain)) throw new IOException("Her voice files are in a folder with special letters in its name, and her voice can't read those.");
+                if (!IsPlain(plain)) throw new IOException(SpecialLetters);
                 return plain;
             }
         }
@@ -2626,7 +2654,7 @@ namespace CapriDesktop
                 catch (UnauthorizedAccessException) { }
                 catch (System.ComponentModel.Win32Exception) { }
             }
-            throw new IOException("Her voice files are in a folder with special letters in its name, and her voice can't read those.");
+            throw new IOException(SpecialLetters);
         }
 
         // Her ears run on the same sherpa-onnx, so they load it from here too.
@@ -2807,6 +2835,7 @@ namespace CapriDesktop
         internal static string Language(string folder, string language)
         {
             folder = Clean(folder);
+            if (IsPocketProfile(folder)) return "en";
             string kind = Kind(folder);
             if (kind == null) return "";
             if (kind == "kokoro")
@@ -2941,10 +2970,118 @@ namespace CapriDesktop
             return target;
         }
 
+        // Pocket TTS CLI voice profiles are independent .safetensors files. Keep the chosen path per voice;
+        // never bake a particular profile into Capri. The CLI can be installed in any Python environment.
+        private static bool IsPocketProfile(string path)
+        {
+            return !string.IsNullOrEmpty(path) && path.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase) && File.Exists(path);
+        }
+
+        private static string PocketCli()
+        {
+            string configured = Environment.GetEnvironmentVariable("POCKET_TTS_CLI");
+            if (!string.IsNullOrEmpty(configured) && File.Exists(configured)) return configured;
+            string[] names = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator);
+            foreach (string directory in names)
+            {
+                try
+                {
+                    string candidate = Path.Combine(directory.Trim().Trim('"'), "pocket-tts.exe");
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch (ArgumentException) { }
+            }
+            string python = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Python");
+            try
+            {
+                if (Directory.Exists(python))
+                    foreach (string install in Directory.GetDirectories(python, "Python*"))
+                    {
+                        string candidate = Path.Combine(install, "Scripts", "pocket-tts.exe");
+                        if (File.Exists(candidate)) return candidate;
+                    }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return null;
+        }
+
+        // .NET Framework's ProcessStartInfo has no ArgumentList, so quote each argument using
+        // the Windows command-line rules before joining them into Arguments.
+        private static string PocketArgument(string value)
+        {
+            StringBuilder quoted = new StringBuilder("\"");
+            int slashes = 0;
+            foreach (char c in value ?? "")
+            {
+                if (c == '\\') { slashes++; continue; }
+                if (c == '"')
+                {
+                    quoted.Append('\\', slashes * 2 + 1).Append(c);
+                    slashes = 0;
+                    continue;
+                }
+                quoted.Append('\\', slashes).Append(c);
+                slashes = 0;
+            }
+            quoted.Append('\\', slashes * 2).Append('"');
+            return quoted.ToString();
+        }
+
+        private static short[] PocketProfile(string profile, string text, out int rate)
+        {
+            string cli = PocketCli();
+            if (cli == null) throw new VoiceException("Install Pocket TTS on this PC, or set POCKET_TTS_CLI to its pocket-tts.exe path.");
+            string output = Path.Combine(Path.GetTempPath(), "capri-pocket-" + Guid.NewGuid().ToString("N") + ".wav");
+            try
+            {
+                ProcessStartInfo start = new ProcessStartInfo(cli);
+                start.Arguments = String.Join(" ", new string[]
+                {
+                    PocketArgument("generate"), PocketArgument("--voice"), PocketArgument(profile),
+                    PocketArgument("--sampler-decode-steps"), PocketArgument("5"),
+                    PocketArgument("--temperature"), PocketArgument("0.3"),
+                    PocketArgument("--text"), PocketArgument(text),
+                    PocketArgument("--output-path"), PocketArgument(output)
+                });
+                start.UseShellExecute = false;
+                start.CreateNoWindow = true;
+                using (Process process = Process.Start(start))
+                {
+                    if (process == null) throw new VoiceException("Pocket TTS couldn't start.");
+                    if (!process.WaitForExit(180000))
+                    {
+                        try { process.Kill(); process.WaitForExit(5000); } catch (Exception) { }
+                        throw new VoiceException("Pocket TTS took too long to make her reply.");
+                    }
+                    if (process.ExitCode != 0 || !File.Exists(output))
+                        throw new VoiceException("Pocket TTS couldn't generate speech from that .safetensors profile. Check the profile and Pocket TTS installation.");
+                }
+                short[] samples = YourVoice.Read(output);
+                rate = YourVoice.Rate;
+                if (samples.Length == 0) throw new VoiceException("Pocket TTS returned an empty voice clip.");
+                return samples;
+            }
+            catch (VoiceException) { throw; }
+            catch (System.ComponentModel.Win32Exception) { throw new VoiceException("Pocket TTS couldn't start. Check its installation."); }
+            catch (IOException) { throw new VoiceException("Pocket TTS couldn't read its generated voice clip."); }
+            finally
+            {
+                try { if (File.Exists(output)) File.Delete(output); } catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+
         // Its sound for the words at its own rate. `lang` is a Kokoro model's language, like en-us or es. `voice` is a speaker
         // number, where one past its last speaker gets its first, or for Pocket TTS the clip whose voice it copies.
         internal static short[] Speak(string folder, string lang, string voice, string text, out int rate)
         {
+            folder = Clean(folder);
+            if (IsPocketProfile(folder))
+            {
+                if (!VoiceLanguage.Reads(text, "en")) throw new VoiceException(VoiceLanguage.Missing(VoiceLanguage.Tongue(text, Brain.Language), Brain.Language));
+                return PocketProfile(folder, text, out rate);
+            }
             if (!VoiceLanguage.Reads(text, Language(folder, lang))) throw new VoiceException(VoiceLanguage.Missing(VoiceLanguage.Tongue(text, Brain.Language), Brain.Language));
             if (Run != null) return Run(folder, lang, voice, text, out rate);
             lock (gate)
@@ -3122,7 +3259,7 @@ namespace CapriDesktop
                 try { tts = LocalVoice.SherpaOnnxCreateOfflineTts(ref config); }
                 catch (SEHException) { tts = IntPtr.Zero; }
             }
-            catch (IOException error) { throw new VoiceException(error.Message); }
+            catch (IOException error) { throw new VoiceException(LocalVoice.Told(error)); }
             finally { foreach (IntPtr pointer in held) Marshal.FreeHGlobal(pointer); }
             if (tts == IntPtr.Zero) throw new VoiceException("That voice model wouldn't start. Check it's a Piper, Kokoro, Kitten or Pocket TTS model for sherpa-onnx.");
             opened = key;
@@ -3202,6 +3339,9 @@ namespace CapriDesktop
 
         internal bool Awake { get { lock (gate) return awake && (server == null || !server.HasExited); } }
 
+        // The zip passed its checksum, so a missing server means antivirus took it (owner flag A14). Fits the VOICE note.
+        internal const string ServerGone = "Your antivirus likely took tts-server.exe. Allow it, then try again.";
+
         internal void Install(Action<string, long, long> progress)
         {
             Directory.CreateDirectory(folder);
@@ -3222,7 +3362,7 @@ namespace CapriDesktop
                 string staging = engine + ".new";
                 if (Directory.Exists(staging)) Directory.Delete(staging, true);
                 ZipFile.ExtractToDirectory(zip, staging);
-                if (!File.Exists(Path.Combine(staging, "tts-server.exe"))) throw new IOException("The HD voice download is missing tts-server.exe.");
+                if (!File.Exists(Path.Combine(staging, "tts-server.exe"))) throw new IOException(ServerGone);
                 lock (gate)
                 {
                     Close();
@@ -3320,7 +3460,7 @@ namespace CapriDesktop
                     if (!Installed) throw new VoiceException("Get her HD voice in Capri Mainframe first.");
                     number = port = Engine.FreePort();
                     try { running = server = Spawn(StartInfo(number)); }
-                    catch (System.ComponentModel.Win32Exception error) { throw new VoiceException(Voice.Short("Her HD voice wouldn't start: " + error.Message)); }
+                    catch (System.ComponentModel.Win32Exception error) { throw new VoiceException("Her HD voice wouldn't start: " + Brain.Plainly("HD voice", error)); }
                     if (running.StartInfo.RedirectStandardError)
                     {
                         running.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs failure) { if (server == running && MemoryError(failure.Data)) memoryFailed = true; };
@@ -4007,12 +4147,17 @@ namespace CapriDesktop
                     throw new VoiceException(name + " at " + Where(endpoint) + " stopped answering.");
                 }
                 int status = (int)response.StatusCode;
-                string detail;
+                string reply, detail;
                 using (response)
-                using (StreamReader reader = new StreamReader(response.GetResponseStream())) detail = Said(reader.ReadToEnd());
+                using (StreamReader reader = new StreamReader(response.GetResponseStream())) reply = reader.ReadToEnd();
+                detail = Said(reply);
                 // Fish Audio's 404 is a voice it can't find, and its 429 is too many lines too fast.
                 if (status == 404 && name == "Fish Audio") throw new VoiceException("Fish Audio can't find that voice (HTTP 404). Check its ID or link on fish.audio.");
                 if (status == 404) throw new VoiceException(name + " has no " + endpoint.AbsolutePath + " (HTTP 404). Check its address.");
+                // OpenAI answers 429 when the account's credit is gone as well, which waiting won't fix, so its reply is read the way
+                // her brain reads one. The service's own words go to errors.txt.
+                if (OutOfCredit(status, reply) && !(status == 402 && name == "Fish Audio"))
+                    throw new VoiceException(Credit(name, theirs), "HTTP " + status + ": " + Voice.Short(detail));
                 if (status == 429) throw new VoiceException(name + " is busy (HTTP 429). Try again in a moment.");
                 if (status == 401 || status == 403) throw new VoiceException(string.IsNullOrEmpty(key) ? name + " wants a key (HTTP " + status + "). Add it under " + (theirs ? "CUSTOM LOCAL > Set up" : "CLOUD VOICE") + "." : name + " turned down its key (HTTP " + status + ").");
                 // Fish Audio's paid models answer 402 on an account with no credit. Its free tier is a model of its own.
@@ -4077,12 +4222,24 @@ namespace CapriDesktop
             return Regex.Replace(text, @"\s+", " ").Trim();
         }
 
+        // A 429 or 402 whose reply says the credit or quota is gone, the way her brain's Meaning reads one.
+        internal static bool OutOfCredit(int status, string reply)
+        {
+            return (status == 429 || status == 402) && Regex.IsMatch(reply ?? "", @"insufficient[_ ](quota|balance)|no credits|credit balance|billing", RegexOptions.IgnoreCase);
+        }
+
+        internal static string Credit(string name, bool theirs)
+        {
+            return name + " is out of credit. " + (name == "OpenAI" ? "Add credit at platform.openai.com" : "Add credit to its account") + ", or pick another voice under " + (theirs ? "CUSTOM LOCAL" : "CLOUD VOICE") + ".";
+        }
+
         // Her free voice says any line the server can't. What went wrong is noted once, until the server answers again.
         internal Func<string, byte[]> Or(Func<string, byte[]> fallback, Action<string> trouble)
         {
             return delegate(string words)
             {
                 string problem;
+                string detail = null;
                 try
                 {
                     byte[] wav = Speak(words);
@@ -4093,6 +4250,7 @@ namespace CapriDesktop
                 {
                     if (fallback == null) throw;
                     problem = error.Message;
+                    detail = error.Detail;
                 }
                 // Anything else that breaks is said the same way, so her free voice still fills in.
                 catch (Exception error)
@@ -4105,6 +4263,7 @@ namespace CapriDesktop
                 {
                     noted = problem;
                     trouble(problem);
+                    if (!string.IsNullOrEmpty(detail)) Brain.Log(Name(Url, Api), -1, detail);
                 }
                 return fallback(Voice.Uncued(words));
             };
