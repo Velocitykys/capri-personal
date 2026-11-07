@@ -261,7 +261,7 @@ namespace CapriDesktop
         private bool syncing;
         internal bool Quitting;
         private readonly Key more;
-        private readonly Key enhancementsButton;
+        
         private readonly Key minimize;
         private readonly Key close;
         private readonly Label build;
@@ -411,10 +411,10 @@ namespace CapriDesktop
             more = Make("Settings", 126, 20, 76, 22, delegate { if (modded) ShowMods(false); else ShowSettings(!paged); });
             more.Accent = Cyan;
             more.Loud = true;
-            enhancementsButton = Make("Enhance", 206, 20, 62, 22, delegate { OpenEnhancements(); });
-            enhancementsButton.Accent = Cyan;
-            enhancementsButton.Loud = true;
-            enhancementsButton.AccessibleName = "Enhancements: open experimental features";
+            ;
+            
+            
+            
             // Mods sits right beside Settings in her title bar (Lachy, 4 Nov: "I like mods better next to settings").
             modsKey = Make("Mods", 272, 20, 52, 22, delegate { ShowMods(!modded); });
             int header = Controls.Count;
@@ -1737,7 +1737,7 @@ namespace CapriDesktop
             if (on && modded) ShowMods(false);
             ScrollPage(0);
             paged = on;
-            simple = !capri.AdvancedSettings;
+            simple = false; advancedKey.Visible = false;
             advancedKey.Text = simple ? "Advanced Settings" : "Simple Settings";
             advancedKey.AccessibleName = simple ? "Advanced Settings: show every setting" : "Simple Settings: show only the main settings";
             advancedKey.Invalidate();
@@ -1746,7 +1746,7 @@ namespace CapriDesktop
             Place();
             foreach (KeyValuePair<Control, int> entry in mainLeft) Reachable(entry.Key, !on);
             foreach (KeyValuePair<Control, int> entry in pageLeft) Reachable(entry.Key, on && !Folded(entry.Key));
-            Reachable(enhancementsButton, !on);
+            ;
             if (Hidden(ActiveControl) || on && ActiveControl == modsKey) more.Focus();
             if (on) Sync();
             wheel = 0;
@@ -1768,7 +1768,7 @@ namespace CapriDesktop
             foreach (KeyValuePair<Control, int> entry in modLeft) entry.Key.Left = Scaled(entry.Value) + (modded ? 0 : Far);
             int edge = paged ? Column : 0;
             // Settings' own Advanced Settings key takes Mods' place by Back, so Mods waits off the page there.
-            enhancementsButton.Left = Scaled(206) + (paged || modded ? Far : 0);
+            ;
             minimize.Left = Scaled(328 + edge);
             close.Left = Scaled(356 + edge);
         }
