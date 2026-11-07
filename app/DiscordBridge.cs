@@ -17,26 +17,37 @@ namespace CapriDesktop
         [DataMember(Name = "message64")] public string Message64;
         [DataMember(Name = "sharedMemory")] public string SharedMemory;
         [DataMember(Name = "publicContext")] public string PublicContext;
-        [DataMember(Name = "text")] public string Text;
+        [DataMember(Name = "text")] public string Text;
+        [DataMember(Name = "image64", EmitDefaultValue = false)] public string Image64;
+        [DataMember(Name = "filename", EmitDefaultValue = false)] public string Filename;
         [DataMember(Name = "minutes")] public int? Minutes;
         [DataMember(Name = "id")] public string Id;
         [DataMember(Name = "when")] public string When;
         [DataMember(Name = "nextAt")] public string NextAt;
         [DataMember(Name = "discordSaid")] public bool DiscordSaid;
+        [DataMember(Name = "action", EmitDefaultValue = false)] public string Action;
+        [DataMember(Name = "target", EmitDefaultValue = false)] public string Target;
+        [DataMember(Name = "emoji", EmitDefaultValue = false)] public string Emoji;
+        [DataMember(Name = "search", EmitDefaultValue = false)] public string Search;
+        [DataMember(Name = "count", EmitDefaultValue = false)] public int? Count;
     }
 
     [DataContract]
     internal sealed class DiscordOutboxMessage
     {
         [DataMember(Name = "id")] public string Id;
-        [DataMember(Name = "text")] public string Text;
+        [DataMember(Name = "text")] public string Text;
+        [DataMember(Name = "image64", EmitDefaultValue = false)] public string Image64;
+        [DataMember(Name = "filename", EmitDefaultValue = false)] public string Filename;
     }
 
     [DataContract]
     internal sealed class DiscordReminderMessage
     {
         [DataMember(Name = "id")] public string Id;
-        [DataMember(Name = "text")] public string Text;
+        [DataMember(Name = "text")] public string Text;
+        [DataMember(Name = "image64", EmitDefaultValue = false)] public string Image64;
+        [DataMember(Name = "filename", EmitDefaultValue = false)] public string Filename;
     }
 
     [DataContract]
@@ -132,6 +143,26 @@ namespace CapriDesktop
             return "Queued a message for your private Discord DM.";
         }
 
+        internal string QueueImage(byte[] jpeg, string filename, string text)
+        {
+            if (jpeg == null || jpeg.Length == 0) return "I couldn't get that screenshot.";
+            string encoded = Convert.ToBase64String(jpeg);
+            if (encoded.Length > 650000) return "That screenshot is too large to send. Try a smaller capture.";
+            string clean = (text ?? "").Trim();
+            if (clean.Length > 1800) clean = clean.Substring(0, 1800);
+            lock (gate)
+            {
+                outbox.Add(new DiscordOutboxMessage {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Text = clean,
+                    Image64 = encoded,
+                    Filename = string.IsNullOrWhiteSpace(filename) ? "capri-image.jpg" : filename
+                });
+                SaveOutbox();
+            }
+            return "Queued the image for your private Discord DM.";
+        }
+
         private void SaveOutbox()
         {
             string temporary = outboxPath + ".new";
@@ -146,7 +177,9 @@ namespace CapriDesktop
             {
                 System.Collections.Generic.List<DiscordOutboxMessage> copy = new System.Collections.Generic.List<DiscordOutboxMessage>();
                 foreach (DiscordOutboxMessage item in outbox)
-                    if (item != null) copy.Add(new DiscordOutboxMessage { Id = item.Id, Text = item.Text });
+                    if (item != null) copy.Add(new DiscordOutboxMessage {
+                    Id = item.Id, Text = item.Text, Image64 = item.Image64, Filename = item.Filename
+                });
                 return copy;
             }
         }
@@ -236,6 +269,46 @@ namespace CapriDesktop
             }
         }
 
+        internal string ExecuteAction(string action, string target, string text, string search, string emoji, int count)
+        {
+            DiscordBridgeRequest request = new DiscordBridgeRequest {
+                Type = "action",
+                Secret = secret,
+                Action = action,
+                Target = target,
+                Text = text,
+                Search = search,
+                Emoji = emoji,
+                Count = count > 0 ? (int?)count : null
+            };
+
+            using (NamedPipeClientStream pipe = new NamedPipeClientStream(".", "CapriDiscordActions", PipeDirection.InOut))
+            {
+                pipe.Connect(5000);
+                
+
+                using (StreamReader reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, true))
+                using (StreamWriter writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true))
+                {
+                    writer.Write(Serialize(request));
+                    writer.Write("\n");
+                    writer.Flush();
+
+                    string line; { System.Threading.Tasks.Task<string> reading = System.Threading.Tasks.Task.Run<string>(delegate { return reader.ReadLine(); }); if (!reading.Wait(30000)) throw new IOException("The Discord action timed out."); line = reading.Result; }
+                    if (string.IsNullOrEmpty(line) || line.Length > 1048576)
+                        throw new IOException("The Discord action returned an invalid response.");
+
+                    DiscordBridgeResponse response;
+                    using (MemoryStream input = new MemoryStream(Encoding.UTF8.GetBytes(line)))
+                        response = (DiscordBridgeResponse)new DataContractJsonSerializer(typeof(DiscordBridgeResponse)).ReadObject(input);
+
+                    if (response == null || !response.Ok)
+                        throw new InvalidOperationException(response == null ? "Discord action failed." : response.Value);
+
+                    return response.Value ?? "Done.";
+                }
+            }
+        }
         private DiscordBridgeResponse Handle(DiscordBridgeRequest request)
         {
             string text = Decode(request.Message64);
@@ -349,3 +422,5 @@ namespace CapriDesktop
         }
     }
 }
+
+

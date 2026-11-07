@@ -2760,12 +2760,25 @@ namespace CapriDesktop
                         delegate(string message, string sharedMemory, bool initiated) { return brain.AskFromDiscord(message, sharedMemory, initiated); },
                         delegate(string message, string publicContext) { return brain.AskFromPublicDiscord(message, publicContext); },
                         DiscordStatus);
+                    brain.DiscordAction = delegate(string action, ToolArguments args) {
+                        return discordBridge.ExecuteAction(
+                            action,
+                            args == null ? null : args.Target,
+                            args == null ? null : args.Text,
+                            args == null ? null : args.Search,
+                            args == null ? null : args.Emoji,
+                            args == null || !args.Count.HasValue ? 0 : args.Count.Value);
+                    };
                     Hands.DiscordMessage = SendDiscordMessage;
+                    Hands.DiscordScreenshot = SendDiscordScreenshot;
+                    Hands.DiscordHighlight = SendDiscordHighlight;
                 }
                 catch (Exception error)
                 {
                     Brain.Log("Discord bridge", -1, error.Message);
                     Hands.DiscordMessage = delegate { return "I couldn't start the private Discord connection."; };
+                    Hands.DiscordScreenshot = delegate { return "I couldn't start the private Discord connection."; };
+                    Hands.DiscordHighlight = delegate { return "I couldn't start the private Discord connection."; };
                 }
             }
         }
@@ -14534,6 +14547,46 @@ namespace CapriDesktop
                 : discordBridge.QueueMessage(text);
         }
 
+        private string SendDiscordScreenshot()
+        {
+            if (discordBridge == null) return "Private Discord messaging isn't connected.";
+            Bitmap shot = null;
+            try
+            {
+                Rectangle area = SystemInformation.VirtualScreen;
+                if (area.Width < 1 || area.Height < 1) return "I couldn't find your desktop area.";
+                shot = InvokeRequired
+                    ? (Bitmap)Invoke(new Func<Rectangle, Bitmap>(CaptureScreen), area)
+                    : CaptureScreen(area);
+                if (shot == null) return "I couldn't capture your desktop.";
+                byte[] jpeg = Jpeg(shot, 1024);
+                return discordBridge.QueueImage(jpeg, "capri-desktop.jpg", "Here's your full desktop screenshot.");
+            }
+            catch (Exception error) { return "I couldn't send that screenshot: " + Voice.Short(error.Message); }
+            finally { if (shot != null) shot.Dispose(); }
+        }
+
+        private string SendDiscordHighlight(string action)
+        {
+            if (discordBridge == null) return "Private Discord messaging isn't connected.";
+            byte[] image;
+            string answer;
+            Hands.GetHighlightShare(out image, out answer);
+            action = (action ?? "").Trim().ToLowerInvariant();
+
+            if (action == "answer")
+                return string.IsNullOrWhiteSpace(answer)
+                    ? "There isn't a finished Highlight Assistance answer to send yet."
+                    : discordBridge.QueueMessage(answer);
+
+            if (image == null) return "There isn't a recent Highlight Assistance selection to send.";
+
+            string caption = action == "both"
+                ? (string.IsNullOrWhiteSpace(answer) ? "Here's your selected Highlight Assistance image." : answer)
+                : "Here's your selected Highlight Assistance image.";
+
+            return discordBridge.QueueImage(image, "capri-highlight.jpg", caption);
+        }
         private string DiscordStatus()
         {
             long idle = Native.IdleMilliseconds();
@@ -42647,7 +42700,7 @@ namespace CapriDesktop
                                 bool[] marks = Look.Breaks(unspaced);
                                 int[] letterStarts = System.Globalization.StringInfo.ParseCombiningCharacters(unspaced);
                                 for (int i = 1; i < marks.Length; i++)
-                                    if (marks[i]) { unspacedBreaks++; if (Array.IndexOf(letterStarts, i) < 0 || unspaced[i - 1] == '្') brokenLetter += unspaced + " at " + i + "; "; }
+                                    if (marks[i]) { unspacedBreaks++; if (Array.IndexOf(letterStarts, i) < 0 || unspaced[i - 1] == '\u17D2') brokenLetter += unspaced + " at " + i + "; "; }
                             }
                             if (unspacedBreaks < 4 || brokenLetter.Length > 0 || !Look.Unspaced(laoReply) || !Look.Unspaced(khmerReply) || Look.Unspaced("hey choom"))
                                 throw new Exception("Lao and Khmer lines broke in the wrong places: " + unspacedBreaks + " breaks / " + brokenLetter);
@@ -42691,9 +42744,9 @@ namespace CapriDesktop
                                 for (int i = 1; i < burmeseWord.Length; i++)
                                 {
                                     if (icuMarks[i]) burmeseBreaks++;
-                                    int next = i + 1 < burmeseWord.Length && burmeseWord[i + 1] == '့' ? i + 2 : i + 1;
-                                    bool silenced = next < burmeseWord.Length && (burmeseWord[next] == '်' || burmeseWord[next] == '္');
-                                    if ((icuMarks[i] || letterMarks[i]) && (silenced || burmeseWord[i - 1] == '္' || Array.IndexOf(syllableStarts, i) < 0)) burmeseBroken += burmeseWord + " at " + i + "; ";
+                                    int next = i + 1 < burmeseWord.Length && burmeseWord[i + 1] == '\u1037' ? i + 2 : i + 1;
+                                    bool silenced = next < burmeseWord.Length && (burmeseWord[next] == '\u103A' || burmeseWord[next] == '\u1039');
+                                    if ((icuMarks[i] || letterMarks[i]) && (silenced || burmeseWord[i - 1] == '\u1039' || Array.IndexOf(syllableStarts, i) < 0)) burmeseBroken += burmeseWord + " at " + i + "; ";
                                 }
                             }
                             bool[] mingalaba = Look.Letters("မင်္ဂလာပါ");
@@ -49296,3 +49349,4 @@ namespace CapriDesktop
         }
     }
 }
+

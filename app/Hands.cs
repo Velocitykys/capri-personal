@@ -44,6 +44,7 @@ namespace CapriDesktop
         internal int? Ticket;
         internal long? Sequence;
         [DataMember(Name = "target")] public string Target;
+    [DataMember(Name = "emoji")] public string Emoji;
         [DataMember(Name = "text")] public string Text;
         [DataMember(Name = "description")] public string Description;
         [DataMember(Name = "path")] public string Path;
@@ -792,7 +793,7 @@ namespace CapriDesktop
 #else
             "To arrange a window, use app_window: maximize, restore, snap it to half a monitor, move_to_screen for another monitor, or move and resize it. list_windows names their monitors, and with a name says where that app's window is and how big, so check it before a move or resize by pixels. Its result says where the window really ended up, so tell them that, like an app that won't go any smaller. " +
             "media goes by what Windows says is playing, so pausing never starts the music, and now_playing says what any player has on, paused or not. A timer is a reminder: for set a timer for 10 minutes, call remind with when in 10 minutes. One app's own volume, like turning the game down so they can hear Discord, is app_volume; the whole PC's is media. When their PC or a game is slow or lagging, pc_status says how busy it is and what's using it, and internet_status says whether their connection is the problem. " +
-            "To send a text message to the owner's own private Discord DM, use discord_message. It only sends to the configured owner, never to a server, channel or another person. Do not use it for screenshots or files. ";
+            "To send a text message to the owner's own private Discord DM, use discord_message. It only sends to the configured owner, never to a server, channel or another person. Do not use it for screenshots or files. To send a full desktop screenshot to the owner's private Discord DM, use discord_send_screenshot only when explicitly asked. To share the latest Highlight Assistance selection, use discord_send_highlight with action image, answer or both, according to what the owner requested. These image tools only send to the configured owner. ";
 #endif
 
         // Her own settings, which every brain can change, on Mac and Linux too, where the ones only Windows has say so.
@@ -1147,6 +1148,8 @@ namespace CapriDesktop
 #if !CROSS
             { "discord_message", "Send a text message to the owner's own private Discord DM. Only use when they explicitly ask you to send a message to their own Discord DM.",
               "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"The exact text to send to the owner's private Discord DM\"}},\"required\":[\"text\"]}", "send a text message to your private Discord DM", "send a message to your own private Discord DM" },
+            { "discord_send_screenshot", "Send a full screenshot of the owner's entire desktop, including all monitors, to the owner's private Discord DM. Only use when explicitly asked.", "{\"type\":\"object\",\"properties\":{}}", "send a full desktop screenshot to your private Discord DM", "send your screen to your own Discord DM" },
+            { "discord_send_highlight", "Send the latest Highlight Assistance selection to the owner's private Discord DM. Choose image, answer, or both as requested. Only use when explicitly asked.", "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"image\",\"answer\",\"both\"]}},\"required\":[\"action\"]}", "share your latest Highlight Assistance selection", "send your selected highlight to your own Discord DM" },
             { "game_notes", "Keep controls or instructions the user teaches you for a game before you play it, or read them back. These are separate from what you learn while playing and you read them before every game job. Keep their actual controls in text.",
               "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"The game's window title, or leave out for the game open now\"},\"text\":{\"type\":\"string\",\"description\":\"Controls or instructions to keep in their words\"},\"action\":{\"type\":\"string\",\"description\":\"Save by default, or read the saved controls\",\"enum\":[\"save\",\"read\"]}}}", "keep game controls you teach her", "keep or read controls for a game" },
 #endif
@@ -1412,6 +1415,14 @@ namespace CapriDesktop
         internal static Func<ToolArguments, string> Remind = delegate { return "Couldn't open your reminders."; };
 #if !CROSS
         internal static Func<string, string> DiscordMessage = delegate { return "Private Discord messaging isn't connected."; };
+        internal static Func<string> DiscordScreenshot = delegate { return "Private Discord image sharing isn't connected."; };
+        internal static Func<string, string> DiscordHighlight = delegate { return "Private Discord image sharing isn't connected."; };
+        private static readonly object HighlightShareGate = new object();
+        private static byte[] highlightShareImage;
+        private static string highlightShareAnswer;
+        internal static void RememberHighlight(byte[] image) { lock (HighlightShareGate) { highlightShareImage = image == null ? null : (byte[])image.Clone(); highlightShareAnswer = null; } }
+        internal static void RememberHighlightAnswer(string answer) { lock (HighlightShareGate) highlightShareAnswer = answer; }
+        internal static void GetHighlightShare(out byte[] image, out string answer) { lock (HighlightShareGate) { image = highlightShareImage == null ? null : (byte[])highlightShareImage.Clone(); answer = highlightShareAnswer; } }
 #endif
 #if !CROSS
         internal static Func<ToolArguments, string> WatchFor = delegate { return "Couldn't watch the screen just now."; };
@@ -1655,6 +1666,8 @@ namespace CapriDesktop
 #endif
 #if !CROSS
                 if (tool == "discord_message") return Valid(tool, args) ? DiscordMessage(args.Text) : "What text should I send?";
+                if (tool == "discord_send_screenshot") return DiscordScreenshot();
+                if (tool == "discord_send_highlight") return Valid(tool, args) ? DiscordHighlight(args.Action) : "Should I send the image, the answer, or both?";
 #endif
                 if (tool == "remind") return Remind(args);
                 if (tool == "routine") return Routine(args);
@@ -1777,7 +1790,7 @@ namespace CapriDesktop
         private static string CallMe(string text)
         {
             // "No, my nickname is Skittle-Pro" counts too: a correction was saved as a note, and her name for them stayed wrong (ticket 91).
-            Match named = Regex.Match((text ?? "").Replace('’', '\'').Trim(), @"^(?:(?:no|nah|nope|actually|sorry|oops|wait)[\s,.!]+)*(?:that\s+)?(?:my (?:nick ?|first |real |user ?)?name is|my (?:nick ?|first |real |user ?)?name's|call me|i'm called|i am called|i go by)\s+([\p{L}\p{Nd}][\p{L}\p{Nd}'._-]*(?:\s[\p{L}\p{Nd}][\p{L}\p{Nd}'._-]*)?)[.!]*$", RegexOptions.IgnoreCase);
+            Match named = Regex.Match((text ?? "").Replace('\u2019', '\'').Trim(), @"^(?:(?:no|nah|nope|actually|sorry|oops|wait)[\s,.!]+)*(?:that\s+)?(?:my (?:nick ?|first |real |user ?)?name is|my (?:nick ?|first |real |user ?)?name's|call me|i'm called|i am called|i go by)\s+([\p{L}\p{Nd}][\p{L}\p{Nd}'._-]*(?:\s[\p{L}\p{Nd}][\p{L}\p{Nd}'._-]*)?)[.!]*$", RegexOptions.IgnoreCase);
             Func<string, string> rename = Rename;
             return named.Success && rename != null ? rename(named.Groups[1].Value) : null;
         }
@@ -1794,7 +1807,7 @@ namespace CapriDesktop
 
         internal static string Theirs(string text)
         {
-            string note = Regex.Replace((text ?? "").Replace('’', '\'').Trim(), @"^(that|this)\s+", "", RegexOptions.IgnoreCase);
+            string note = Regex.Replace((text ?? "").Replace('\u2019', '\'').Trim(), @"^(that|this)\s+", "", RegexOptions.IgnoreCase);
             for (int i = 0; i < Swaps.Length; i += 2) note = Regex.Replace(note, Swaps[i], Swaps[i + 1], RegexOptions.IgnoreCase);
             return note;
         }
@@ -1884,7 +1897,7 @@ namespace CapriDesktop
 
         internal static bool CallTool(string tool)
         {
-            return Regex.IsMatch(tool ?? "", @"\A(open_app|open_website|media|look_at_screen|play_music|app_window|use_computer|shortcut|power|animate|draw|desktop_icons|clip|mini_game|fake_crash|listen|list_windows|check_app|app_volume|pc_status|internet_status)\z");
+            return Regex.IsMatch(tool ?? "", @"\A(open_app|open_website|media|look_at_screen|play_music|app_window|use_computer|shortcut|power|animate|draw|desktop_icons|clip|mini_game|fake_crash|listen|list_windows|check_app|app_volume|pc_status|internet_status|discord_send_screenshot|discord_send_highlight)\z");
         }
 
         internal static bool CallAllowed(string tool, ToolArguments args)
@@ -2499,7 +2512,7 @@ namespace CapriDesktop
         {
             string text = Asked(said);
             string plain = Regex.Replace(text, @"^(do|did) (you|u) (know|have any idea)\b|\byou know\b|^(tell|show|get|find) me\b|\b(near me|where i (am|live)|in my (area|city|town|suburb))\b", "", RegexOptions.IgnoreCase);
-            if (text.Length < 4 || ClockAsk.IsMatch(text) || !Question.IsMatch((said ?? "").Trim()) || !Unknown.IsMatch((reply ?? "").Replace('’', '\'')) || Regex.IsMatch(plain, @"\b(screen|song|playing|track|you|your|yourself|u|ur|capri|me|my|i|i'm|im)\b", RegexOptions.IgnoreCase) || Regex.IsMatch(reply ?? "", @"\bscreen\b", RegexOptions.IgnoreCase)) return null;
+            if (text.Length < 4 || ClockAsk.IsMatch(text) || !Question.IsMatch((said ?? "").Trim()) || !Unknown.IsMatch((reply ?? "").Replace('\u2019', '\'')) || Regex.IsMatch(plain, @"\b(screen|song|playing|track|you|your|yourself|u|ur|capri|me|my|i|i'm|im)\b", RegexOptions.IgnoreCase) || Regex.IsMatch(reply ?? "", @"\bscreen\b", RegexOptions.IgnoreCase)) return null;
             return new ToolArguments { Site = "google", Search = text };
         }
 
@@ -2570,7 +2583,7 @@ namespace CapriDesktop
 
         internal static bool Promised(string said)
         {
-            string plain = Warmth.Replace((said ?? "").Replace('’', '\''), "");
+            string plain = Warmth.Replace((said ?? "").Replace('\u2019', '\''), "");
             return Promise.IsMatch(plain) || Offered.IsMatch(plain);
         }
 
@@ -2579,7 +2592,7 @@ namespace CapriDesktop
 
         private static readonly Regex Credit = new Regex(@"\b(you|ya|u)('ve| have)?\s+(just\s+|already\s+|finally\s+|actually\s+)?(opened|typed|launched|sent|closed|played|paused|skipped|muted|unmuted|deafened|undeafened|clicked|searched|posted|messaged|texted|dmed|dm'd|replied|wrote|pulled up|fired up|booted up|hung up|ended|left|joined)\b", RegexOptions.IgnoreCase);
 
-        internal static bool Credits(string said) { return Credit.IsMatch((said ?? "").Replace('’', '\'')); }
+        internal static bool Credits(string said) { return Credit.IsMatch((said ?? "").Replace('\u2019', '\'')); }
 
         // What she says she did that only one of her tools does, the tools that do it, and her line when nothing else is left to
         // say (F69, pass 4). "I'll remember that", "reminder set", "I'll tell you when" and "clipped it" with no tool behind them
@@ -2652,7 +2665,7 @@ namespace CapriDesktop
         // A question, like "should I set a reminder?", offers it instead of saying it's done.
         private static string ClaimIn(string sentence, List<KeyValuePair<string, ToolArguments>> calls)
         {
-            string text = sentence.Replace('’', '\'');
+            string text = sentence.Replace('\u2019', '\'');
             if (Regex.IsMatch(text, @"[?？]\W*$")) return null;
             for (int i = 0; i < Claims.GetLength(0); i++)
             {
@@ -2670,7 +2683,7 @@ namespace CapriDesktop
         }
 
         // A last line that owns up to something going wrong, so it can stand after a tool failed.
-        internal static bool Admits(string reply) { return Regex.IsMatch((reply ?? "").Replace('’', '\''), @"\b(?:can't|cannot|couldn't|didn't|did not|won't|wasn't|isn't|not|no|nope|failed|fail|unable|sorry|problem|error|trouble|wrong|nothing|missing|instead)\b", RegexOptions.IgnoreCase); }
+        internal static bool Admits(string reply) { return Regex.IsMatch((reply ?? "").Replace('\u2019', '\''), @"\b(?:can't|cannot|couldn't|didn't|did not|won't|wasn't|isn't|not|no|nope|failed|fail|unable|sorry|problem|error|trouble|wrong|nothing|missing|instead)\b", RegexOptions.IgnoreCase); }
 
         private static readonly Regex Doing = new Regex(@"^((i (want|need) (you|u) to|go ahead and|just|now|then|and)\s+)*(send|dm|pm|message|msg|text|ping|tell|say|ask|type|write|post|tweet|reply|respond|put|paste|share|open|launch|start|run|close|quit|exit|kill|join|leave|end|hang up|call|ring|turn|shut|power|switch|restart|reboot|sleep|lock|log|sign|mute|unmute|deafen|undeafen|play|pause|skip|go|click|tap|press|scroll|search|google|find|make|create|delete|remove|add|invite|kick|ban|block|unblock|react|pin|accept|decline|install|uninstall|download|change|set|minimi[sz]e|maximi[sz]e|move|copy|rename|save|record|clip|fill|submit|hop|get on|get off|pick up|answer|reject)\b(?!\s+(me|us)\b)", RegexOptions.IgnoreCase);
         private static readonly Regex Hesitation = new Regex(@"\b(do you want me to|you want me to|want me to|would you like me to|should i|shall i|is it ok(ay)? (if i|for me to|to)|ok(ay)? (if i|for me to|to)|mind if i|are you sure|you sure|just to (check|confirm)|(can|could) you confirm|confirm(ing)?|double[- ]?check(ing)?|ready (for me )?to)\b[^.!?]{0,160}?\b(send|sent|post|messag|dm|text|typ|writ|past|shar|repl|open|launch|start|clos|quit|join|leav|end|hang|call|ring|shut|turn|power|restart|reboot|sleep|lock|sign|log|delet|remov|click|press|mut|unmut|deafen|undeafen|play|paus|skip|search|install|uninstall|go ahead|proceed|do (it|that|this))\w*" +
@@ -2682,7 +2695,7 @@ namespace CapriDesktop
         {
             string text = Asked(said);
             if (text.Length == 0 || Chatter.IsMatch(text) || !Doing.IsMatch(text)) return false;
-            foreach (string sentence in Regex.Split((reply ?? "").Replace('’', '\'').Trim(), @"(?<=[.!?])\s+"))
+            foreach (string sentence in Regex.Split((reply ?? "").Replace('\u2019', '\'').Trim(), @"(?<=[.!?])\s+"))
                 if (!Regex.IsMatch(sentence, @"^\W*(what|which|who|whom|whose|where|when|how|why)\b", RegexOptions.IgnoreCase) && Hesitation.IsMatch(sentence)) return true;
             return false;
         }
@@ -2823,7 +2836,7 @@ namespace CapriDesktop
             @"|չեմ կարող (\S+ ){0,2}(բացել|միացնել|նվագել|կառավարել|փակել|անջատել|մուտք գործել)(?!\w)|(բացել|միացնել|նվագել|կառավարել|փակել|անջատել) չեմ կարող|(հասանելիություն|մուտք) չունեմ|չունեմ (հասանելիություն|մուտք)", RegexOptions.IgnoreCase);
         private const string Able = @"(open|launch|start|run|play|pause|resume|skip|control|access|use|search|google|close|mute|unmute|put on|turn (up|down|on|off)|change)\b";
 
-        internal static bool Refused(string reply) { return Refusal.IsMatch(Dots((reply ?? "").Replace('’', '\''))); }
+        internal static bool Refused(string reply) { return Refusal.IsMatch(Dots((reply ?? "").Replace('\u2019', '\''))); }
 
         // "I can't click for you, show me the screen and I'll guide you": she has their mouse, keyboard and screen, so it's never true
         // (a Polish tester, 30 Oct: "Nie mam teraz sterowania komputerem").
@@ -2838,7 +2851,7 @@ namespace CapriDesktop
             @"|\bnon ho (il )?controllo(?!\w)|\bnon (posso|riesco a) (cliccare|premere)(?!\w)|\bmostrami (lo|il tuo) schermo(?!\w)" +
             @"|(?<!\w)не могу (нажать|кликнуть|управлять)(?!\w)|(?<!\w)нет (управления|контроля)(?!\w)|(?<!\w)покажи (мне )?экран(?!\w)", RegexOptions.IgnoreCase);
 
-        internal static bool Denied(string reply) { return NoHands.IsMatch((reply ?? "").Replace('’', '\'')); }
+        internal static bool Denied(string reply) { return NoHands.IsMatch((reply ?? "").Replace('\u2019', '\'')); }
 
         // Burmese can store a dot below and an asat on one letter in either order, so they're put in one order to match.
         private static string Dots(string text) { return text.Replace("\u103A\u1037", "\u1037\u103A"); }
@@ -3866,6 +3879,8 @@ namespace CapriDesktop
 #endif
 #if !CROSS
             if (tool == "discord_message") return Named(args.Text) && args.Text.Length <= 1800;
+            if (tool == "discord_send_screenshot") return true;
+            if (tool == "discord_send_highlight") return Regex.IsMatch(args.Action ?? "", @"\A(image|answer|both)\z");
 #endif
             if (tool == "remind") return args.Action == "list" || (args.Action == "cancel" ? Named(args.Text) : (string.IsNullOrEmpty(args.Action) || args.Action == "save") && Named(args.Text) && Named(args.When));
             if (tool == "routine") return args.Action == "list" || (Named(args.Phrase) && (args.Action == "forget" || args.Action == "run" || ((string.IsNullOrEmpty(args.Action) || args.Action == "save") && Named(args.Steps))));
@@ -6059,3 +6074,4 @@ namespace CapriDesktop
         }
     }
 }
+

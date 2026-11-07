@@ -915,7 +915,10 @@ namespace CapriDesktop
                 try
                 {
                     if (captured != null && !IsDisposed && IsHandleCreated)
+                    {
+                        Hands.RememberHighlight(captured);
                         BeginInvoke(new Action(delegate { OpenHighlightAssistance(captured); }));
+                    }
                 }
                 catch (Exception) { }
             });
@@ -1079,6 +1082,47 @@ namespace CapriDesktop
                     try { result = owner.capri.EnhancementSeeImage(selectedImage, prompt); }
                     catch (Exception error) { result = "I couldn't read that selection: " + Voice.Short(error.Message); }
                     if (string.IsNullOrWhiteSpace(result)) result = "I couldn't make out anything clear in that selection.";
+                    Hands.RememberHighlightAnswer(result);
+
+#if !CROSS
+        // Highlight Assistance uses a direct vision call, so explicitly route
+        // requested Discord sharing through the existing private-DM callback.
+        string shareRequest = task.ToLowerInvariant();
+        if (shareRequest.Contains("discord") &&
+            (shareRequest.Contains("send") || shareRequest.Contains("share") || shareRequest.Contains("dm")))
+        {
+            bool asksForTranslation =
+                shareRequest.Contains("translat") || shareRequest.Contains("explain") ||
+                shareRequest.Contains("summar");
+
+            bool asksForOriginal =
+                shareRequest.Contains("original") || shareRequest.Contains("image") ||
+                shareRequest.Contains("highlight") || shareRequest.Contains("selection") ||
+                shareRequest.Contains("screenshot") || shareRequest.Contains("picture");
+
+            string shareAction =
+                shareRequest.Contains("both") ||
+                (asksForTranslation && asksForOriginal) ||
+                ((shareRequest.Contains("answer") || shareRequest.Contains("response")) &&
+                 asksForOriginal)
+                    ? "both"
+                    : (asksForTranslation || shareRequest.Contains("answer") ||
+                       shareRequest.Contains("response") || shareRequest.Contains("text"))
+                        ? "answer"
+                        : "image";
+
+            try
+            {
+                string shareResult = Hands.DiscordHighlight(shareAction);
+                if (!string.IsNullOrWhiteSpace(shareResult))
+                    result += "\n\n" + shareResult;
+            }
+            catch (Exception shareError)
+            {
+                result += "\n\nI couldn't send that to Discord: " + Voice.Short(shareError.Message);
+            }
+        }
+#endif
 
                     // Queue Capri's normal spoken-reply pipeline first. The transcript is a separate,
                     // readable copy of exactly what she was asked to say.
