@@ -2037,7 +2037,7 @@ namespace CapriDesktop
             string shared = (sharedMemory ?? "").Trim();
             if (shared.Length > 8000) shared = shared.Substring(0, 8000);
 
-            string context = "\nThis message came from the owner's private Discord DM. You can chat using the same Capri personality and private memory, but you have no PC tools in this channel. You do have private Discord message tools for this DM only: fetch or search recent messages, reply, react, and edit, delete or pin your own messages. For message references, do not ask the owner for Discord message IDs. Use target 'last' or 'last_mine' for your own newest message, and target 'last_user' for the owner's newest message. This works for reply, react, edit, delete, pin and unpin; ownership restrictions still apply. If the owner describes an older or specific message, fetch or search recent messages first and use the exact ID returned. Always use actual structured Discord tool calls, never print tool-call syntax as ordinary chat text. Never claim to see or control the PC, and do not attempt PC actions. If they ask for something on the PC, tell them to ask you on the desktop.";
+            string context = "\nThis message came from the owner's private Discord DM. You can chat using the same Capri personality and private memory, but you cannot control the PC from here. You do have private Discord message tools for this DM only: fetch or search recent messages, reply, react, and edit, delete or pin your own messages. For message references, do not ask the owner for Discord message IDs. Use target 'last' or 'last_mine' for your own newest message, and target 'last_user' for the owner's newest message. This works for reply, react, edit, delete, pin and unpin; ownership restrictions still apply. If the owner describes an older or specific message, fetch or search recent messages first and use the exact ID returned. Always use actual structured Discord tool calls, never print tool-call syntax as ordinary chat text. You can look at their PC with two read-only tools: look_at_screen (a screenshot of their screen, for what is on screen or what game or app they are in) and check_app (whether an app or game is installed or running). When they ask about their PC, call the tool and answer from the real result, and never guess or invent a value. You cannot click, type, open or close anything from here. If a question needs something you have no tool for, say so plainly.";
 
             if (shared.Length > 0)
             {
@@ -2334,6 +2334,8 @@ namespace CapriDesktop
                     if (privateDiscordTools)
                     {
                         string action = DiscordActionName(call.Key);
+                        if (call.Key == "look_at_screen" || call.Key == "check_app") result = ValidDiscordTool(call.Key, call.Value) && Act != null ? Act(call.Key, call.Value) : "That PC check was invalid or unavailable.";
+                        else
                         result = ValidDiscordTool(call.Key, call.Value) && action != null && DiscordAction != null
                             ? DiscordAction(action, call.Value)
                             : "That private Discord action was invalid or unavailable.";
@@ -3202,16 +3204,21 @@ namespace CapriDesktop
                 {"discord_pin_message","Pin one of Capri's own messages in the owner's private DM."},
                 {"discord_unpin_message","Unpin one of Capri's own messages in the owner's private DM."},
                 {"discord_react","React to a message in the owner's private DM."},
-                {"discord_unreact","Remove Capri's own reaction from a message in the owner's private DM."}
+                {"discord_unreact","Remove Capri's own reaction from a message in the owner's private DM."},
+                {"look_at_screen","Take a screenshot of the owner's PC screen and look at it right now. Use it for what is on screen, what game or app they are in, or anything visual. Read-only."},
+                {"check_app","Check whether an app or game is installed or running on the owner's PC, by name. Read-only."}
             };
             List<string> tools = new List<string>();
+            string focusSchema = "{\"type\":\"object\",\"properties\":{\"focus\":{\"type\":\"string\",\"description\":\"What to look for on the screen. Optional.\"}}}";
+            string nameSchema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"The app or game name.\"}},\"required\":[\"name\"]}";
             for (int i = 0; i < definitions.GetLength(0); i++)
             {
                 string name = definitions[i, 0];
                 string description = Voice.Quote(definitions[i, 1]);
+                string schema = name == "look_at_screen" ? focusSchema : name == "check_app" ? nameSchema : parameters;
                 tools.Add(claude
-                    ? "{\"name\":" + Voice.Quote(name) + ",\"description\":" + description + ",\"input_schema\":" + parameters + "}"
-                    : "{\"type\":\"function\",\"function\":{\"name\":" + Voice.Quote(name) + ",\"description\":" + description + ",\"parameters\":" + parameters + "}}");
+                    ? "{\"name\":" + Voice.Quote(name) + ",\"description\":" + description + ",\"input_schema\":" + schema + "}"
+                    : "{\"type\":\"function\",\"function\":{\"name\":" + Voice.Quote(name) + ",\"description\":" + description + ",\"parameters\":" + schema + "}}");
             }
             return "[" + string.Join(",", tools.ToArray()) + "]";
         }
@@ -3238,6 +3245,10 @@ namespace CapriDesktop
                 case "discord_react":
                 case "discord_unreact":
                     return target.Length > 0 && target.Length <= 30 && emoji.Length > 0 && emoji.Length <= 100;
+                case "look_at_screen":
+                    return true;
+                case "check_app":
+                    return !string.IsNullOrWhiteSpace(a.Name) && a.Name.Length <= 100;
                 default:
                     return false;
             }
