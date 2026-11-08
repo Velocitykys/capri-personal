@@ -31066,7 +31066,7 @@ namespace CapriDesktop
                     if (found != null && found.StartsWith("What's new:", StringComparison.Ordinal)) throw new Exception("Update help took ordinary chat: " + ordinary);
                 }
                 if (SelfKnow.Matching("what's new in the latest update notes?") == null || !SelfKnow.Matching("what did this update add to call mode?").Contains(News.Facts)) throw new Exception("Update help missed a question that names the update.");
-                foreach (string fact in new[] { "Play a game", "Bloons TD 6", "keeps playing until you tell her to stop", "CAPRI > Legacy stand", "YOU > File editor", "Ctrl + S", "20 seconds", "click effect", "hover tips", "her own ears download again", "YOU > Language" })
+                foreach (string fact in new[] { "See-through file editor", "Play a game", "Bloons TD 6", "keeps playing until you tell her to stop", "CAPRI > Legacy stand", "YOU > File editor", "Ctrl + S", "20 seconds", "click effect", "hover tips", "her own ears download again", "YOU > Language" })
                     if (!News.Facts.Contains(fact)) throw new Exception("Windows update help missed " + fact);
                 CloseTalk(); Think = null;
                 Hear("what's new?");
@@ -49678,13 +49678,12 @@ namespace CapriDesktop
         internal sealed class Surface : IDisposable
         {
             internal readonly Bitmap Image;
-            private IntPtr memory, bitmap, previous;
+            private IntPtr memory, bitmap, previous, pixels;
 
             internal Surface(int width, int height)
             {
                 memory = CreateCompatibleDC(IntPtr.Zero);
                 Dib info = new Dib { Size = Marshal.SizeOf(typeof(Dib)), Width = width, Height = -height, Planes = 1, Bits = 32 };
-                IntPtr pixels;
                 bitmap = CreateDIBSection(memory, ref info, 0, out pixels, IntPtr.Zero, 0);
                 if (memory == IntPtr.Zero || bitmap == IntPtr.Zero || pixels == IntPtr.Zero) { Dispose(); throw new System.ComponentModel.Win32Exception(); }
                 previous = SelectObject(memory, bitmap);
@@ -49692,11 +49691,15 @@ namespace CapriDesktop
                 catch { Dispose(); throw; }
             }
 
-            internal void Show(IntPtr window, System.Drawing.Point location)
+            // Its memory DC, which a window can be painted onto, and its pixels: top-down rows of blue, green, red and alpha bytes.
+            internal IntPtr Dc { get { return memory; } }
+            internal IntPtr Pixels { get { return pixels; } }
+
+            internal void Show(IntPtr window, System.Drawing.Point location, byte alpha = 255)
             {
                 Point destination = new Point(location.X, location.Y), origin = new Point(0, 0);
                 Size size = new Size(Image.Width, Image.Height);
-                Blend blend = new Blend { Alpha = 255, Format = 1 };
+                Blend blend = new Blend { Alpha = alpha, Format = 1 };
                 if (!UpdateLayeredWindow(window, IntPtr.Zero, ref destination, ref size, memory, ref origin, 0, ref blend, 2)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             }
 
@@ -49706,7 +49709,7 @@ namespace CapriDesktop
                 if (previous != IntPtr.Zero && memory != IntPtr.Zero) SelectObject(memory, previous);
                 if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
                 if (memory != IntPtr.Zero) DeleteDC(memory);
-                previous = bitmap = memory = IntPtr.Zero;
+                previous = bitmap = memory = pixels = IntPtr.Zero;
             }
         }
 
