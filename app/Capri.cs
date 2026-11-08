@@ -2759,7 +2759,9 @@ namespace CapriDesktop
                     discordBridge = new DiscordBridge(data, reminders,
                         delegate(string message, string sharedMemory, bool initiated) { return brain.AskFromDiscord(message, sharedMemory, initiated); },
                         delegate(string message, string publicContext) { return brain.AskFromPublicDiscord(message, publicContext); },
-                        DiscordStatus);
+                        DiscordStatus,
+                        DiscordPcInfo,
+                        SendDiscordScreenshot);
                     brain.DiscordAction = delegate(string action, ToolArguments args) {
                         return discordBridge.ExecuteAction(
                             action,
@@ -14586,6 +14588,28 @@ namespace CapriDesktop
                 : "Here's your selected Highlight Assistance image.";
 
             return discordBridge.QueueImage(image, "capri-highlight.jpg", caption);
+        }
+        private string DiscordPcInfo()
+        {
+            string[] parts = DiscordStatus().Split('|');
+            long idleMilliseconds = 0;
+            if (parts.Length > 0)
+                long.TryParse(parts[0], System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out idleMilliseconds);
+
+            bool gaming = parts.Length > 1 && parts[1] == "1";
+            string app = parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2])
+                ? parts[2] : "Unknown";
+
+            TimeSpan idle = TimeSpan.FromMilliseconds(Math.Max(0L, idleMilliseconds));
+
+            return "PC STATUS" +
+                "\nComputer: " + Environment.MachineName +
+                "\nWindows: " + Environment.OSVersion.VersionString +
+                "\nLogical processors: " + Environment.ProcessorCount +
+                "\nForeground app: " + app +
+                "\nGaming mode: " + (gaming ? "On" : "Off") +
+                "\nIdle time: " + idle.ToString(@"hh\:mm\:ss");
         }
         private string DiscordStatus()
         {

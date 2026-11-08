@@ -67,6 +67,8 @@ namespace CapriDesktop
         private readonly Func<string, string, bool, string> ask;
         private readonly Func<string, string, string> publicAsk;
         private readonly Func<string> status;
+        private readonly Func<string> pcInfo;
+        private readonly Func<string> captureScreenshot;
         private readonly string outboxPath;
         private readonly System.Collections.Generic.List<DiscordOutboxMessage> outbox = new System.Collections.Generic.List<DiscordOutboxMessage>();
         private readonly Thread listener;
@@ -76,12 +78,14 @@ namespace CapriDesktop
         private NamedPipeServerStream waiting;
         private volatile bool stopping;
 
-        internal DiscordBridge(string data, Reminders reminders, Func<string, string, bool, string> ask, Func<string, string, string> publicAsk, Func<string> status)
+        internal DiscordBridge(string data, Reminders reminders, Func<string, string, bool, string> ask, Func<string, string, string> publicAsk, Func<string> status, Func<string> pcInfo, Func<string> captureScreenshot)
         {
             this.reminders = reminders;
             this.ask = ask;
             this.publicAsk = publicAsk;
             this.status = status;
+            this.pcInfo = pcInfo;
+            this.captureScreenshot = captureScreenshot;
             Directory.CreateDirectory(data);
             outboxPath = Path.Combine(data, "discord-outbox.json");
             try
@@ -331,6 +335,10 @@ namespace CapriDesktop
 
                 case "status":
                     return new DiscordBridgeResponse { Ok = true, Value = status == null ? "0|0|" : status() };
+                case "pc_status":
+                    return new DiscordBridgeResponse { Ok = true, Value = pcInfo == null ? "PC information is unavailable." : pcInfo() };
+                case "pc_screenshot":
+                    return new DiscordBridgeResponse { Ok = true, Value = captureScreenshot == null ? "Screenshot capture is unavailable." : captureScreenshot() };
 
                 case "reminder":
                     string answer = reminders == null ? null : reminders.DiscordHandle(text);

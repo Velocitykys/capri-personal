@@ -2042,7 +2042,7 @@ namespace CapriDesktop
             string shared = (sharedMemory ?? "").Trim();
             if (shared.Length > 8000) shared = shared.Substring(0, 8000);
 
-            string context = "\nThis message came from the owner's private Discord DM. You can chat using the same Capri personality and private memory, but you have no PC tools in this channel. You do have private Discord message tools for this DM only: fetch or search recent messages, reply, react, and edit, delete or pin your own messages. Those tools need a message ID, so if they point at a message without giving one, fetch the recent messages and work out which one they mean instead of refusing. Never claim to see or control the PC, and do not attempt PC actions. If they ask for something on the PC, tell them to ask you on the desktop.";
+            string context = "\nThis message came from the owner's private Discord DM. You can chat using the same Capri personality and private memory, but you have no PC tools in this channel. You do have private Discord message tools for this DM only: fetch or search recent messages, reply, react, and edit, delete or pin your own messages. For message references, do not ask the owner for Discord message IDs. Use target 'last' or 'last_mine' for your own newest message, and target 'last_user' for the owner's newest message. This works for reply, react, edit, delete, pin and unpin; ownership restrictions still apply. If the owner describes an older or specific message, fetch or search recent messages first and use the exact ID returned. Always use actual structured Discord tool calls, never print tool-call syntax as ordinary chat text. Never claim to see or control the PC, and do not attempt PC actions. If they ask for something on the PC, tell them to ask you on the desktop.";
 
             if (shared.Length > 0)
             {
@@ -3197,7 +3197,7 @@ namespace CapriDesktop
         // The calls in a reply that came back whole. One cut off at the end, or one that doesn't make sense, is left out.
         private static string DiscordTools(bool claude)
         {
-            string parameters = "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"search\":{\"type\":\"string\"},\"emoji\":{\"type\":\"string\"},\"count\":{\"type\":\"integer\"}},\"additionalProperties\":false}";
+            string parameters = "{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"description\":\"Discord message ID, or last/last_mine for Capri newest DM message, or last_user for owner newest DM message.\"},\"text\":{\"type\":\"string\"},\"search\":{\"type\":\"string\"},\"emoji\":{\"type\":\"string\"},\"count\":{\"type\":\"integer\"}},\"additionalProperties\":false}";
             string[,] definitions = {
                 {"discord_recent_messages","Fetch recent messages in the owner's private DM."},
                 {"discord_search_messages","Search recent messages in the owner's private DM. Searches only the latest fetched messages."},
@@ -3308,6 +3308,111 @@ namespace CapriDesktop
             return found;
         }
 
+        private static string PrivateDiscordMarkup(string content, List<KeyValuePair<string, ToolArguments>> calls)
+        {
+            if (string.IsNullOrEmpty(content)) return content;
+
+            string lt = ((char)60).ToString();
+            string gt = ((char)62).ToString();
+            string toolOpen = lt + "tool name=";
+            string toolClose = lt + "/tool" + gt;
+            string paramOpen = lt + "parameter=";
+            string paramClose = lt + "/parameter" + gt;
+
+            int added = 0;
+            int position = 0;
+
+            while (true)
+            {
+                int start = content.IndexOf(toolOpen, position, StringComparison.OrdinalIgnoreCase);
+                if (start < 0) break;
+
+                int nameStart = start + toolOpen.Length;
+                while (nameStart < content.Length && (content[nameStart] == '"' || content[nameStart] == '\'')) nameStart++;
+
+                int nameEnd = content.IndexOfAny(new char[] { '"', '\'' , '>' }, nameStart);
+                if (nameEnd < 0) break;
+
+                string name = content.Substring(nameStart, nameEnd - nameStart).Trim();
+                int tagEnd = content.IndexOf(gt, nameEnd);
+                if (tagEnd < 0) break;
+
+                int nextTool = content.IndexOf(toolOpen, tagEnd + 1, StringComparison.OrdinalIgnoreCase);
+                int segmentEnd = nextTool < 0 ? content.Length : nextTool;
+                string segment = content.Substring(tagEnd + 1, segmentEnd - tagEnd - 1);
+
+                ToolArguments args = new ToolArguments();
+                int p = 0;
+
+                while (true)
+                {
+                    int ps = segment.IndexOf(paramOpen, p, StringComparison.OrdinalIgnoreCase);
+                    if (ps < 0) break;
+
+                    int pn = ps + paramOpen.Length;
+                    int pe = segment.IndexOf(gt, pn);
+                    if (pe < 0) break;
+
+                    string key = segment.Substring(pn, pe - pn).Trim().Trim('"', '\'').ToLowerInvariant();
+                    int vs = pe + 1;
+                    int ve = segment.IndexOf(paramClose, vs, StringComparison.OrdinalIgnoreCase);
+                    if (ve < 0) break;
+
+                    string value = segment.Substring(vs, ve - vs).Trim();
+                    value = System.Net.WebUtility.HtmlDecode(value);
+
+                    if (key == "target" || key == "message_id") args.Target = value;
+                    else if (key == "text") args.Text = value;
+                    else if (key == "search") args.Search = value;
+                    else if (key == "emoji")
+                    {
+                        int bracket = value.IndexOf("](", StringComparison.Ordinal);
+                        if (value.StartsWith("[", StringComparison.Ordinal) && bracket > 0 && value.EndsWith(")", StringComparison.Ordinal))
+                            value = value.Substring(1, bracket - 1);
+                        args.Emoji = value;
+                    }
+                    else if (key == "count")
+                    {
+                        int count;
+                        if (int.TryParse(value, out count)) args.Count = count;
+                    }
+
+                    p = ve + paramClose.Length;
+                }
+
+                if (DiscordActionName(name) != null && ValidDiscordTool(name, args))
+                {
+                    calls.Add(new KeyValuePair<string, ToolArguments>(name, args));
+                    added++;
+                }
+
+                position = tagEnd + 1;
+            }
+
+            if (added == 0) return content;
+
+            StringBuilder cleaned = new StringBuilder(content);
+            int removeAt;
+
+            while ((removeAt = cleaned.ToString().IndexOf(toolOpen, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                int end = cleaned.ToString().IndexOf(gt, removeAt);
+                if (end < 0) break;
+                cleaned.Remove(removeAt, end - removeAt + 1);
+            }
+
+            while ((removeAt = cleaned.ToString().IndexOf(toolClose, StringComparison.OrdinalIgnoreCase)) >= 0)
+                cleaned.Remove(removeAt, toolClose.Length);
+
+            while ((removeAt = cleaned.ToString().IndexOf(paramOpen, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                int end = cleaned.ToString().IndexOf(paramClose, removeAt, StringComparison.OrdinalIgnoreCase);
+                if (end < 0) break;
+                cleaned.Remove(removeAt, end - removeAt + paramClose.Length);
+            }
+
+            return cleaned.ToString().Trim();
+        }
         private static string Read(CompletionReply reply, List<KeyValuePair<string, ToolArguments>> calls)
         {
             CompletionChoice choice = reply != null && reply.Choices != null && reply.Choices.Length > 0 ? reply.Choices[0] : null;
@@ -3315,14 +3420,15 @@ namespace CapriDesktop
             if (message == null) throw new BrainException(Wordless, true);
             int before = calls.Count;
             if (message.Calls != null) foreach (CompletionCall call in message.Calls) if (call != null && call.Function != null) calls.Add(new KeyValuePair<string, ToolArguments>(call.Function.Name, Hands.Read(call.Function.Arguments)));
-            if (calls.Count == before && Garbled(message.Content)) throw new BrainException(Gibberish, true);
-            if (Clean(message.Content).Length == 0 && calls.Count == before)
+            string content = privateDiscordTools ? PrivateDiscordMarkup(message.Content, calls) : message.Content;
+            if (calls.Count == before && Garbled(content)) throw new BrainException(Gibberish, true);
+            if (Clean(content).Length == 0 && calls.Count == before)
             {
                 if (choice.Stopped == "length") throw new BrainException("That model ran out of room before answering. Pick another model in Capri Mainframe.", true);
                 if (!string.IsNullOrWhiteSpace(message.Reasoning) || !string.IsNullOrWhiteSpace(message.Thinking)) throw new BrainException(Answerless, true);
                 throw new BrainException(Wordless, true);
             }
-            return Visible(message.Content);
+            return Visible(content);
         }
 
         // Claude's cache keeps her tools and the start of a prompt at a tenth of the price, as long as that start is the same every
