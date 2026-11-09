@@ -20,6 +20,8 @@ namespace CapriDesktop
     {
         internal string Folder, FileName, Sha, PreviewSha;
         internal string Name = "", Author = "", About = "";
+        // A checked download of this listing, kept from looking for updates so getting it doesn't download it again.
+        internal string Fetched;
         internal long Size;
         internal int Downloads, Votes;
         internal double Rating;
@@ -64,6 +66,7 @@ namespace CapriDesktop
     {
         internal const string Page = "https://github.com/lachydotmcg/capri-mods";
         internal static readonly string[] Kinds = { "All", "Settings", "Code", "Skins", "Skills" };
+        internal static readonly string[] Sorts = { "A to Z", "Downloads", "Top rated" };
         private const string Api = "https://api.github.com/repos/lachydotmcg/capri-mods/git/";
         private const long Largest = 96L * 1024 * 1024;
         private const long LargestList = 16L * 1024 * 1024;
@@ -190,8 +193,13 @@ namespace CapriDesktop
                 previews.TryGetValue(match.Groups[1].Value, out previewSha);
                 found.Add(new ModListing { Folder = match.Groups[1].Value, FileName = match.Groups[2].Value, Sha = entry.Sha, Size = entry.Size, PreviewSha = previewSha });
             }
-            found.Sort(delegate(ModListing a, ModListing b) { return StringComparer.OrdinalIgnoreCase.Compare(a.Folder + "/" + a.FileName, b.Folder + "/" + b.FileName); });
+            found.Sort(delegate(ModListing a, ModListing b) { return Named(a, b); });
             return found;
+        }
+
+        private static int Named(ModListing a, ModListing b)
+        {
+            return StringComparer.OrdinalIgnoreCase.Compare(a.Folder + "/" + a.FileName, b.Folder + "/" + b.FileName);
         }
 
         internal static List<ModListing> Filter(List<ModListing> listings, string search, int kind)
@@ -204,6 +212,128 @@ namespace CapriDesktop
                 foreach (string word in words) if (named.IndexOf(word, StringComparison.OrdinalIgnoreCase) < 0) return false;
                 return true;
             });
+        }
+
+        internal static List<ModListing> Sort(List<ModListing> listings, int order)
+        {
+            if (order <= 0 || order >= Sorts.Length) return listings;
+            List<ModListing> sorted = new List<ModListing>(listings);
+            if (order == 1) sorted.Sort(delegate(ModListing a, ModListing b)
+            {
+                int by = b.Downloads.CompareTo(a.Downloads);
+                return by != 0 ? by : Named(a, b);
+            });
+            else sorted.Sort(delegate(ModListing a, ModListing b)
+            {
+                int by = (a.Votes > 0 ? 0 : 1).CompareTo(b.Votes > 0 ? 0 : 1);
+                if (by == 0) by = b.Rating.CompareTo(a.Rating);
+                if (by == 0) by = b.Votes.CompareTo(a.Votes);
+                return by != 0 ? by : Named(a, b);
+            });
+            return sorted;
+        }
+
+        // The directory's listings for installed mods it now has a different file for: same id and kind, and the installed copy's
+        // git fingerprint isn't the listing's. Settings and skill mods are saved as text without a byte order mark, so a copy
+        // that only lost one still counts as the same. Mods that aren't in the directory, or can't be read, are left out.
+        internal static List<ModListing> Updates(List<ModListing> listings, List<Mod> installed)
+        {
+            List<ModListing> found = new List<ModListing>();
+            byte[] mark = { 0xEF, 0xBB, 0xBF };
+            foreach (Mod mod in installed)
+            {
+                if (mod == null || mod.File == null || mod.Path == null) continue;
+                ModListing listing = listings.Find(delegate(ModListing each)
+                {
+                    return string.Equals(each.Id, mod.File.Id, StringComparison.OrdinalIgnoreCase) && string.Equals(Path.GetExtension(each.FileName), Path.GetExtension(mod.Path), StringComparison.OrdinalIgnoreCase);
+                });
+                if (listing == null) continue;
+                byte[] bytes;
+                try
+                {
+                    if (!File.Exists(mod.Path) || new FileInfo(mod.Path).Length > Largest) continue;
+                    bytes = File.ReadAllBytes(mod.Path);
+                }
+                catch (IOException) { continue; }
+                catch (UnauthorizedAccessException) { continue; }
+                if (BlobSha(bytes) == listing.Sha) continue;
+                bool text = !string.Equals(Path.GetExtension(mod.Path), Mods.CodeExtension, StringComparison.OrdinalIgnoreCase) && !string.Equals(Path.GetExtension(mod.Path), Mods.SkinExtension, StringComparison.OrdinalIgnoreCase);
+                if (text && listing.Size == bytes.Length + mark.Length)
+                {
+                    byte[] marked = new byte[bytes.Length + mark.Length];
+                    Array.Copy(mark, marked, mark.Length);
+                    Array.Copy(bytes, 0, marked, mark.Length, bytes.Length);
+                    if (BlobSha(marked) == listing.Sha) continue;
+                }
+                found.Add(listing);
+            }
+            found.Sort(Named);
+            return found;
+        }
+
+        // Of the listings Updates found, the ones that are really newer: each is downloaded and checked, and one whose version
+        // isn't above the installed copy's, like someone's own mod that shares a directory mod's id, is dropped. When either
+        // side has no version, a different file counts as newer. Each kept listing holds its download in Fetched.
+        internal static List<ModListing> Newer(List<ModListing> candidates, List<Mod> installed, string under)
+        {
+            List<ModListing> newer = new List<ModListing>();
+            foreach (ModListing listing in candidates)
+            {
+                Mod mine = installed.Find(mod => mod != null && mod.File != null && string.Equals(mod.File.Id, listing.Id, StringComparison.OrdinalIgnoreCase));
+                string file;
+                try { file = Download(listing, under); }
+                catch (Exception error)
+                {
+                    if (!(error is ModException || error is IOException || error is UnauthorizedAccessException || error is WebException)) throw;
+                    // Getting it will try again and say what went wrong.
+                    newer.Add(listing);
+                    continue;
+                }
+                int? order = Compare(Mods.VersionIn(file), mine != null ? mine.File.Version : null);
+                if (order.HasValue && order.Value <= 0)
+                {
+                    Clean(file);
+                    continue;
+                }
+                listing.Fetched = file;
+                newer.Add(listing);
+            }
+            return newer;
+        }
+
+        // Which of two versions like 1.10.2 is higher, by their numbers in order, or null when either has no numbers.
+        internal static int? Compare(string theirs, string mine)
+        {
+            MatchCollection a = Regex.Matches(theirs ?? "", @"\d+"), b = Regex.Matches(mine ?? "", @"\d+");
+            if (a.Count == 0 || b.Count == 0) return null;
+            for (int i = 0; i < Math.Max(a.Count, b.Count); i++)
+            {
+                decimal x = i < a.Count ? decimal.Parse(a[i].Value.Length > 20 ? a[i].Value.Substring(0, 20) : a[i].Value, CultureInfo.InvariantCulture) : 0;
+                decimal y = i < b.Count ? decimal.Parse(b[i].Value.Length > 20 ? b[i].Value.Substring(0, 20) : b[i].Value, CultureInfo.InvariantCulture) : 0;
+                if (x != y) return x > y ? 1 : -1;
+            }
+            return 0;
+        }
+
+        // Deletes the downloads kept for listings that won't be used now.
+        internal static void Forget(List<ModListing> listings)
+        {
+            if (listings == null) return;
+            foreach (ModListing listing in listings)
+                if (listing.Fetched != null)
+                {
+                    Clean(listing.Fetched);
+                    listing.Fetched = null;
+                }
+        }
+
+        // "Galaxy", "Galaxy and Ember", "Galaxy, Ember and 3 more".
+        internal static string Names(List<ModListing> listings)
+        {
+            List<string> titles = listings.ConvertAll(listing => listing.Title);
+            if (titles.Count <= 2) return string.Join(" and ", titles.ToArray());
+            if (titles.Count == 3) return titles[0] + ", " + titles[1] + " and " + titles[2];
+            return titles[0] + ", " + titles[1] + " and " + (titles.Count - 2) + " more";
         }
 
         internal static string Download(ModListing listing, string under)

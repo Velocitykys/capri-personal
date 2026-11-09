@@ -153,8 +153,11 @@ namespace CapriDesktop
             Explain(nickname, "What should she call you?", "Mainframe.cs", FindHintLabel("What should she call you?"), "What should she call you?");
             Explain(layersKey, "Voice layers", "Mainframe.cs", null, "Layers");
             layersKey.StateValue = true;
+            Explain(remoteKey, "Remote", "MainframeRemote.cs", null, "Capri Remote");
             Explain(personalityKey, "Edit personality.md", "Mainframe.cs", null, "Her personality");
             Explain(huskMode, "Code/Husk Mode", "Mainframe.cs", FindHintLabel("Code/Husk Mode"), "Code/Husk Mode");
+            Explain(thinkingLevel, "Thinking", "Mainframe.cs", FindHintLabel("Thinking"), "Thinking");
+            Explain(thinkingExtra, "Extra request JSON", "Mainframe.cs", FindHintLabel("Extra request JSON"), "Extra request JSON");
             Control[] bindings = { talkKeys, muteKeys, typeKeys, hideKeys, pushKeys, gameKeys, confirmKeys, cancelKeys, clearKeys };
             string[] names = { "Talk key", "Mute mic key", "Type key", "Hide / Show key", "Push to talk key", "Gaming Mode key", "Confirm keys", "Cancel keys", "Turn push to talk off" };
             for (int i = 0; i < bindings.Length; i++) Explain(bindings[i], i == 4 ? "Push to talk: not set" : "KEYS >", "Mainframe.cs", null, names[i]);

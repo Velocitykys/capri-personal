@@ -457,6 +457,7 @@ namespace CapriDesktop
         private void AsideSay(string line, Job running, string asked, int toolReply = -1)
         {
             line = CallLine(asking, line);
+            RemoteAside(asked, line);
             if (CallHands(asking)) callSession.Keep(callUserVersion, asked, line, Brain.Recall);
             brain.Remember(asked, line);
             Action<string> test = asideTest;
@@ -850,32 +851,39 @@ namespace CapriDesktop
         private Func<string, string, List<KeyValuePair<string, ToolArguments>>> keepTest;
 
         // Text chat never lets a brain's "I'll do it" stand with no tool behind it, but voice chat only logged it, so "opening Bloons
-        // TD 6 for you" was the end of it (Lachy, 7 Nov). Now her own brain gets a second look with every tool, and a promise to do
-        // something they clearly asked for runs as a job even if that brain has nothing to say.
+        // TD 6 for you" was the end of it (Lachy, 7 Nov). Now every reply with no tool behind it gets her own brain's second look with
+        // every tool, and what it picks runs as it is. Her hands' shortcuts only fill in for a brain without tools of its own, or when
+        // hers couldn't look: then a promise to do something they clearly asked for runs as a job.
         private void KeepPromise(string words, string said, int ticket, Agent told)
         {
             bool promised = Hands.Promised(said);
-            ThreadPool.QueueUserWorkItem(delegate
+            // The wait is a timer's, so no pool thread sleeps through it. Every reply waits here now, and on GitHub's 4-core runner
+            // three of them asleep at once took every free pool thread, so talking couldn't reopen her resting call in time (8 Nov).
+            System.Threading.Timer wait = null;
+            wait = new System.Threading.Timer(delegate
             {
-                Thread.Sleep(KeepWait);
+                wait.Dispose();
                 lock (shortcutGate) if (toolAsked) return;
                 if (ticket != asking) return;
                 if (promised) Brain.Log("https://api.elevenlabs.io/v1/convai/conversation", -1, "Voice chat said she'd do it but no tool ran. Heard: " + words + " | Said: " + said);
                 Hands.Kit kit = Hands.KitFor(brain.Blind);
                 List<KeyValuePair<string, ToolArguments>> calls = new List<KeyValuePair<string, ToolArguments>>();
+                bool looked = false;
                 try
                 {
                     Func<string, string, List<KeyValuePair<string, ToolArguments>>> test = keepTest;
                     if (test != null) calls.AddRange(test(words, said));
-                    else brain.QuickTools(Hands.Keeping, Hands.KeepAsk(words, said), 300, calls, kit);
+                    else brain.QuickTools(Hands.Keeping, Hands.KeepAsk(words, said), 300, calls, kit, true);
+                    looked = true;
                 }
                 catch (Exception error)
                 {
                     calls.Clear();
                     if (!(error is WebException) && !(error is BrainException)) Brain.Log("voice chat promise", -1, error.GetType().Name + ": " + error.Message);
                 }
-                string unable = Hands.Rescue(words, calls, kit) ? kit.Unable("use_computer", null) : null;
-                if (calls.Count == 0 && unable == null && promised && Hands.Wants(words))
+                bool decided = looked && brain.HoldsTools();
+                string unable = !decided && Hands.Rescue(words, calls, kit) ? kit.Unable("use_computer", null) : null;
+                if (!decided && calls.Count == 0 && unable == null && promised && Hands.Wants(words))
                 {
                     if (kit.Has("use_computer")) calls.Add(Hands.Forced(words));
                     else unable = kit.Unable("use_computer", null);
@@ -895,7 +903,8 @@ namespace CapriDesktop
                     else if (Security.IsHold(done)) { if (told != null && told.Ready) told.Say(done); return; }
                     else Finished(told, call.Key, done, ticket);
                 }
-            });
+            }, null, Timeout.Infinite, Timeout.Infinite);
+            wait.Change(KeepWait, Timeout.Infinite);
         }
 
         // ElevenLabs' agent sometimes says a line twice, which reached them word for word (their transcript, 30 Oct). The same

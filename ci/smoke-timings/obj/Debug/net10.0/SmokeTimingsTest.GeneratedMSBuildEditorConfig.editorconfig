@@ -1,0 +1,7 @@
+is_global = true
+build_property.RootNamespace = SmokeTimingsTest
+build_property.ProjectDir = C:\Users\reece\source\capri-personal\ci\smoke-timings\
+build_property.EnableComHosting = 
+build_property.EnableGeneratedComInterfaceComImportInterop = 
+build_property.EffectiveAnalysisLevelStyle = 10.0
+build_property.EnableCodeStyleSeverity = 

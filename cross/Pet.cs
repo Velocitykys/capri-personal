@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -41,6 +42,7 @@ namespace CapriDesktop
         [DataMember] internal string LastVersion;
         [DataMember] internal bool StayOnModel;
         [DataMember] internal int HuskMode;
+        [DataMember] internal bool NoHuskVerbosity;
         [DataMember] internal bool NoMemories;
         [DataMember] internal bool NoCheckIns;
         [DataMember] internal int? PopPace;
@@ -83,6 +85,7 @@ namespace CapriDesktop
         [DataMember] internal string FreeModel;
         [DataMember] internal string PaidModel;
         [DataMember] internal string SpeechModel;
+        [DataMember] internal ThinkingPick[] ThinkingPicks;
     }
 
     // The bits of GitHub's latest release she reads to tell them about an update.
@@ -113,6 +116,9 @@ namespace CapriDesktop
         // How far a cell's middle sits from the middle of her square, as a share of her size. Narrow cells cut to the art need it.
         internal double ShiftX { get { return Old ? 0 : shiftX; } }
         internal double ShiftY { get { return Old ? 0 : shiftY; } }
+
+        // The strip's own name, like "idle" or "perch", the way mods and Windows name it.
+        internal string Title { get { return name.Substring("Capri.Sprite.".Length, name.Length - "Capri.Sprite.".Length - ".png".Length); } }
 
         internal Clip(string name, int count, double fps, double height, double shiftX = 0, double shiftY = 0)
         {
@@ -544,11 +550,14 @@ namespace CapriDesktop
         private double nextCheck;
         private int asking;
         private Smoke smoke;
+        private CancellationTokenSource listening;
+        internal Func<Action, CancellationToken, Task<string>> Listen;
 
         internal Pet(IClassicDesktopStyleApplicationLifetime desktop)
         {
             this.desktop = desktop;
             folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Capri");
+            if (OperatingSystem.IsLinux() && Program.Smoke == null) Listen = new Ears(folder).Listen;
             fresh = Program.Smoke == null && !File.Exists(Path.Combine(folder, "cross.json"));
             Saved = Program.Smoke != null ? new Settings() : Load();
             StartCare();
@@ -556,7 +565,7 @@ namespace CapriDesktop
             // Her mouse and keyboard jobs too, once /dev/uinput lets her make her own (Fingers). The smoke test keeps the five.
             // Keep personal details out of her memories is here as well, since her notes and what she sees are Windows' own code.
             fingers = Program.Smoke == null && Fingers.Problem == null;
-            Security.Has = delegate(int toggle) { return toggle <= Security.Power || (toggle == Security.Mouse && fingers) || toggle == Security.Personal; };
+            Security.Has = delegate(int toggle) { return toggle <= Security.Power || (toggle == Security.Mouse && fingers) || toggle == Security.Personal || toggle == Security.ModTools; };
             Hands.OwnHands = fingers;
             Security.Load(Saved.Permissions);
             Security.Changed = delegate { Saved.Permissions = Security.Saved; Save(); if (ContextMenu != null) Sync(); };
@@ -586,6 +595,8 @@ namespace CapriDesktop
             Brain.Recall = Saved.Recall == 16 || Saved.Recall == 32 ? Saved.Recall : 8;
             Brain.MemorySize = Array.IndexOf(Brain.MemorySizes, Saved.MemorySize) >= 0 ? Saved.MemorySize : 0;
             Brain.ReplyLength = Math.Clamp(Saved.ReplyLength, 0, Brain.ReplySizes.Length - 1);
+            Brain.Picks = Saved.ThinkingPicks;
+            Brain.ThinkingChanged = NotifySettings;
             Saved.Wander = Math.Max(0, Math.Min(4, Saved.Wander));
             Sfx.Level = Math.Max(0, Math.Min(100, Saved.Sounds ?? 60));
             Voice.Loudness = Math.Max(0, Math.Min(150, Saved.Volume ?? 100));
@@ -695,7 +706,7 @@ namespace CapriDesktop
             frames.Interval = TimeSpan.FromMilliseconds(33);
             frames.Tick += delegate { Program.Guard(Tick); };
             // Closing her while held must not leave the frame timer moving a closed window.
-            Closed += delegate { pressed = dragging = dragPending = false; frames.Stop(); };
+            Closed += delegate { StopListening(); pressed = dragging = dragPending = false; frames.Stop(); };
             Deactivated += delegate { Program.Guard(Unhold); };
             Opened += delegate
             {
@@ -1715,6 +1726,7 @@ namespace CapriDesktop
             else Play(grin);
             int ticket = ++petTicket;
             petWaits = 0;
+            ModsPatted();
             DispatcherTimer.RunOnce(() => PetLine(ticket), TimeSpan.FromMilliseconds(1300));
         }
 
@@ -1815,6 +1827,7 @@ namespace CapriDesktop
 
         internal void React()
         {
+            ModsClicked();
             napAsked = false;
             if (hanging) { LetGo(); return; }
             // A click wakes her the gentle way, from a nap they asked for or her own doze.
@@ -1829,9 +1842,45 @@ namespace CapriDesktop
             React();
         }
 
-        internal void NoVoice()
+        internal bool Listening { get { return listening != null; } }
+
+        internal bool StopListening()
         {
-            Talk.Answer("(voice)", "Voice chat isn't on Mac and Linux yet. Type to me for now, choom.");
+            CancellationTokenSource turn = listening;
+            if (turn == null) return false;
+            listening = null;
+            turn.Cancel();
+            return true;
+        }
+
+        internal async void VoiceTurn()
+        {
+            if (away || quitting) return;
+            if (StopListening()) { Talk.Dismiss(); return; }
+            if (Listen == null) { Talk.Answer("(voice)", "Voice chat isn't on this build yet. Type to me for now, choom."); return; }
+            Func<Action, CancellationToken, Task<string>> listen = Listen;
+            Typed();
+            ++asking;
+            Brain.Cancel();
+            voice.Stop();
+            Talk.Dismiss();
+            using var turn = new CancellationTokenSource();
+            listening = turn;
+            Talk.Thinking("(listening · TALK to cancel)");
+            string text = null, problem = null;
+            try
+            {
+                text = await Task.Run(() => listen(() => Dispatcher.UIThread.Post(delegate
+                {
+                    if (listening == turn) Talk.Thinking("(hearing your words · TALK to cancel)");
+                }), turn.Token));
+            }
+            catch (IOException error) { problem = error.Message; }
+            catch (Exception) { problem = "My offline ears stopped. Try TALK again."; }
+            if (listening != turn) return;
+            listening = null;
+            if (!string.IsNullOrWhiteSpace(text)) Hear(text);
+            else Talk.Answer("(voice)", problem ?? "I didn't catch that, choom. Try TALK again.");
         }
 
         internal void Grab()
@@ -3465,13 +3514,13 @@ namespace CapriDesktop
                     pulled = -1;
                     if (MainframeTier == 0) frameProblem = problem;
                     NotifySettings();
-                    if (problem != null) { Talk.Answer(BrainHeard, problem); return; }
+                    if (problem != null) { Talk.Notice(BrainHeard, problem); return; }
                     Saved.Model = tag;
                     string currentServer, currentKey;
                     Brain.GetServer(out currentServer, out currentKey);
                     if (MainframeTier == 0 && Brain.Remote == null && currentServer == null) Brain.Model = tag;
                     Save();
-                    Talk.Answer(BrainHeard, "My brain's in. Talk to me, choom.");
+                    Talk.Notice(BrainHeard, "My brain's in. Talk to me, choom.");
                 });
             });
         }
@@ -4156,9 +4205,21 @@ namespace CapriDesktop
         {
             text = (text ?? "").Trim();
             if (text.Length == 0) return;
+            StopListening();
+            if (!meeting.Asking)
+            {
+                // A code mod can change or take what they said first, like on Windows.
+                string sent = ModsSending(text);
+                if (sent == null) return;
+                bool fromMod = modSendDepth > 0 || sent != text;
+                text = sent;
+                if (fromMod) Security.ModSaid(text); else Security.TheySaid();
+            }
             ModList.LogHearing(text, true);
             Typed();
             if (meeting.Asking) { Met(text); return; }
+            lastHeard = text;
+            if (ModList.Heard(text)) return;
             int ticket = ++asking;
             Brain.Cancel();
             voice.Stop();
@@ -4281,7 +4342,13 @@ namespace CapriDesktop
         {
             int input = inputTurn, answer = answerTurn;
             followUp.Drop();
-            if (!Speaks || Voice.Spoken(said).Length == 0) { if (ShowReply(ticket, heard, said, 0, after, following, input, answer)) TypeAlong(said, ticket); return; }
+            // Her answers to them are a reply to mods; her own lines, like a check-in or a mod's, are a remark.
+            string source = string.IsNullOrEmpty(heard) || heard.StartsWith("(", StringComparison.Ordinal) || heard == "startup" || heard == "pets you" ? "remark" : "reply";
+            said = ModsReplying(said, source);
+            lastReply = said;
+            ModsReplied(said, source);
+            string spoken = Speaks ? ModsSpeaking(said) : said;
+            if (!Speaks || Voice.Spoken(spoken).Length == 0) { if (ShowReply(ticket, heard, said, 0, after, following, input, answer)) TypeAlong(said, ticket); return; }
             ISpeaker speaker = Speaker;
             if (!following) Talk.Thinking(heard);
             answer = answerTurn;
@@ -4297,7 +4364,7 @@ namespace CapriDesktop
                 byte[] wav = null;
                 string problem = null;
                 // Every provider hands back a finished WAV, so her pitch, speed, robot and glitch go on here, like on Windows.
-                try { wav = VoiceFx.Styled(speaker.Speak(said), said); }
+                try { wav = VoiceFx.Styled(speaker.Speak(spoken), spoken); }
                 catch (VoiceException error) { problem = Mac(error.Message); }
                 catch (Exception error) { problem = Voice.Short("Voice glitched: " + error.Message); }
                 Dispatcher.UIThread.Post(delegate
@@ -4308,7 +4375,7 @@ namespace CapriDesktop
                     double seconds = wav == null ? 0 : Voice.Seconds(wav);
                     PresentReply(ticket, heard, said, seconds, after, following, input, answer, delegate
                     {
-                        if (seconds >= 0.2) voice.Play(wav);
+                        if (seconds >= 0.2) { voice.Play(wav); ModsSpoke(spoken); }
                         else TypeAlong(said, ticket);
                     });
                 });
@@ -4818,6 +4885,7 @@ namespace CapriDesktop
         internal sealed class NewSettings
         {
             [DataMember] internal int HuskMode;
+            [DataMember] internal bool NoHuskVerbosity;
             [DataMember] internal string VoiceProvider;
             [DataMember] internal string LocalVoiceUrl;
             [DataMember] internal string LocalVoiceModel;
@@ -4842,6 +4910,7 @@ namespace CapriDesktop
             [DataMember] internal bool NoFollowUps;
             [DataMember] internal bool NoKeepAwake;
             [DataMember] internal string Vault;
+            [DataMember] internal ThinkingPick[] ThinkingPicks;
         }
 
         // Every copy from 0.7.8 on saves a provider, so a cross.json without one was last saved by an older copy.
@@ -4873,6 +4942,8 @@ namespace CapriDesktop
             saved.NoKeepAwake = newer.NoKeepAwake;
             saved.Vault = newer.Vault;
             saved.HuskMode = newer.HuskMode;
+            saved.ThinkingPicks = newer.ThinkingPicks;
+            saved.NoHuskVerbosity = newer.NoHuskVerbosity;
             return saved;
         }
 
@@ -4880,7 +4951,7 @@ namespace CapriDesktop
         {
             return new NewSettings { VoiceProvider = saved.VoiceProvider, LocalVoiceUrl = saved.LocalVoiceUrl, LocalVoiceModel = saved.LocalVoiceModel, LocalVoiceName = saved.LocalVoiceName, LocalVoiceFormat = saved.LocalVoiceFormat, BrainServer = saved.BrainServer, ServerModel = saved.ServerModel,
                 MainframeSize = saved.MainframeSize, MainframeColours = saved.MainframeColours, AdvancedSettings = saved.AdvancedSettings, MemorySize = saved.MemorySize, ReplyLength = saved.ReplyLength, BrainTier = saved.BrainTier, FreeModel = saved.FreeModel, PaidModel = saved.PaidModel, SpeechModel = saved.SpeechModel,
-                CareSwitches = saved.CareSwitches, CareTimes = saved.CareTimes, CareNight = saved.CareNight, NoHeadPats = saved.NoHeadPats, LegacyStand = saved.LegacyStand, NoFollowUps = saved.NoFollowUps, NoKeepAwake = saved.NoKeepAwake, Vault = saved.Vault, HuskMode = saved.HuskMode };
+                CareSwitches = saved.CareSwitches, CareTimes = saved.CareTimes, CareNight = saved.CareNight, NoHeadPats = saved.NoHeadPats, LegacyStand = saved.LegacyStand, NoFollowUps = saved.NoFollowUps, NoKeepAwake = saved.NoKeepAwake, Vault = saved.Vault, NoHuskVerbosity = saved.NoHuskVerbosity, HuskMode = saved.HuskMode, ThinkingPicks = saved.ThinkingPicks };
         }
 
         private Settings Load()
@@ -4976,6 +5047,7 @@ namespace CapriDesktop
             {
                 if (husk != null) husk.Dispose();
                 StopAwake();
+                ModList.StopCode();
                 CloseMainframe();
                 Brain.Cancel();
                 voice.Stop();
@@ -5012,13 +5084,13 @@ namespace CapriDesktop
         private readonly Queue<HuskAct> huskLines = new Queue<HuskAct>();
         private string huskMood;
         private double huskMoodAt = -10;
-        internal static readonly string[] HuskNames = { "Off", "Claude Code", "Codex", "Both" };
-        internal const string HuskHelp = "Code/Husk Mode works on Windows, Mac and Linux. Mainframe > Settings > Advanced Settings > BRAIN > Code/Husk Mode picks Off, Claude Code, Codex or Both. It installs only Capri's hooks and backs up settings first. Restart Claude Code or Codex after picking a mode, and trust her hooks in Codex when it asks. She watches prompts, tools, failures, approvals, completion, subagents and compacting. Tool captions are silent and at least four seconds apart. Approvals get her attention and voice when it is on; answer in the coding app. On Mac and Linux she shows a short completion answer and a subagent count in her bubble. With a cloud brain, observed actions go to that brain when you ask about them, with keys and tokens removed first. Off stops the listener and removes only her hooks. She never approves or controls the coding assistant. Use these facts only when asked about Code/Husk Mode.";
+        internal const string HuskHelp = "Code/Husk Mode works on Windows, Mac and Linux. Mainframe > Settings > Advanced Settings > BRAIN > Code/Husk Mode picks Off, Claude Code, Codex, OpenCode or All. Both, picked before OpenCode was added, stays Claude Code + Codex until another choice. It installs only Capri's hooks, or for OpenCode her own plugin file, and backs up settings first. Restart the coding app after picking a mode, and trust her hooks in Codex when it asks. She watches prompts, tools, failures, approvals, completion, subagents and compacting. Tool captions are silent and at least four seconds apart. Approvals get her attention and voice when it is on; answer in the coding app. On Mac and Linux she shows a short completion answer and a subagent count in her bubble. With a cloud brain, observed actions go to that brain when you ask about them, with keys and tokens removed first. Off stops the listener and removes only her hooks. She never approves or controls the coding assistant. Use these facts only when asked about Code/Husk Mode.";
         internal Action<Action> HuskQueue = delegate(Action action) { ThreadPool.QueueUserWorkItem(delegate { action(); }); };
         internal Func<string> HuskExe = HuskHooks.Executable;
         internal Action<string, bool> HuskSaid;
         internal int HuskMode { get { return huskChanging ? Saved.HuskMode : husk == null ? 0 : husk.Mode; } }
         internal bool HuskChanging { get { return huskChanging; } }
+        internal void SetHuskVerbosity(bool on) { Saved.NoHuskVerbosity = !on; Save(); }
         internal HuskWatch Husk { get { return husk; } }
         internal string HuskMood { get { return huskMood; } }
         internal int HuskAgents { get { return huskAgents.Count; } }
@@ -5028,11 +5100,12 @@ namespace CapriDesktop
             // Her listener file goes with her even when she closes without Quit: at logout, shutdown or a kill signal.
             AppDomain.CurrentDomain.ProcessExit += (_, _) => { HuskWatch closing = husk; if (closing != null) closing.Dispose(); };
             desktop.Exit += (_, _) => { HuskWatch closing = husk; if (closing != null) closing.Dispose(); };
-            Saved.HuskMode = Math.Max(0, Math.Min(3, Saved.HuskMode));
+            Saved.HuskMode = HuskWatch.Allowed(Saved.HuskMode);
             husk = new HuskWatch(Program.Smoke ?? folder);
             HuskHooks.BackupFolder = Program.Smoke ?? folder;
             husk.Clock = delegate { return Now; };
             husk.Language = delegate { return Brain.Language; };
+            husk.Verbose = delegate { return !Saved.NoHuskVerbosity; };
             husk.Dispatch = delegate(Action action) { Dispatcher.UIThread.Post(action); };
             husk.Show = delegate(HuskAct act)
             {
@@ -5064,7 +5137,7 @@ namespace CapriDesktop
         private void SetHusk(int mode, bool starting)
         {
             if (quitting || huskChanging || husk == null) return;
-            mode = Math.Max(0, Math.Min(3, mode));
+            mode = HuskWatch.Allowed(mode);
             if (mode == 0) { husk.Stop(); huskAgents.Clear(); huskLines.Clear(); }
             Saved.HuskMode = mode;
             Save();
@@ -5083,13 +5156,10 @@ namespace CapriDesktop
                     if (quitting) return;
                     Saved.HuskMode = husk.Mode;
                     Save();
-                    string note = mode == 0 ? "Code/Husk Mode off. My hooks are removed."
-                        : mode == 1 ? "Restart Claude Code to use my hooks."
-                        : mode == 2 ? "Restart Codex and trust my hooks when it asks."
-                        : "Restart Claude Code and Codex. Trust my hooks in Codex when it asks.";
+                    string note = HuskWatch.Note(mode);
                     if (unlinked != null) note += " " + unlinked;
                     // A link she had to replace is said even at startup.
-                    if (problem != null || !starting || unlinked != null || rewrote) Talk.Answer("(code/husk mode)", problem ?? note);
+                    if (problem != null || !starting || unlinked != null || rewrote) Talk.Notice("(code/husk mode)", problem ?? note);
                 };
                 if (Dispatcher.UIThread.CheckAccess()) finish(); else Dispatcher.UIThread.Post(finish);
             });
@@ -5101,7 +5171,7 @@ namespace CapriDesktop
             if (act.Kind == "agentstop") huskAgents.Remove(act.Key);
             if (husk == null || husk.Mode == 0 || !husk.Current(act)) return;
             if (act.Kind == "agentstart") huskAgents.Add(act.Key);
-            if (act.Kind == "agentstart" || act.Kind == "agentstop") act.Line = "Subagents: " + huskAgents.Count;
+            if (act.Kind == "agentstart" || act.Kind == "agentstop") act.Line = Saved.NoHuskVerbosity ? null : "Subagents: " + huskAgents.Count;
             bool attention = act.Kind == "approval" || act.Kind == "input";
             if (act.Kind == "prompt" || attention)
             {

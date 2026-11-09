@@ -250,10 +250,10 @@ namespace CapriDesktop
                 authors[i].Text = mod.Author.Length > 0 ? "by " + mod.Author : "";
                 details[i].Text = mod.About;
                 ToolTip.SetTip(previews[i], new TextBlock { Text = mod.Title + (mod.Author.Length > 0 ? "\nby " + mod.Author : "") + (mod.About.Length > 0 ? "\n" + mod.About : ""), MaxWidth = 328, TextWrapping = TextWrapping.Wrap, FontFamily = MainframeTheme.Text, FontSize = MainframeTheme.Size, Foreground = MainframeTheme.White });
-                metas[i].Text = mod.KindIndex == 2 ? Mods.WindowsOnly : mod.Kind + (installed ? " Installed." : "");
+                metas[i].Text = mod.Kind + (installed ? " Installed." : "");
                 numbers[i].Text = statsLive ? ModDirectory.DownloadLine(mod) + "  |  " + ModDirectory.RatingLine(mod) : loading ? "Loading counts and ratings..." : "Counts and ratings unavailable.";
                 downloads[i].Text = installed ? "Reinstall" : "Download";
-                downloads[i].IsEnabled = !working && mod.KindIndex != 2;
+                downloads[i].IsEnabled = !working;
                 ratings[i].IsEnabled = !working && statsLive && installed;
                 ratings[i].Text = "Rate this mod";
                 Bitmap picture = null;
@@ -308,7 +308,7 @@ namespace CapriDesktop
                 names[i].IsVisible = abouts[i].IsVisible = switches[i].IsVisible = removes[i].IsVisible = mod != null;
                 if (mod == null) continue;
                 names[i].Text = mod.File.Name;
-                abouts[i].Text = (mod.File.Author == null ? "" : "by " + mod.File.Author + "  ") + (mod.File.Description ?? (mod.Skin ? "Skin" : mod.Skill ? "Skill" : "Settings"));
+                abouts[i].Text = (mod.File.Author == null ? "" : "by " + mod.File.Author + "  ") + (mod.File.Description ?? (mod.Skin ? (mod.File.Accessory ? "Accessory" : "Skin") : mod.Skill ? "Skill" : "Settings"));
                 switches[i].Text = mod.On ? "On" : "Off"; switches[i].Picked = mod.On;
                 switches[i].IsEnabled = !working; removes[i].IsEnabled = !working;
                 names[i].InvalidateVisual(); abouts[i].InvalidateVisual(); switches[i].InvalidateVisual();
@@ -318,11 +318,51 @@ namespace CapriDesktop
             installedBack.IsEnabled = installedFirst > 0; installedNext.IsEnabled = installedFirst + Rows < all.Count;
         }
 
+        // Before a code mod runs for the first time, or after it changed, they read what it is and say yes. The smoke test answers
+        // through ModAsk instead.
+        internal Func<ModFile, string, bool> ModAsk;
+
+        private bool Ask(ModFile mod, string hash)
+        {
+            Func<ModFile, string, bool> ask = ModAsk;
+            return ask != null ? ask(mod, hash) : AskToRun(mod, hash);
+        }
+
+        // Her approve box, the same words as on Windows, waited on here so the mod list stays as it was until they answer.
+        private bool AskToRun(ModFile mod, string hash)
+        {
+            bool yes = false;
+            Window box = new Window
+            {
+                Title = "Run this code mod?", Width = 520, SizeToContent = SizeToContent.Height, CanResize = false, ShowInTaskbar = false,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner, Background = MainframeTheme.Ground
+            };
+            NeonButton run = new NeonButton { Text = "Run it", Width = 120, Height = 28, Accent = MainframeTheme.Rose };
+            NeonButton no = new NeonButton { Text = "Don't run", Width = 120, Height = 28, Accent = MainframeTheme.Cyan, IsDefault = true, IsCancel = true };
+            run.Click += delegate { yes = true; box.Close(); };
+            no.Click += delegate { box.Close(); };
+            StackPanel buttons = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 12, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Margin = new Thickness(16, 0, 16, 16) };
+            buttons.Children.Add(no);
+            buttons.Children.Add(run);
+            StackPanel all = new StackPanel();
+            all.Children.Add(new TextBlock { Text = Mods.Consent(mod, hash), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16), Foreground = MainframeTheme.White, FontFamily = MainframeTheme.Text, FontSize = MainframeTheme.Size });
+            all.Children.Add(buttons);
+            box.Content = all;
+            using (CancellationTokenSource done = new CancellationTokenSource())
+            {
+                box.Closed += delegate { done.Cancel(); };
+                box.ShowDialog(this);
+                no.Focus();
+                Dispatcher.UIThread.MainLoop(done.Token);
+            }
+            return yes;
+        }
+
         internal bool ImportMod(string file)
         {
             try
             {
-                Mod mod = pet.ModList.Import(file, null);
+                Mod mod = pet.ModList.Import(file, Ask);
                 // A file removed during import can be missing from the reloaded mod list.
                 if (mod == null) throw new ModException("Couldn't load that mod. Check the mods folder.");
                 Say(mod.File.Name + " is on."); Sync(); return true;
@@ -339,7 +379,7 @@ namespace CapriDesktop
             try
             {
                 Mod mod = pet.ModList.All[installedFirst + row];
-                pet.ModList.Set(mod, !mod.On, null);
+                pet.ModList.Set(mod, !mod.On, Ask);
                 Say(mod.File.Name + (mod.On ? " is on." : " is off."));
             }
             catch (Exception error) { Say(error.Message); }
@@ -376,7 +416,6 @@ namespace CapriDesktop
         {
             if (closed || working || first + card >= shown.Count) return;
             ModListing mod = shown[first + card];
-            if (mod.KindIndex == 2) { Say(Mods.WindowsOnly); return; }
             working = true; Say("Downloading " + mod.Title + "..."); Sync();
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -475,7 +514,7 @@ namespace CapriDesktop
             ShowInTaskbar = false;
             Put(Page, new NeonCaption { Text = title, Size = 20, Bold = true, Display = true }, 24, 15, 288, 29);
             var close = Button("", (int)wide - 50, 20, 26, 22, Close); close.Glyph = 2;
-            double height = kind == "server" ? Server() : kind == "layers" ? Layers() : kind == "vault" ? Vault() : SecurityRows();
+            double height = kind == "server" ? Server() : kind == "layers" ? Layers() : kind == "vault" ? Vault() : kind == "thinking" ? ThinkingExtra() : SecurityRows();
             Opened += (_, _) => { Fit(wide, height, Pet.FrameSize(pet.Saved.MainframeSize) == 0 ? 1 : pet.Saved.MainframeSize / 100.0); Sync(); status.Start(); };
             pet.SettingsChanged += Sync;
             status.Tick += (_, _) => Program.Guard(Sync);
@@ -527,6 +566,31 @@ namespace CapriDesktop
             Button("Cancel", 278, 224, 78, 28, Close);
             foreach (var entry in new[] { address, model, voice }) entry.Box.KeyDown += (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; Program.Guard(() => save()); } };
             return 300;
+        }
+        // Extra request JSON for the brain she's on, merged into each request it sends.
+        private double ThinkingExtra()
+        {
+            Caption("One JSON object, added to every request this brain sends.", 28, 52, 328, 18, MainframeTheme.Faint, 34.0 / 3);
+            Caption("It replaces Capri's value for any name it shares.", 28, 72, 328, 18, MainframeTheme.Faint, 34.0 / 3);
+            var entry = Put(Page, new NeonEntry(""), 28, 100, 328, 160, "Extra request JSON"); Rows["Extra request JSON"] = entry;
+            entry.Box.AcceptsReturn = true; entry.Box.TextWrapping = TextWrapping.Wrap;
+            var note = Put(Page, new NeonCaption { Ink = MainframeTheme.Faint, Ellipsis = true }, 28, 304, 328, 20); Rows["Note"] = note;
+            string source = null;
+            readers.Add(() =>
+            {
+                if (source == pet.Brain.ThinkingSource) return;
+                source = pet.Brain.ThinkingSource;
+                entry.Box.Text = pet.Brain.ThinkingExtra ?? "";
+                note.Text = "For " + source.Substring(source.IndexOf('|') + 1) + "."; note.InvalidateVisual();
+            });
+            Action<string> save = typed =>
+            {
+                note.Text = pet.SetThinkingExtra(typed) ?? (string.IsNullOrWhiteSpace(typed) ? "Cleared." : "Saved.");
+                note.InvalidateVisual();
+            };
+            Button("Save", 28, 268, 160, 28, () => save(entry.Box.Text ?? "")).Accent = MainframeTheme.Cyan;
+            Button("Clear", 196, 268, 160, 28, () => { entry.Box.Text = ""; save(""); });
+            return 340;
         }
         private NeonSwitch Toggle(string name, int y, Func<bool> read, Action<bool> change)
         {

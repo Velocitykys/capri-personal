@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -15,23 +15,38 @@ namespace CapriDesktop
     internal static class News
     {
 #if CROSS
-        internal const string Version = "0.8.6";
+        internal const string Version = "0.8.7";
         internal const string Facts = "Capri " + Version + " on Mac and Linux.\n"
-            + "Her new stand: she stands in her artist's new animation, facing left or right. If it broke your mod, turn on Legacy stand under CAPRI in her Mainframe and her old stand comes back straight away.\n"
-            + "Skins with their own idle keep it, and colour mods work on both stands.";
-        internal const string Line = "I just updated to " + Version + ": I've got a new stand, and Legacy stand brings back my old one if it broke your mod. Ask me what's new for the menu paths.";
+            + "Her tools: she runs the tools her brain picks without swapping them for something else. Phrase checks help when her brain can't use tools. With an Ollama model that can use tools, she works jobs out with all of them and keeps plain chat quick.\n"
+            + "Thinking: Mainframe > Settings > Advanced Settings > BRAIN > Thinking has Default, Off, Low, Medium or High for a cloud brain where the model supports them, saved per model; Extra request JSON is beside it.\n"
+            + "Husk Mode: Mainframe > Settings > Advanced Settings > BRAIN > Code/Husk Mode adds OpenCode. Turn Verbosity off there to keep her to the big moments.\n"
+            + "Code mods: they run on Mac and Linux too. A code mod lists the permissions it asks for, and one that needs a part Mac and Linux don't have yet is refused with a message naming it.\n"
+            + "Stacking skins: turn several skins on in Mainframe > Mods and each one goes on top, so a skin with just cat ears or a hat sits over the outfit under it.\n"
+            + "Linux TALK: hover over her and press TALK to talk to her once her offline ears are set up.";
+        internal const string Line = "I just updated to " + Version + ": my tools follow my brain's choices now, and code mods run here too. Ask me what's new for the menu paths.";
 #else
-        internal const string Version = "0.8.6.1";
+        internal const string Version = "0.8.7";
         internal const string Facts = "Capri " + Version + " on Windows.\n"
-            + "See-through file editor: her words, tabs and buttons sit in red straight on dark glass, with no box behind them, and whatever is behind the panel shows through it blurred, like Cyberpunk 2077's Arasaka ID panel.\n"
-            + "Play a game: say play and its name, like play Bloons TD 6, by voice or text. She opens it if it isn't open, picks a mode or map herself and keeps playing until you tell her to stop or press Esc. Give her an end, like one round or 10 minutes, and she stops there.\n"
-            + "Her new stand: she stands in her artist's new animation. If it broke your mod, Mainframe > Settings > CAPRI > Legacy stand brings back her old one straight away.\n"
-            + "File editor: Mainframe > Settings > YOU > File editor, or File editor in her right-click menu, opens personality.md and me.md in her own panel. Change the text, then press Save or Ctrl + S.\n"
-            + "Listen for Capri: once you've said her name she keeps listening for 20 seconds, so you can carry on without saying it again.\n"
-            + "Her clicks: when she uses your mouse, a new click effect plays at her pointer's tip, in her colour mods' colours.\n"
-            + "Call panel: its hover tips show on one line again.\n"
-            + "From 0.8.5.1: her own ears download again, from Capri's own copy. For a language other than English, pick it under Mainframe > Settings > YOU > Language and she downloads the ears that hear it.";
-        internal const string Line = "I just updated to " + Version + ": my file editor is see-through dark glass now, and tell me to play a game and I'll keep playing till you stop me. Ask me what's new for the menu paths.";
+            + "Capri Remote: Mainframe > CAPRI > Remote, turn it on, press Pair a phone and scan the QR code with your phone. Check the codes match, then press Allow on your PC. Text her, call her, watch your PC's screen and follow JOBS at capriai.app/remote. With no PC, use her on your phone with your own key. Windows only; off until you turn it on.\n"
+            + "Her tools: she runs the tools her brain picks without swapping them for something else. Phrase checks help when her brain can't use tools.\n"
+            + "Local jobs: an Ollama model that can use tools now works jobs out with all her tools; plain chat still gets a quick answer.\n"
+            + "Voice chat: every reply with no tool behind it gets a second look from her brain, so she can act when she said she would.\n"
+            + "Thinking: Mainframe > Settings > Advanced Settings > BRAIN > Thinking has Default, Off, Low, Medium or High for a cloud brain where the model supports them, saved per model; Extra request JSON is beside it.\n"
+            + "Husk Mode: Mainframe > Settings > Advanced Settings > BRAIN > Code/Husk Mode adds OpenCode. Turn Verbosity off there to keep her to the big moments.\n"
+            + "Mods directory: Mainframe > Mods > Browse mods sorts by Downloads or Top rated and now says every mod is checked for malware before it goes up.\n"
+            + "Installed mods: Mainframe > Mods lets you search by name or author. Press Update mods to find newer copies, then press it again to get them.\n"
+            + "Mod messages: on Mainframe > Mods, messages fade after five seconds and problems after ten.\n"
+            + "Skin mods: skins can carry both stands, so Mainframe > Settings > CAPRI > Legacy stand can use the skin's old stand too.\n"
+            + "Stacking skins: turn several skins on in Mainframe > Mods and each one goes on top, so a skin with just cat ears or a hat sits over the outfit under it.\n"
+            + "Code mods: a code mod can give her tools she uses by herself, see and change chat, add its own options and more, listing each permission it asks for. Mainframe > Settings > HABITS > Security > HER MODS > Use tools your code mods added says whether she asks first.\n"
+            + "Start with Windows: Mainframe > Settings > HABITS > Start with Windows stays off on a new install until you turn it on. If you already have it on, it stays on.\n"
+            + "File editor: Mainframe > Settings > YOU > File editor opens and closes more smoothly.\n"
+            + "Game keys: when she plays a game, she clicks inside it once after it loads or comes back to the front, so her movement keys reach it.\n"
+            + "Game reminders: with Mainframe > Settings > HABITS > Hide in full screen on, she comes out to show a due reminder, then hides again.\n"
+            + "Windows 10 ears: she starts unpacking her offline ears herself, without waiting for Windows' tar to try first.\n"
+            + "Finding her brain: while she can't see a brain, she looks again every 15 seconds, so she finds Ollama after it starts without you pressing Refresh in Mainframe > BRAIN.\n"
+            + "From 0.8.6.1: her file editor is see-through dark glass.";
+        internal const string Line = "I just updated to " + Version + ": you can text me from your phone with Capri Remote now. Ask me what's new for the menu paths.";
 #endif
         internal static string Prompt { get { return "(You just updated to Capri " + Version + ". Tell the user what is new in one or two short lines, in your own voice and the language they use with you. Use only these facts. Do not invent features or name people. Facts: " + Facts + ")"; } }
 
@@ -126,14 +141,23 @@ namespace CapriDesktop
         [DataMember(Name = "name")] public string Name;
     }
 
+    // A request her Extra request JSON can add to, once it's written out.
     [DataContract]
-    internal sealed class CompletionRequest
+    internal abstract class CloudRequest
+    {
+        internal string Extra;
+    }
+
+    [DataContract]
+    internal sealed class CompletionRequest : CloudRequest
     {
         [DataMember(Name = "model")] public string Model = "capri";
         [DataMember(Name = "messages")] public ChatMessage[] Messages;
         [DataMember(Name = "max_tokens")] public int Limit = 90;
         [DataMember(Name = "temperature")] public double Temperature = 0.85;
         [DataMember(Name = "stream")] public bool Stream;
+        [DataMember(Name = "reasoning_effort", EmitDefaultValue = false)] public string Effort;
+        [DataMember(Name = "thinking", EmitDefaultValue = false)] public CloudThinking Thinking;
     }
 
     [DataContract]
@@ -191,13 +215,14 @@ namespace CapriDesktop
     }
 
     [DataContract]
-    internal sealed class OpenAiRequest
+    internal sealed class OpenAiRequest : CloudRequest
     {
         [DataMember(Name = "model")] public string Model;
         [DataMember(Name = "messages")] public ChatMessage[] Messages;
         [DataMember(Name = "max_completion_tokens", EmitDefaultValue = false)] public int? Limit;
         [DataMember(Name = "max_tokens", EmitDefaultValue = false)] public int? Tokens;
         [DataMember(Name = "reasoning_effort", EmitDefaultValue = false)] public string Effort;
+        [DataMember(Name = "reasoning", EmitDefaultValue = false)] public CloudReasoning Reasoning;
         [DataMember(Name = "thinking", EmitDefaultValue = false)] public CloudThinking Thinking;
         [DataMember(Name = "chat_template_kwargs", EmitDefaultValue = false)] public CloudTemplate Template;
         [DataMember(Name = "stream", EmitDefaultValue = false)] public bool Stream;
@@ -207,6 +232,13 @@ namespace CapriDesktop
     internal sealed class CloudTemplate
     {
         [DataMember(Name = "enable_thinking")] public bool Think = false;
+        [DataMember(Name = "reasoning_budget", EmitDefaultValue = false)] public int? Budget;
+    }
+
+    [DataContract]
+    internal sealed class CloudReasoning
+    {
+        [DataMember(Name = "effort")] public string Effort;
     }
 
     [DataContract]
@@ -216,7 +248,7 @@ namespace CapriDesktop
     }
 
     [DataContract]
-    internal sealed class ClaudeRequest
+    internal sealed class ClaudeRequest : CloudRequest
     {
         [DataMember(Name = "model")] public string Model;
         [DataMember(Name = "max_tokens")] public int Limit = 16000;
@@ -309,6 +341,28 @@ namespace CapriDesktop
         [DataMember(Name = "created_at")] public string CreatedAt;
         [DataMember(Name = "architecture")] public CloudArchitecture Architecture;
         [DataMember(Name = "supported_parameters")] public string[] Parameters;
+        internal bool ReasoningRead;
+        internal CloudModelReasoning Reasoning;
+    }
+
+    [DataContract]
+    internal sealed class RouterModelPage
+    {
+        [DataMember(Name = "data")] public RouterModel[] Models;
+    }
+
+    [DataContract]
+    internal sealed class RouterModel
+    {
+        [DataMember(Name = "id")] public string Id;
+        [DataMember(Name = "reasoning")] public CloudModelReasoning Reasoning;
+    }
+
+    [DataContract]
+    internal sealed class CloudModelReasoning
+    {
+        [DataMember(Name = "mandatory")] public bool Mandatory;
+        [DataMember(Name = "supported_efforts")] public string[] Efforts;
     }
 
     [DataContract]
@@ -397,6 +451,176 @@ namespace CapriDesktop
         {
             // Short enough for the BRAIN note; her Help page says how to install each.
             return "Install " + App(kind) + " and sign in to it first.";
+        }
+    }
+
+    // One model's Thinking pick and Extra request JSON. Source is its provider and model, like "openai|gpt-5.6".
+    [DataContract]
+    internal sealed class ThinkingPick
+    {
+        [DataMember] public string Source;
+        [DataMember] public int Level;
+        [DataMember] public string Extra;
+    }
+
+    // What each provider and model takes for Thinking, from their docs on 8 Nov 2026 (#197).
+    internal static class ThinkingLevels
+    {
+        internal const int Default = 0, Off = 1, Low = 2, Medium = 3, High = 4;
+        internal static readonly string[] Names = { "Default", "Off", "Low", "Medium", "High" };
+        private static readonly string[] Efforts = { null, "none", "low", "medium", "high" };
+        private static readonly int[] OmniBudgets = { 0, 0, 1024, 4096, 16384 };
+        private static readonly string[] Reserved = { "model", "messages", "system", "tools", "stream" };
+        private const string AlwaysThinks = "always thinks", NoLevels = "no thinking levels", OffAlready = "off by default", LowOrHigh = "Low or High only", OnOrOff = "on or off only", MediumOrHigh = "Medium or High only", NotKnown = "use Extra JSON", Declined = "turned down by this model";
+        private const string Super = "nvidia/nemotron-3.5-super-vl-120b-a12b", Bolt = "nvidia/nemotron-3.5-bolt-e4b", Omni = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning";
+        // A level a model turned down this session.
+        private static readonly HashSet<string> declined = new HashSet<string>();
+
+        internal static bool TakesEffort(string model) { return Regex.IsMatch(model ?? "", @"^claude-((opus|sonnet|haiku|fable|mythos)-5|opus-4-[5-8]|sonnet-4-6)"); }
+
+        internal static bool IsKimi(string address) { return Regex.IsMatch(address ?? "", @"\Ahttps://api\.moonshot\.ai(/|\z)", RegexOptions.IgnoreCase); }
+
+        // Why this whole brain has no Thinking picker, or null when it has one.
+        internal static string Closed(string kind, bool code)
+        {
+            if (code) return "Capri codes stay on Low";
+            if (Plans.Is(kind)) return "its app sets this";
+            return kind == "openai" || kind == "anthropic" || kind == "google" || kind == "deepseek" || kind == "nvidia" || kind == "openrouter" || kind == "kimi" ? null : "not for local brains";
+        }
+
+        // Why a model can't take a level, in a few words for its menu row, or null when it can.
+        internal static string Why(string kind, string model, int level, bool code, CloudModel listed = null)
+        {
+            if (level <= Default || level > High) return null;
+            string closed = Closed(kind, code);
+            if (closed != null) return closed;
+            string id = (model ?? "").ToLowerInvariant();
+            lock (declined) if (declined.Contains(kind + "|" + id + "|" + level)) return Declined;
+            if (kind == "openai") return OpenAiWhy(id, level);
+            if (kind == "anthropic") return ClaudeWhy(id, level);
+            if (kind == "google") return level == Off && !Regex.IsMatch(id, @"^(models/)?gemini-2\.5-flash") ? AlwaysThinks : null;
+            if (kind == "deepseek") return level == Medium ? LowOrHigh : null;
+            if (kind == "kimi") return KimiWhy(id, level);
+            if (kind == "nvidia") return NvidiaWhy(id, level);
+            return RouterWhy(listed, level);
+        }
+
+        private static string OpenAiWhy(string id, int level)
+        {
+            if (Regex.IsMatch(id, @"^(gpt-[34]|chatgpt-)")) return NoLevels;
+            bool pro = Regex.IsMatch(id, @"-pro\b");
+            if (level == Off) return pro || Regex.IsMatch(id, @"^(gpt-6-astra|gpt-6\.1-sol|gpt-5(-|$)|o\d)") ? AlwaysThinks : null;
+            return level == Low && pro ? MediumOrHigh : null;
+        }
+
+        private static string ClaudeWhy(string id, int level)
+        {
+            bool effort = TakesEffort(id);
+            if (level != Off) return effort ? null : NoLevels;
+            if (Regex.IsMatch(id, @"^claude-(opus-5-5|sonnet-5-5|fable-5|mythos-5)")) return AlwaysThinks;
+            return effort ? null : OffAlready;
+        }
+
+        private static string KimiWhy(string id, int level)
+        {
+            if (id.StartsWith("kimi-k3", StringComparison.Ordinal)) return level == Off ? AlwaysThinks : level == Medium ? LowOrHigh : null;
+            if (id.StartsWith("kimi-k2.7-code", StringComparison.Ordinal)) return AlwaysThinks;
+            if (id.StartsWith("kimi-k2.6", StringComparison.Ordinal)) return level == Off || level == High ? null : OnOrOff;
+            return NotKnown;
+        }
+
+        private static string NvidiaWhy(string id, int level)
+        {
+            if (id == Super) return level == Medium ? LowOrHigh : null;
+            if (id == Bolt) return level == Off || level == High ? null : OnOrOff;
+            if (id == Omni) return null;
+            if (id.StartsWith("openai/gpt-oss-", StringComparison.Ordinal)) return level == Off ? AlwaysThinks : null;
+            return NotKnown;
+        }
+
+        // OpenRouter says what each model takes in its model list. A model not listed yet can take any level, since OpenRouter
+        // moves a level it can't serve to the nearest one.
+        private static string RouterWhy(CloudModel listed, int level)
+        {
+            if (listed == null || !listed.ReasoningRead) return null;
+            if (listed.Reasoning == null) return NoLevels;
+            if (level == Off && listed.Reasoning.Mandatory) return AlwaysThinks;
+            string[] takes = listed.Reasoning.Efforts;
+            if (takes == null || Array.IndexOf(takes, Efforts[level]) >= 0) return null;
+            if (level == Off) return AlwaysThinks;
+            List<string> named = new List<string>();
+            for (int other = Low; other <= High; other++) if (Array.IndexOf(takes, Efforts[other]) >= 0) named.Add(Names[other]);
+            return named.Count == 0 ? NoLevels : string.Join(" or ", named.ToArray()) + " only";
+        }
+
+        internal static void Decline(string kind, string model, int level)
+        {
+            lock (declined) declined.Add(kind + "|" + (model ?? "").ToLowerInvariant() + "|" + level);
+        }
+
+        internal static void Forget() { lock (declined) declined.Clear(); }
+
+        // Thinking uses up the reply's room and takes longer, so a higher level gets more of both.
+        internal static int Room(int level, int automatic) { return level == High ? Math.Max(automatic, 8000) : level == Medium ? Math.Max(automatic, 4000) : automatic; }
+
+        internal static int Wait(int level, int automatic) { return level == High ? Math.Max(automatic, 180000) : level == Medium ? Math.Max(automatic, 90000) : automatic; }
+
+        internal static void Apply(OpenAiRequest body, string kind, int level, bool tools)
+        {
+            string id = (body.Model ?? "").ToLowerInvariant();
+            body.Effort = null;
+            body.Reasoning = null;
+            body.Thinking = null;
+            body.Template = null;
+            if (kind == "openrouter") body.Reasoning = new CloudReasoning { Effort = Efforts[level] };
+            else if (kind == "deepseek" && level == Off) body.Thinking = new CloudThinking();
+            else if (kind == "nvidia" && id == Bolt) body.Template = new CloudTemplate { Think = level != Off };
+            else if (kind == "nvidia" && id == Omni) body.Template = new CloudTemplate { Think = level != Off, Budget = level == Off ? (int?)null : OmniBudgets[level] };
+            // GPT-6 Luna and Sol only make tool calls at none, so her tool turns stay there whatever's picked.
+            else body.Effort = kind == "openai" && tools && Regex.IsMatch(id, @"^gpt-6-(luna|sol)\b") ? "none" : Efforts[level];
+        }
+
+        internal static void Apply(ClaudeRequest body, int level)
+        {
+            if (level == Off) body.Thinking = new ClaudeThinking();
+            else body.Output = new ClaudeOutput { Effort = Efforts[level] };
+        }
+
+        internal static void Apply(CompletionRequest body, string model, int level)
+        {
+            if ((model ?? "").ToLowerInvariant().StartsWith("kimi-k2.6", StringComparison.Ordinal)) body.Thinking = new CloudThinking { Type = level == Off ? "disabled" : "enabled" };
+            else body.Effort = Efforts[level];
+        }
+
+        // What's wrong with what they typed as Extra request JSON, or null when it can be saved.
+        internal static string ExtraProblem(string typed)
+        {
+            if (string.IsNullOrWhiteSpace(typed)) return null;
+            List<KeyValuePair<string, string>> members = Members(typed);
+            if (members == null) return "That isn't one JSON object.";
+            foreach (KeyValuePair<string, string> member in members)
+                if (Array.IndexOf(Reserved, member.Key) >= 0) return "Capri sets " + member.Key + " herself, so leave that out.";
+            return null;
+        }
+
+        // The request with each of the extra JSON's top-level names in place of Capri's own.
+        internal static string Merge(string body, string extra)
+        {
+            List<KeyValuePair<string, string>> added = Members(extra), kept = Members(body);
+            if (added == null || kept == null) return body;
+            added.RemoveAll(member => Array.IndexOf(Reserved, member.Key) >= 0);
+            Dictionary<string, string> newest = new Dictionary<string, string>();
+            foreach (KeyValuePair<string, string> member in added) newest[member.Key] = member.Value;
+            List<string> written = new List<string>();
+            foreach (KeyValuePair<string, string> member in kept) if (!newest.ContainsKey(member.Key)) written.Add(member.Value);
+            written.AddRange(newest.Values);
+            return "{" + string.Join(",", written.ToArray()) + "}";
+        }
+
+        private static List<KeyValuePair<string, string>> Members(string json)
+        {
+            try { return HuskJson.Members(json); }
+            catch (FormatException) { return null; }
         }
     }
 
@@ -521,6 +745,8 @@ namespace CapriDesktop
         private volatile string thinker;
         private volatile string ollamaCpu;
         internal volatile Cloud Remote;
+        // Thinking picks, one per model. Folds and asides run on a Brain of their own without these, so they keep today's settings.
+        internal volatile ThinkingPick[] Picks;
         internal volatile string Unsighted;
         internal int CloudWait = 45000;
         private Cloud waitingRemote;
@@ -1755,6 +1981,27 @@ namespace CapriDesktop
             catch (IOException) { throw new BrainException(Cloud.CompanyOf(kind) + " stopped sending its model list. Try Refresh.", true); }
         }
 
+        // OpenRouter says what each model takes for Thinking. It's read apart from the list, so another shape there can't lose the list.
+        private static void ReadReasoning(string json, List<CloudModel> models)
+        {
+            RouterModelPage page;
+            try
+            {
+                using (MemoryStream buffer = new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                    page = (RouterModelPage)new DataContractJsonSerializer(typeof(RouterModelPage)).ReadObject(buffer);
+            }
+            catch (SerializationException) { return; }
+            if (page == null || page.Models == null) return;
+            Dictionary<string, CloudModelReasoning> read = new Dictionary<string, CloudModelReasoning>();
+            foreach (RouterModel model in page.Models) if (model != null && model.Id != null) read[model.Id] = model.Reasoning;
+            foreach (CloudModel model in models)
+            {
+                CloudModelReasoning reasoning;
+                model.ReasoningRead = read.TryGetValue(model.Id, out reasoning);
+                model.Reasoning = reasoning;
+            }
+        }
+
         internal static List<string> ReadCloudModels(string kind, string json)
         {
             CloudModelPage page;
@@ -1791,6 +2038,7 @@ namespace CapriDesktop
                 foreach (string oldModel in oldModels) if (oldModel.StartsWith(kind + "|", StringComparison.Ordinal)) cloudModels.Remove(oldModel);
                 foreach (CloudModel available in found) cloudModels[kind + "|" + available.Id] = available;
             }
+            if (kind == "openrouter") ReadReasoning(json, found);
             return found.ConvertAll(model => model.Id);
         }
 
@@ -2161,23 +2409,49 @@ namespace CapriDesktop
             bool follows = !agreed && recent.Count == 2 && Hands.Follows(text, recent[0].Content, recent[1].Content);
             bool reached = false;
             string playing = act != null ? Hands.GameOpen() : null;
-            // A strong brain works the job out itself (F57), so set phrases only take what needs no thought.
+            // A brain that holds her tools works the job out itself (F57), so set phrases only take what needs no thought. Her own
+            // brain on their PC does too when its model calls tools (Lachy, 8 Nov), but it answers chat first and takes every tool up
+            // once it says a message is a job: the whole tool list on every message would slow each reply by seconds on a graphics
+            // card and by minutes without one.
             bool planning = act != null && !fileChat && WorksOut(), planned = false;
+            bool chatFirst = planning && OnThisPc;
             string planText = null;
             List<string> results = new List<string>();
             List<string> facts = new List<string>();
             // Her line about something that can't work here, when that's what they asked for.
             string unable = null;
-            // A stream is a mouse and keyboard job, so it only starts where she has them.
-            if (act != null && kit.Has("use_computer") && Hands.StreamAsked(request)) Hands.Streaming = true;
-            // Asked for something that can't work here, like "can you draw on my screen?" on a Mac, she says so straight away
-            // instead of a brain promising it or a mouse job trying it (F69, pass 5).
-            string lacking = act != null && !fileChat ? kit.Lacking(request) : null;
-            // Asked for that and something she can do too, like "draw a star and open Spotify" on a Mac: the rest goes ahead with
-            // the missing tools left out, and she says why she can't do that part after it (a Codex review, 2 Nov). A brain that
-            // works jobs out gets all of it to decide on; her hands only get what she can do.
-            string doable = null, rest = lacking == null && act != null && !fileChat ? kit.Rest(request, out doable) : null;
-            if (rest != null && !planning) request = doable;
+            // A stream is a mouse and keyboard job, so it only starts where she has them. A brain that holds her tools starts one
+            // with its stream tool.
+            if (act != null && !planning && kit.Has("use_computer") && Hands.StreamAsked(request)) Hands.Streaming = true;
+            // Asked her hands for something that can't work here, like "can you draw on my screen?" on a Mac, she says so straight
+            // away instead of a mouse job trying it (F69, pass 5). A brain that holds her tools is told what isn't here and says so.
+            string lacking = act != null && !fileChat && !planning ? kit.Lacking(request) : null;
+            // Asked her hands for that and something she can do too, like "draw a star and open Spotify" on a Mac: the rest goes
+            // ahead with the missing tools left out, and she says why she can't do that part after it (a Codex review, 2 Nov).
+            string doable = null, rest = lacking == null && act != null && !fileChat && !planning ? kit.Rest(request, out doable) : null;
+            if (rest != null) request = doable;
+            // Her brain takes every tool and decides, one step at a time. One that turns out not to take tools goes back to her hands'
+            // shortcuts, from this message on.
+            Func<bool> workOut = delegate
+            {
+                if (planned || toolless == SourceOf(Remote, model)) return planned;
+                List<ChatMessage> working = new List<ChatMessage>(messages);
+                // Nothing about their windows or their game goes in up front: the brain asks with list_windows, check_app or a look
+                // when it needs to know (Lachy, 2 Nov: "can this be instead requested by the intelligent model instead of pre
+                // emptive? As part of tool use?").
+                working[0] = new ChatMessage("system", steady + (discordRequest || publicDiscordRequest ? "" : Seen() + Gap() + Hands.NoteFor(kit) + Hands.WorkingOut) + Now() + selfGuide + callContext) { Steady = steady.Length };
+                try
+                {
+                    planText = WorkOut(model, working, request, calls, results, facts, answerBudget, ticket, kit);
+                    planned = true;
+                }
+                catch (BrainException error)
+                {
+                    if (calls.Count > 0 || !Toolless(error.Message)) throw;
+                    toolless = SourceOf(Remote, model);
+                }
+                return planned;
+            };
             if (lacking != null) unable = lacking;
             // On stream, asking her to play starts her stream job however it's worded. A brain that works jobs out picks stream or
             // use_computer itself, so this is only for her hands' pick.
@@ -2193,67 +2467,51 @@ namespace CapriDesktop
                 if (direct == "remember" && directArgs.Action != "forget" && string.IsNullOrEmpty(directArgs.Text) && Hands.Back(request) && before.Length > 0 && !before.StartsWith("(", StringComparison.Ordinal) && !Regex.IsMatch(before, @"\?\s*$")) directArgs.Text = before;
                 calls.Add(new KeyValuePair<string, ToolArguments>(direct, directArgs));
             }
-            else if (planning)
-            {
-                List<ChatMessage> working = new List<ChatMessage>(messages);
-                // Nothing about their windows or their game goes in up front: the brain asks with list_windows, check_app or a look
-                // when it needs to know (Lachy, 2 Nov: "can this be instead requested by the intelligent model instead of pre
-                // emptive? As part of tool use?").
-                working[0] = new ChatMessage("system", steady + (discordRequest || publicDiscordRequest ? "" : Seen() + Gap() + Hands.NoteFor(kit) + Hands.WorkingOut) + Now() + selfGuide + callContext) { Steady = steady.Length };
-                try
-                {
-                    planText = WorkOut(model, working, request, calls, results, facts, answerBudget, ticket, kit);
-                    planned = true;
-                }
-                catch (BrainException error)
-                {
-                    // A brain that turns out not to take tools goes back to her hands' shortcuts, from this message on.
-                    if (calls.Count > 0 || !Toolless(error.Message)) throw;
-                    Cloud fallen = Remote;
-                    if (fallen != null) toolless = fallen.Source;
-                }
-            }
+            // Her brain on their PC goes straight to its tools for a yes to her asking, a follow-up, a game that's open or a plain ask.
+            else if (planning && (!chatFirst || agreed || follows || playing != null || Hands.Wants(request))) workOut();
             // With a game open, her hands see every message first: "kliknij deathmatch" or "keep going" mean something in it.
-            else if (act != null && (agreed || Hands.Wants(request) || follows || playing != null || fileChat))
+            else if (act != null && !planning && (agreed || Hands.Wants(request) || follows || playing != null || fileChat))
             {
                 reached = true;
                 if (!Hands.Several(request, calls))
                 {
                     string handed = Reach(model, request, follows ? recent : new List<ChatMessage>(), calls, ticket, kit, false, callContext);
                     if (Hands.Rescue(request, calls, kit)) unable = kit.Unable("use_computer", null);
-                    bool partly = Hands.Partly(request, calls);
                     // Without her mouse and keyboard she still opens what they named, and says she can't do the rest.
-                    if (partly && !kit.Has("use_computer")) unable = kit.Unable("use_computer", null);
-                    else if (partly) calls.Clear();
-                    if (calls.Count == 0 && unable == null && (agreed || partly || Hands.Hesitant(handed, request) || (playing != null && Hands.Wants(request)))) Force(calls, request, kit, ref unable);
+                    if (Hands.Partly(request, calls) && !kit.Has("use_computer")) unable = kit.Unable("use_computer", null);
+                    if (calls.Count == 0 && unable == null && (agreed || Hands.Hesitant(handed, request) || (playing != null && Hands.Wants(request)))) Force(calls, request, kit, ref unable);
                 }
             }
             if (planned && calls.Count == 0) raw = planText;
             if (calls.Count == 0 && !planned && unable == null)
             {
                 raw = privateDiscordTools && DiscordAction != null ? Think(model, messages, true, calls, null, answerBudget, ticket, false, DiscordTools(false), DiscordTools(true)) : Think(model, messages, false, new List<KeyValuePair<string, ToolArguments>>(), null, answerBudget, ticket);
-                // Her brain says "act" when this is a job, in whatever language they said it. Her hands find what to do, with a second
-                // look at every tool when the first finds nothing, and if that finds nothing too she just answers, unless they're in
-                // a game or plainly asked.
+                // Her brain says "act" when this is a job, in whatever language they said it. A brain that holds her tools then works it
+                // out with every one of them. Otherwise her hands find what to do, with a second look at every tool when the first finds
+                // nothing, and if that finds nothing too she just answers, unless they're in a game or plainly asked.
                 if (act != null && !fileChat && Hands.Handed(Clean(raw)))
                 {
-                    if (!reached)
+                    if (chatFirst && workOut()) { if (calls.Count == 0) raw = planText; }
+                    else
                     {
-                        reached = true;
-                        try { Reach(model, request, follows ? recent : new List<ChatMessage>(), calls, ticket, kit, false, callContext); if (Hands.Rescue(request, calls, kit)) unable = kit.Unable("use_computer", null); }
-                        catch (BrainException) { calls.Clear(); }
-                    }
-                    if (calls.Count == 0 && unable == null)
-                    {
-                        try { Reach(model, request, follows ? recent : new List<ChatMessage>(), calls, ticket, kit, true, callContext); if (Hands.Rescue(request, calls, kit)) unable = kit.Unable("use_computer", null); }
-                        catch (BrainException) { calls.Clear(); }
-                    }
-                    if (calls.Count == 0 && unable == null && (playing != null || Hands.Wants(request))) Force(calls, request, kit, ref unable);
-                    if (calls.Count == 0 && unable == null)
-                    {
-            messages[0] = new ChatMessage("system", steady + (discordRequest || publicDiscordRequest ? "" : Seen() + Gap() + kit.ChatOnly + Hands.MiniBoard()) + Now() + selfGuide + callContext) { Steady = steady.Length };
-                        raw = privateDiscordTools && DiscordAction != null ? Think(model, messages, true, calls, null, answerBudget, ticket, false, DiscordTools(false), DiscordTools(true)) : Think(model, messages, false, new List<KeyValuePair<string, ToolArguments>>(), null, answerBudget, ticket);
-                        if (Hands.Handed(Clean(raw))) raw = Hands.Unpromised;
+                        if (!reached)
+                        {
+                            reached = true;
+                            try { Reach(model, request, follows ? recent : new List<ChatMessage>(), calls, ticket, kit, false, callContext); if (Hands.Rescue(request, calls, kit)) unable = kit.Unable("use_computer", null); }
+                            catch (BrainException) { calls.Clear(); }
+                        }
+                        if (calls.Count == 0 && unable == null)
+                        {
+                            try { Reach(model, request, follows ? recent : new List<ChatMessage>(), calls, ticket, kit, true, callContext); if (Hands.Rescue(request, calls, kit)) unable = kit.Unable("use_computer", null); }
+                            catch (BrainException) { calls.Clear(); }
+                        }
+                        if (calls.Count == 0 && unable == null && (playing != null || Hands.Wants(request))) Force(calls, request, kit, ref unable);
+                        if (calls.Count == 0 && unable == null)
+                        {
+                            messages[0] = new ChatMessage("system", steady + (discordRequest || publicDiscordRequest ? "" : Seen() + Gap() + kit.ChatOnly + Hands.MiniBoard()) + Now() + selfGuide + callContext) { Steady = steady.Length };
+                            raw = privateDiscordTools && DiscordAction != null ? Think(model, messages, true, calls, null, answerBudget, ticket, false, DiscordTools(false), DiscordTools(true)) : Think(model, messages, false, new List<KeyValuePair<string, ToolArguments>>(), null, answerBudget, ticket);
+                            if (Hands.Handed(Clean(raw))) raw = Hands.Unpromised;
+                        }
                     }
                 }
             }
@@ -2263,6 +2521,10 @@ namespace CapriDesktop
                 upset = act != null && (Hands.Hurt(Thoughtless(raw)) || Hands.Insulted(request));
                 // A brain that hedges on "what time is it?" gets her clock's answer, before anything below takes the hedge for a search to run.
                 if (Hands.ClockDodged(text, Clean(raw))) raw = Hands.ClockLine(DateTime.Now);
+                // Her brain on their PC said it would, asked whether to, said it can't, or hedged on something to look up, with no tool
+                // behind it: it takes every tool and decides, instead of her hands guessing for it.
+                string chatted = Clean(raw);
+                if (chatFirst && !planned && act != null && (Hands.Lookup(text, chatted) != null || Hands.Hesitant(chatted, request) || Hands.Promised(chatted) || Hands.Claimed(chatted, calls) != null || Hands.Requested(request) && (Hands.Refused(chatted) || Hands.Denied(chatted)) || kit.Has("look_at_screen") && Hands.CantSee(chatted)) && workOut() && calls.Count == 0) raw = planText;
                 // A brain that worked it out itself already had its go with the tools, so none of these second guesses apply.
                 ToolArguments lookup = act != null && !planned ? Hands.Lookup(text, Clean(raw)) : null;
                 bool hesitant = act != null && !planned && Hands.Hesitant(Clean(raw), request);
@@ -2460,12 +2722,24 @@ namespace CapriDesktop
         // being told.
         internal const int Rounds = 12;
 
-        // Cloud brains that take tools natively work jobs out themselves. Small local ones keep her hands' shortcuts.
-        internal bool WorksOut()
+        // Brains that take tools natively work jobs out themselves, her own brain on their PC too when its model calls tools (Lachy,
+        // 8 Nov). Brains made for checks leave it off.
+        internal bool WorksOut() { return OwnSteps && HoldsTools(); }
+
+        // Whether her brain takes her tools natively, so what it picks, or doesn't, is its own call. One that turned a tool list down
+        // writes its calls out instead, and her hands' shortcuts help it.
+        internal bool HoldsTools()
         {
+            string model = Model;
             Cloud remote = Remote;
-            return OwnSteps && remote != null && remote.Kind != "local" && HasTools(remote) && toolless != remote.Source;
+            return model != null && HasTools(remote) && toolless != SourceOf(remote, model);
         }
+
+        // Her brain on their own PC: her built-in one, Ollama or a server they run.
+        internal bool OnThisPc { get { Cloud remote = Remote; return remote == null || remote.Kind == "local"; } }
+
+        // Which brain this is, as her notes about tools remember it.
+        private string SourceOf(Cloud remote, string model) { return remote != null ? remote.Source : Server != null ? Server + "|" + model : Local != null ? "local|" + model : Ollama + "|" + model; }
 
         // The brain holds her tools beside her own prompt: it calls one, sees what it did, calls the next, and answers as herself once
         // the job's done, for up to twelve rounds. Saying it did something with no tool behind it gets one reminder, then her line that
@@ -2606,7 +2880,7 @@ namespace CapriDesktop
         private string Reach(string model, string text, List<ChatMessage> recent, List<KeyValuePair<string, ToolArguments>> calls, int ticket, Hands.Kit kit, bool retry = false, string callContext = null)
         {
             Cloud remote = Remote;
-            string source = remote != null ? remote.Source : Server != null ? Server + "|" + model : Local != null ? "local|" + model : Ollama + "|" + model;
+            string source = SourceOf(remote, model);
             bool native = toolless != source && HasTools(remote);
             List<ChatMessage> asking = new List<ChatMessage>();
             // Only a brain on their own PC is told which game is open up front; a cloud brain here can't ask, so it isn't told.
@@ -2643,16 +2917,18 @@ namespace CapriDesktop
         }
 
         // Her fast head's pick beside a job, with the same tools as her hands: Claude's fastest model when she has a Claude key,
-        // and calls written as text for a brain without tools of its own.
-        internal string QuickTools(string system, string instruction, int limit, List<KeyValuePair<string, ToolArguments>> calls, Hands.Kit kit)
+        // and calls written as text for a brain without tools of its own. A steady system prompt is the same every time, so Claude
+        // keeps it and her tools at a tenth of the price.
+        internal string QuickTools(string system, string instruction, int limit, List<KeyValuePair<string, ToolArguments>> calls, Hands.Kit kit, bool steady = false)
         {
             string model = Model;
             if (model == null) throw new BrainException(Offline);
             Cloud remote = Remote;
             bool native = HasTools(remote);
+            string told = system + Hands.NoteFor(kit) + (native ? "" : kit.Listing);
             List<ChatMessage> messages = new List<ChatMessage>
             {
-                new ChatMessage("system", system + Hands.NoteFor(kit) + (native ? "" : kit.Listing)),
+                new ChatMessage("system", told) { Steady = steady ? told.Length : 0 },
                 new ChatMessage("user", instruction)
             };
             string raw;
@@ -2665,17 +2941,17 @@ namespace CapriDesktop
                     {
                         if (error.Message != Gone) throw;
                         noFastest = true;
-                        raw = Think(model, messages, native, calls, null, limit, -1, true, kit.Tools, kit.ClaudeTools, true);
+                        raw = Think(model, messages, native, calls, null, limit, -1, true, kit.Tools, kit.ClaudeTools, true, true);
                     }
                 }
-                else raw = Think(model, messages, native, calls, null, limit, -1, true, kit.Tools, kit.ClaudeTools, true);
+                else raw = Think(model, messages, native, calls, null, limit, -1, true, kit.Tools, kit.ClaudeTools, true, true);
             }
             catch (BrainException error)
             {
                 if (!native || !Toolless(error.Message)) throw;
                 calls.Clear();
                 messages[0].Content += kit.Listing;
-                raw = Think(model, messages, false, calls, null, limit, -1, true, kit.Tools, kit.ClaudeTools, true);
+                raw = Think(model, messages, false, calls, null, limit, -1, true, kit.Tools, kit.ClaudeTools, true, true);
             }
             if (calls.Count == 0) calls.AddRange(Hands.Written(raw));
             if (calls.Count == 0)
@@ -2842,7 +3118,7 @@ namespace CapriDesktop
             string raw;
             try
             {
-                if (remote == null || !remote.Claude || noFastest) raw = Think(model, messages, false, calls, parts, limit, -1, false, null, null, true);
+                if (remote == null || !remote.Claude || noFastest) raw = Think(model, messages, false, calls, parts, limit, -1, false, null, null, true, true);
                 else
                 {
                     try { raw = AskClaude(new Cloud(remote.Key, Fastest), messages, false, calls, parts, -1, null, false, limit, true); }
@@ -2851,7 +3127,7 @@ namespace CapriDesktop
                         if (error.Message != Gone) throw;
                         noFastest = true;
                         if (!fallback) throw;
-                        raw = Think(model, messages, false, calls, parts, limit, -1, false, null, null, true);
+                        raw = Think(model, messages, false, calls, parts, limit, -1, false, null, null, true, true);
                     }
                 }
             }
@@ -2916,7 +3192,7 @@ namespace CapriDesktop
             string model = Model;
             if (model == null) throw new BrainException(Offline);
             Cloud remote = Remote;
-            string source = remote != null ? remote.Source : Server != null ? Server + "|" + model : Local != null ? "local|" + model : Ollama + "|" + model;
+            string source = SourceOf(remote, model);
             List<ChatMessage> messages = new List<ChatMessage> { new ChatMessage("system", system), new ChatMessage("user", user) };
             if (toolless != source && HasTools(remote))
             {
@@ -2947,13 +3223,92 @@ namespace CapriDesktop
 #endif
         }
 
-        private string Think(string model, List<ChatMessage> messages, bool tools, List<KeyValuePair<string, ToolArguments>> calls, string parts = null, int limit = 90, int ticket = -1, bool routing = false, string openAiTools = null, string claudeTools = null, bool job = false)
+        private string CurrentKind
+        {
+            get
+            {
+                Cloud remote = Remote;
+                string address, key;
+                GetServer(out address, out key);
+                return remote != null ? remote.Kind : ThinkingLevels.IsKimi(address) ? "kimi" : "local";
+            }
+        }
+
+        private string CurrentModel { get { Cloud remote = Remote; return remote != null ? remote.Model : Model; } }
+        private bool CurrentCode { get { Cloud remote = Remote; return remote != null && remote.Code; } }
+
+        private ThinkingPick Picked(string kind, string model, bool code)
+        {
+            ThinkingPick[] picks = Picks;
+            if (picks == null || ThinkingLevels.Closed(kind, code) != null) return null;
+            foreach (ThinkingPick pick in picks) if (pick != null && pick.Source == kind + "|" + model) return pick;
+            return null;
+        }
+
+        private ThinkingPick CurrentPick { get { return Picked(CurrentKind, CurrentModel, CurrentCode); } }
+
+        private static int Usable(ThinkingPick pick, string kind, string model)
+        {
+            return pick == null || LevelWhy(kind, model, pick.Level, false) != null ? ThinkingLevels.Default : Math.Max(ThinkingLevels.Default, Math.Min(ThinkingLevels.High, pick.Level));
+        }
+
+        private static string LevelWhy(string kind, string model, int level, bool code) { return ThinkingLevels.Why(kind, model, level, code, kind == "openrouter" ? Listed(kind, model) : null); }
+
+        internal string ThinkingSource { get { return CurrentKind + "|" + CurrentModel; } }
+        internal string ThinkingExtra { get { ThinkingPick pick = CurrentPick; return pick == null ? null : pick.Extra; } }
+        internal bool ThinkingOpen { get { return ThinkingLevels.Closed(CurrentKind, CurrentCode) == null && !string.IsNullOrEmpty(CurrentModel); } }
+        internal int ThinkingLevel { get { return Usable(CurrentPick, CurrentKind, CurrentModel); } }
+        internal string ThinkingWhy(int level) { return LevelWhy(CurrentKind, CurrentModel, level, CurrentCode); }
+
+        // Tells the Mainframe when a model turns down a level, since that happens partway through a chat.
+        internal Action ThinkingChanged;
+
+        private void TurnedDown(string address, string kind, string model, int level)
+        {
+            ThinkingLevels.Decline(kind, model, level);
+            Log(address, -1, model + " turned down Thinking " + ThinkingLevels.Names[level] + ", so it's greyed out for now");
+            Action changed = ThinkingChanged;
+            if (changed != null) changed();
+        }
+
+        private void KeepPick(int level, string extra)
+        {
+            string source = ThinkingSource;
+            List<ThinkingPick> kept = new List<ThinkingPick>();
+            ThinkingPick[] picks = Picks;
+            if (picks != null) foreach (ThinkingPick pick in picks) if (pick != null && pick.Source != source) kept.Add(pick);
+            if (level != ThinkingLevels.Default || extra != null) kept.Add(new ThinkingPick { Source = source, Level = level, Extra = extra });
+            Picks = kept.ToArray();
+        }
+
+        internal bool SetThinking(int level)
+        {
+            if (!ThinkingOpen || level < ThinkingLevels.Default || level > ThinkingLevels.High || ThinkingWhy(level) != null) return false;
+            KeepPick(level, ThinkingExtra);
+            return true;
+        }
+
+        // Saves it for the brain she's on, or says what's wrong with it. A blank box clears it.
+        internal string SetThinkingExtra(string typed)
+        {
+            if (!ThinkingOpen) return "This brain doesn't take extra JSON.";
+            string problem = ThinkingLevels.ExtraProblem(typed);
+            if (problem != null) return problem;
+            ThinkingPick pick = CurrentPick;
+            KeepPick(pick == null ? ThinkingLevels.Default : pick.Level, string.IsNullOrWhiteSpace(typed) ? null : typed.Trim());
+            return null;
+        }
+
+        private static bool Refused(BrainException error) { return error.Status == 400 || error.Status == 422; }
+
+        // plain: a call outside her chat, which keeps today's settings whatever's picked.
+        private string Think(string model, List<ChatMessage> messages, bool tools, List<KeyValuePair<string, ToolArguments>> calls, string parts = null, int limit = 90, int ticket = -1, bool routing = false, string openAiTools = null, string claudeTools = null, bool job = false, bool plain = false)
         {
             Check(ticket);
             Cloud remote = Remote;
             string listed = tools ? openAiTools ?? Hands.Tools : null;
             if (remote != null && remote.Plan) return Planned(remote, messages, ticket);
-            if (remote != null && remote.Claude) return AskClaude(remote, messages, tools, calls, parts, ticket, claudeTools, routing, 0, job);
+            if (remote != null && remote.Claude) return AskClaude(remote, messages, tools, calls, parts, ticket, claudeTools, routing, 0, job, plain);
             if (remote != null)
             {
                 bool openAi = remote.Kind == "openai";
@@ -2962,22 +3317,29 @@ namespace CapriDesktop
                 bool brief = remote.Kind == "nvidia" && remote.Model == "google/gemma-4-31b-it";
                 bool screen = (parts != null || unhurried) && remote.Kind == "nvidia";
                 bool super = screen && (!job || unhurried) && !routing && remote.Model == "nvidia/nemotron-3.5-super-vl-120b-a12b";
+                ThinkingPick pick = plain ? null : Picked(remote.Kind, remote.Model, remote.Code);
+                int level = Usable(pick, remote.Kind, remote.Model);
                 int headroom = unhurried ? 8000 : 2000;
+                int replyRoom = ThinkingLevels.Room(level, ReplyLimit(headroom, job || routing));
                 string effort = remote.Kind == "local" ? null : Effort(remote.Model, openAi, super ? "none" : google ? "low" : null);
                 OpenAiRequest body = new OpenAiRequest
                 {
                     Model = remote.Model,
                     Messages = messages.ToArray(),
-                    Limit = openAi ? ReplyLimit(headroom, job || routing) : (int?)null,
-                    Tokens = openAi ? (int?)null : google ? Math.Max(2048, ReplyLimit(headroom, job || routing)) : ReplyLimit(brief ? Math.Max(256, limit) : headroom, job || routing),
+                    Limit = openAi ? replyRoom : (int?)null,
+                    Tokens = openAi ? (int?)null : google ? Math.Max(2048, replyRoom) : brief ? ReplyLimit(Math.Max(256, limit), job || routing) : replyRoom,
                     Effort = effort,
                     Thinking = remote.Kind == "deepseek" ? new CloudThinking() : null,
                     Template = brief ? new CloudTemplate() : null,
                     Stream = (screen || remote.Kind == "local") && unstreamed != remote.Source
                 };
+                CloudThinking usualThinking = body.Thinking;
+                CloudTemplate usualTemplate = body.Template;
+                if (level != ThinkingLevels.Default) ThinkingLevels.Apply(body, remote.Kind, level, tools);
+                if (pick != null) body.Extra = pick.Extra;
                 string address = remote.Kind == "local" ? remote.Host + "/v1/chat/completions" : Address(remote.Kind, "/chat/completions");
                 Action<HttpWebRequest> sign = remote.Kind == "local" ? null : new Action<HttpWebRequest>(delegate(HttpWebRequest request) { Sign(request, remote.Key, false); });
-                int wait = remote.Kind == "local" || screen ? Math.Max(180000, CloudWait) : CloudWait;
+                int wait = ThinkingLevels.Wait(level, remote.Kind == "local" || screen ? Math.Max(180000, CloudWait) : CloudWait);
                 CompletionReply reply;
                 try { reply = Send<CompletionReply>(address, body, wait, listed, sign, parts, ticket); }
                 catch (BrainException error)
@@ -2993,10 +3355,19 @@ namespace CapriDesktop
                         try { reply = Send<CompletionReply>(address, body, wait, listed, sign, parts, ticket); }
                         catch (BrainException) { ShutDoor(remote.Key, address); throw; }
                     }
+                    else if (level != ThinkingLevels.Default && pick.Extra == null && Refused(error))
+                    {
+                        body.Effort = effort;
+                        body.Reasoning = null;
+                        body.Thinking = usualThinking;
+                        body.Template = usualTemplate;
+                        reply = Send<CompletionReply>(address, body, wait, listed, sign, parts, ticket);
+                        TurnedDown(address, remote.Kind, remote.Model, level);
+                    }
                     else
                     {
                         // A model that turns down its reasoning_effort, like gpt-6-luna with tools, gets the value its error names, once, and keeps it.
-                        string taken = error.Told ? null : EffortFrom(error.Message, effort);
+                        string taken = error.Told || level != ThinkingLevels.Default || (pick != null && pick.Extra != null) ? null : EffortFrom(error.Message, effort);
                         if (taken == null) throw;
                         lock (efforts) efforts[remote.Model] = taken;
                         Log(address, -1, remote.Model + " takes reasoning_effort " + (taken.Length == 0 ? "left out" : taken) + ", asking again");
@@ -3018,7 +3389,7 @@ namespace CapriDesktop
             string server;
             string serverKey;
             GetServer(out server, out serverKey);
-            if (server != null) return Complete(server, model, messages, tools, calls, parts, limit, ticket, routing, openAiTools, job, model, serverKey);
+            if (server != null) return Complete(server, model, messages, tools, calls, parts, limit, ticket, routing, openAiTools, job, model, serverKey, plain || !ThinkingLevels.IsKimi(server) ? null : Picked("kimi", model, false));
             Engine local = Local;
             if (local != null)
             {
@@ -3117,16 +3488,28 @@ namespace CapriDesktop
             return sent != null && Regex.IsMatch(error, @"unrecognized|unknown (parameter|argument|field)|not (supported|allowed|permitted)|unsupported (parameter|argument)|extra (inputs?|fields?)", RegexOptions.IgnoreCase) ? "" : null;
         }
 
-        internal string Complete(string address, string model, List<ChatMessage> messages, bool tools, List<KeyValuePair<string, ToolArguments>> calls, string parts, int limit, int ticket, bool routing, string openAiTools = null, bool job = false, string named = null, string key = null)
+        internal string Complete(string address, string model, List<ChatMessage> messages, bool tools, List<KeyValuePair<string, ToolArguments>> calls, string parts, int limit, int ticket, bool routing, string openAiTools = null, bool job = false, string named = null, string key = null, ThinkingPick pick = null)
         {
             if (!string.IsNullOrEmpty(key) && !ServerKeySafe(address)) throw new BrainException("Use https for a provider elsewhere. A key over plain http isn't safe.", true);
             EnsureServer(address, key);
             string thinking = address + "|" + model;
             string listed = tools ? openAiTools ?? Hands.Tools : null;
-            CompletionRequest asking = new CompletionRequest { Messages = messages.ToArray(), Limit = ReplyLimit(thinker == thinking ? limit + 2048 : limit, job || routing) };
+            int level = Usable(pick, "kimi", model);
+            CompletionRequest asking = new CompletionRequest { Messages = messages.ToArray(), Limit = ThinkingLevels.Room(level, ReplyLimit(thinker == thinking ? limit + 2048 : limit, job || routing)) };
             if (named != null) asking.Model = named;
+            if (level != ThinkingLevels.Default) ThinkingLevels.Apply(asking, model, level);
+            if (pick != null) asking.Extra = pick.Extra;
             Action<HttpWebRequest> sign = string.IsNullOrEmpty(key) ? null : new Action<HttpWebRequest>(delegate(HttpWebRequest request) { SignServer(request, key); });
-            CompletionReply reply = Send<CompletionReply>(address + "/v1/chat/completions", asking, 180000, listed, sign, parts, ticket, key);
+            CompletionReply reply;
+            try { reply = Send<CompletionReply>(address + "/v1/chat/completions", asking, 180000, listed, sign, parts, ticket, key); }
+            catch (BrainException error)
+            {
+                if (level == ThinkingLevels.Default || pick.Extra != null || !Refused(error)) throw;
+                asking.Effort = null;
+                asking.Thinking = null;
+                reply = Send<CompletionReply>(address + "/v1/chat/completions", asking, 180000, listed, sign, parts, ticket, key);
+                TurnedDown(address, "kimi", model, level);
+            }
             CompletionChoice choice = reply.Choices != null && reply.Choices.Length > 0 ? reply.Choices[0] : null;
             CompletionMessage message = choice != null ? choice.Message : null;
             if (thinker != thinking && ReplyLimit(limit + 2048, job || routing) > asking.Limit && choice != null && choice.Stopped == "length" && message != null && (!string.IsNullOrEmpty(message.Thinking) || !string.IsNullOrEmpty(message.Reasoning) || (message.Content ?? "").IndexOf("<think>", StringComparison.OrdinalIgnoreCase) >= 0))
@@ -3451,7 +3834,7 @@ namespace CapriDesktop
             return blocks.Count == 0 ? null : blocks.ToArray();
         }
 
-        private string AskClaude(Cloud remote, List<ChatMessage> messages, bool tools, List<KeyValuePair<string, ToolArguments>> calls, string parts = null, int ticket = -1, string claudeTools = null, bool routing = false, int brief = 0, bool job = false)
+        private string AskClaude(Cloud remote, List<ChatMessage> messages, bool tools, List<KeyValuePair<string, ToolArguments>> calls, string parts = null, int ticket = -1, string claudeTools = null, bool routing = false, int brief = 0, bool job = false, bool plain = false)
         {
             string model = remote.Model;
             bool fallback = Regex.IsMatch(model, @"^claude-(opus-5|sonnet-5-5|fable-5-1)");
@@ -3460,25 +3843,40 @@ namespace CapriDesktop
                 Model = model,
                 System = Prompted(messages[0]),
                 Messages = messages.GetRange(1, messages.Count - 1).ToArray(),
-                Output = Regex.IsMatch(model, @"^claude-((opus|sonnet|haiku|fable|mythos)-5|opus-4-[5-8]|sonnet-4-6)") ? new ClaudeOutput() : null,
+                Output = ThinkingLevels.TakesEffort(model) ? new ClaudeOutput() : null,
                 Fallbacks = fallback ? "default" : null
             };
+            ClaudeOutput usualOutput = body.Output;
+            ThinkingPick pick = plain || brief > 0 ? null : Picked(remote.Kind, model, remote.Code);
+            int level = Usable(pick, remote.Kind, model);
+            if (level != ThinkingLevels.Default) ThinkingLevels.Apply(body, level);
+            if (pick != null) body.Extra = pick.Extra;
             // A small call on her fastest brain answers straight off, with no thinking first.
             if (brief > 0) { body.Limit = brief; body.Thinking = new ClaudeThinking(); }
-            body.Limit = ReplyLimit(body.Limit, job || routing);
+            body.Limit = ThinkingLevels.Room(level, ReplyLimit(body.Limit, job || routing));
             Action<HttpWebRequest> sign = delegate(HttpWebRequest request)
             {
                 Sign(request, remote.Key, true);
                 if (fallback) request.Headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
             };
             string listed = tools ? claudeTools ?? Hands.ClaudeTools : null;
-            ClaudeReply reply = Send<ClaudeReply>(ClaudeAddress(remote.Key, "/messages"), body, CloudWait, listed, sign, parts, ticket, remote.Key);
+            int wait = ThinkingLevels.Wait(level, CloudWait);
+            ClaudeReply reply;
+            try { reply = Send<ClaudeReply>(ClaudeAddress(remote.Key, "/messages"), body, wait, listed, sign, parts, ticket, remote.Key); }
+            catch (BrainException error)
+            {
+                if (level == ThinkingLevels.Default || pick.Extra != null || !Refused(error)) throw;
+                body.Output = usualOutput;
+                body.Thinking = null;
+                reply = Send<ClaudeReply>(ClaudeAddress(remote.Key, "/messages"), body, wait, listed, sign, parts, ticket, remote.Key);
+                TurnedDown(ClaudeAddress(remote.Key, "/messages"), remote.Kind, model, level);
+            }
             Func<ClaudeReply, bool> cut = delegate(ClaudeReply said) { return said.StopReason == "max_tokens"; };
             if (routing && cut(reply) && reply.Content != null && Array.Exists(reply.Content, block => block != null && block.Type == "tool_use"))
                 reply = Longer(reply, body.Limit, cut, Whole, delegate(int room)
                 {
                     body.Limit = room;
-                    return Send<ClaudeReply>(ClaudeAddress(remote.Key, "/messages"), body, Math.Max(CloudWait, room * 50), listed, sign, parts, ticket, remote.Key);
+                    return Send<ClaudeReply>(ClaudeAddress(remote.Key, "/messages"), body, Math.Max(wait, room * 50), listed, sign, parts, ticket, remote.Key);
                 });
             if (reply.StopReason == "refusal") return Declined;
             if (routing && cut(reply)) return CutShort(Spoken(reply, new List<KeyValuePair<string, ToolArguments>>()), Whole(reply), calls);
@@ -4129,13 +4527,49 @@ namespace CapriDesktop
             return text.Substring(0, cut > 60 ? cut : most - 2) + "...";
         }
 
-        private static byte[] Json(object body)
+        internal static byte[] Json(object body)
         {
             using (MemoryStream buffer = new MemoryStream())
             {
                 new DataContractJsonSerializer(body.GetType()).WriteObject(buffer, body);
-                return buffer.ToArray();
+                return Whole(buffer.ToArray());
             }
+        }
+
+        // The serializer writes each half of an emoji as its own \uXXXX, so half of one, cut off by a trim somewhere, goes out
+        // alone (\ud83d), and strict servers like NVIDIA's turn the whole request away ("unexpected end of hex escape"). A
+        // lone half becomes U+FFFD, the mark for a character that can't be shown, and whole pairs stay as they are.
+        internal static byte[] Whole(byte[] json)
+        {
+            string text = Encoding.UTF8.GetString(json);
+            if (text.IndexOf("\\ud", StringComparison.OrdinalIgnoreCase) < 0) return json;
+            StringBuilder kept = new StringBuilder(text.Length);
+            for (int i = 0; i < text.Length; i++)
+            {
+                // Outside a string JSON has no backslashes, so every one starts an escape: \\ and \" are passed over whole.
+                if (text[i] != '\\' || i + 1 >= text.Length) { kept.Append(text[i]); continue; }
+                int unit = text[i + 1] == 'u' && i + 5 < text.Length ? Hex(text, i + 2) : -1;
+                if (unit < 0) { kept.Append(text, i, 2); i++; continue; }
+                bool high = unit >= 0xD800 && unit <= 0xDBFF;
+                int low = high && i + 11 < text.Length && text[i + 6] == '\\' && text[i + 7] == 'u' ? Hex(text, i + 8) : -1;
+                if (high && low >= 0xDC00 && low <= 0xDFFF) { kept.Append(text, i, 12); i += 11; continue; }
+                kept.Append(unit >= 0xD800 && unit <= 0xDFFF ? "\\ufffd" : text.Substring(i, 6));
+                i += 5;
+            }
+            return Encoding.UTF8.GetBytes(kept.ToString());
+        }
+
+        private static int Hex(string text, int at)
+        {
+            int value = 0;
+            for (int i = at; i < at + 4; i++)
+            {
+                char c = text[i];
+                int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+                if (digit < 0) return -1;
+                value = value * 16 + digit;
+            }
+            return value;
         }
 
         private T Send<T>(string url, object body, int timeout, string tools = null, Action<HttpWebRequest> sign = null, string parts = null, int ticket = -1, string secret = null) where T : class
@@ -4152,9 +4586,12 @@ namespace CapriDesktop
             if (sign != null) sign(request);
             // A string body is JSON built by hand, like her hands' Claude turns with their screenshots.
             byte[] payload = body is string ? Encoding.UTF8.GetBytes((string)body) : Json(body);
-            if (tools != null || parts != null)
+            CloudRequest extended = body as CloudRequest;
+            string extra = extended == null ? null : extended.Extra;
+            if (tools != null || parts != null || extra != null)
             {
                 string json = Encoding.UTF8.GetString(payload);
+                if (extra != null) json = ThinkingLevels.Merge(json, extra);
                 if (tools != null) json = json.Substring(0, json.LastIndexOf('}')) + ",\"tools\":" + tools + "}";
                 if (parts != null) json = json.Replace("\"" + Parts + "\"", parts);
                 payload = Encoding.UTF8.GetBytes(json);

@@ -115,9 +115,9 @@ namespace CapriDesktop
     // notes, Get to know me and what she sees leave addresses, numbers and emails out (Brain.Discreet). Off is how she was before.
     internal static class Security
     {
-        internal const int Open = 0, Media = 1, Shortcuts = 2, Windows = 3, Power = 4, Mouse = 5, Sends = 6, Pays = 7, Unasked = 8, Secrets = 9, Wake = 10, Friends = 11, Personal = 12, Count = 13;
+        internal const int Open = 0, Media = 1, Shortcuts = 2, Windows = 3, Power = 4, Mouse = 5, Sends = 6, Pays = 7, Unasked = 8, Secrets = 9, Wake = 10, Friends = 11, Personal = 12, ModTools = 13, Count = 14;
         internal const int Lockdown = 0, Guarded = 1, Trusted = 2, Blackwall = 3, Custom = 4;
-        internal static readonly string[] Names = { "Open apps, games and sites", "Music, media and volume", "Shortcuts (screenshots, Game Bar, captions, Discord mute)", "Close and switch apps and tabs", "Shut down, restart, sleep, lock and sign out", "Use your mouse and keyboard for jobs", "Send, post and delete what you asked for", "Pay, buy and book", "Things your request didn't mention", "Type passwords and card numbers", "Listen for \"Hey Capri\"", "Friends on a call can ask, you confirm", "Keep personal details out of her memories" };
+        internal static readonly string[] Names = { "Open apps, games and sites", "Music, media and volume", "Shortcuts (screenshots, Game Bar, captions, Discord mute)", "Close and switch apps and tabs", "Shut down, restart, sleep, lock and sign out", "Use your mouse and keyboard for jobs", "Send, post and delete what you asked for", "Pay, buy and book", "Things your request didn't mention", "Type passwords and card numbers", "Listen for \"Hey Capri\"", "Friends on a call can ask, you confirm", "Keep personal details out of her memories", "Use tools your code mods added" };
         internal static readonly string[] Lines =
         {
             "On: she opens them when you ask. Off: she asks first.",
@@ -136,7 +136,8 @@ namespace CapriDesktop
             "On: she types the ones your job gives her. Off: you type them.",
             "On: she listens on this PC for her name. Off: she doesn't.",
             "Call mode only. Your mic or typing must confirm each ask.",
-            "On: addresses, emails and numbers stay out. Off: they don't."
+            "On: addresses, emails and numbers stay out. Off: they don't.",
+            "On: she uses a mod's tool when it fits. Off: she asks first."
         };
         internal static readonly string[] Presets = { "Lockdown", "Guarded", "Trusted", "Blackwall", "Custom" };
         private static readonly string[] Told =
@@ -150,9 +151,10 @@ namespace CapriDesktop
         // The Settings line under her SECURITY button, short enough for its row.
         private static readonly string[] Shorts = { "She asks first before everything.", "Apps, music, shortcuts. Asks for the rest.", "Asks before paying or what you didn't say.", "She never asks, and listens for Hey Capri.", "Your own mix of toggles." };
         // Lockdown has the first twelve off, Guarded the first three on, Trusted the first seven and Blackwall the first eleven.
-        // Keeping personal details out of her memories is on in all of them but Blackwall.
-        private static readonly int[] Masks = { 1 << Personal, 0x7 | (1 << Personal), 0x7F | (1 << Personal), 0x7FF };
-        private static int mask = 0x7F | (1 << Personal);
+        // Keeping personal details out of her memories is on in all of them but Blackwall. Tools from code mods ask first on
+        // Lockdown and Guarded, and run on Trusted and Blackwall.
+        private static readonly int[] Masks = { 1 << Personal, 0x7 | (1 << Personal), 0x7F | (1 << Personal) | (1 << ModTools), 0x7FF | (1 << ModTools) };
+        private static int mask = 0x7F | (1 << Personal) | (1 << ModTools);
         private static readonly object gate = new object();
         // Toggle 11 is her wake word's own setting on Windows, read and set through these. Elsewhere it's kept here with the rest.
         internal static Func<bool> HeyOn;
@@ -205,14 +207,14 @@ namespace CapriDesktop
 
         // Toggles 1 to 10 the way Blackwall mode's switch used to set them, leaving "Hey Capri" and the toggles after it alone.
         // Nothing is saved.
-        internal static void Jobs(bool blackwall) { lock (gate) mask = (mask & ((1 << Wake) | (1 << Friends) | (1 << Personal))) | (Masks[blackwall ? Blackwall : Trusted] & 0x3FF); }
+        internal static void Jobs(bool blackwall) { lock (gate) mask = (mask & ((1 << Wake) | (1 << Friends) | (1 << Personal) | (1 << ModTools))) | (Masks[blackwall ? Blackwall : Trusted] & 0x3FF); }
 
         // The preset their toggles match, or Custom. "Hey Capri" only counts where there's a wake word.
         internal static int Preset
         {
             get
             {
-                int bits = Mask, counted = (Has(Wake) ? 0x7FF : 0x3FF) | (Has(Friends) ? 1 << Friends : 0) | (Has(Personal) ? 1 << Personal : 0);
+                int bits = Mask, counted = (Has(Wake) ? 0x7FF : 0x3FF) | (Has(Friends) ? 1 << Friends : 0) | (Has(Personal) ? 1 << Personal : 0) | (Has(ModTools) ? 1 << ModTools : 0);
                 for (int i = 0; i < Masks.Length; i++) if ((bits & counted) == (Masks[i] & counted)) return i;
                 return Custom;
             }
@@ -242,13 +244,16 @@ namespace CapriDesktop
         // Friend requests take an 11th mark only when they're on, so a build from before them still reads the save instead of
         // falling back to Trusted. Keeping personal details out of her memories takes a 12th, after the 11th, only when it isn't
         // what the first ten give it (Kept), so a save that never changed it reads there too.
+        // Mod tools take a 13th, after those, only when they aren't what the first ten give them (ModsRun).
         private static string Marks(int bits)
         {
-            bool friends = (bits & (1 << Friends)) != 0, personal = (bits & (1 << Personal)) != 0, odd = personal != Kept(bits);
-            char[] marks = new char[odd ? Wake + 2 : friends ? Wake + 1 : Wake];
+            bool friends = (bits & (1 << Friends)) != 0, personal = (bits & (1 << Personal)) != 0, mods = (bits & (1 << ModTools)) != 0;
+            bool modsOdd = mods != ModsRun(bits), odd = personal != Kept(bits) || modsOdd;
+            char[] marks = new char[modsOdd ? Wake + 3 : odd ? Wake + 2 : friends ? Wake + 1 : Wake];
             for (int i = 0; i < Wake; i++) marks[i] = (bits & (1 << i)) != 0 ? '1' : '0';
             if (friends || odd) marks[Wake] = friends ? '1' : '0';
             if (odd) marks[Wake + 1] = personal ? '1' : '0';
+            if (modsOdd) marks[Wake + 2] = mods ? '1' : '0';
             return new string(marks);
         }
 
@@ -256,16 +261,22 @@ namespace CapriDesktop
         // are on, like Blackwall's. A save from before the toggle gets its preset's default this way, and a Custom mix gets it on.
         private static bool Kept(int bits) { return (bits & 0x3FF) != 0x3FF; }
 
+        // Whether tools from code mods run without asking when their save doesn't say: no when the first ten are Lockdown's or
+        // Guarded's, and yes for Trusted, Blackwall and any mix, so a save from before the toggle keeps its preset and turning
+        // one of the first ten off doesn't change how the rest save.
+        private static bool ModsRun(int bits) { int ten = bits & 0x3FF; return ten != (Masks[Lockdown] & 0x3FF) && ten != (Masks[Guarded] & 0x3FF); }
+
         // Their saved toggles, or Trusted for anything unreadable. "Hey Capri" stays where it lives.
         internal static void Load(string saved, bool wake = false)
         {
             int bits = 0;
-            if (saved == null || saved.Length < Wake || saved.Length > Wake + 2 || saved.Trim('0', '1').Length > 0) bits = Masks[Trusted];
+            if (saved == null || saved.Length < Wake || saved.Length > Wake + 3 || saved.Trim('0', '1').Length > 0) bits = Masks[Trusted];
             else
             {
                 for (int i = 0; i < Wake; i++) if (saved[i] == '1') bits |= 1 << i;
                 if (saved.Length > Wake && saved[Wake] == '1') bits |= 1 << Friends;
                 if (saved.Length > Wake + 1 ? saved[Wake + 1] == '1' : Kept(bits)) bits |= 1 << Personal;
+                if (saved.Length > Wake + 2 ? saved[Wake + 2] == '1' : ModsRun(bits)) bits |= 1 << ModTools;
             }
             lock (gate) mask = bits | (wake ? 1 << Wake : 0);
         }
@@ -289,6 +300,8 @@ namespace CapriDesktop
                 case "job_control": return action == "change" ? Mouse : -1;
                 case "clip": return action == "open_folder" || action == "open_last" ? Open : -1;
                 case "updates": return action == "install" ? Open : -1;
+                // A code mod's tool can do anything its code does, so it has its own toggle, off on Lockdown and Guarded.
+                case "mod": return ModTools;
                 case "voice_chat": case "speech": case "quit": case "mainframe": case "mini_player": case "fake_crash": case "listen": return -1;
                 default: return -1;
             }
@@ -302,6 +315,29 @@ namespace CapriDesktop
         }
 
         private static readonly List<Held> held = new List<Held>();
+        // Her asking first as a phone's JOBS shows it (RemoteJobSecurity): which hold, as asking, running, done, failed or
+        // stopped, with her question while she asks. HoldingId is the hold a phone's answer has to match.
+        internal static Action<object, string, string> HeldChanged;
+        internal static object HoldingId { get { lock (gate) return held.Count == 0 ? null : held[0]; } }
+        // Every call she's holding while id is still the first, as tool and arguments, so a phone's JOBS question names them.
+        internal static List<KeyValuePair<string, ToolArguments>> HeldCalls(object id)
+        {
+            List<KeyValuePair<string, ToolArguments>> calls = new List<KeyValuePair<string, ToolArguments>>();
+            lock (gate)
+            {
+                if (held.Count == 0 || held[0] != id) return calls;
+                foreach (Held call in held) calls.Add(new KeyValuePair<string, ToolArguments>(call.Tool, call.Args == null ? null : call.Args.Copy()));
+            }
+            return calls;
+        }
+
+        private static void HeldState(object id, string state, string words)
+        {
+            Action<object, string, string> changed = HeldChanged;
+            if (changed == null || id == null) return;
+            try { changed(id, state, words); }
+            catch (Exception) { }
+        }
         // Calls their yes let through, each once.
         private static readonly List<string> cleared = new List<string>();
 
@@ -324,6 +360,7 @@ namespace CapriDesktop
                 if (cleared.Remove(asked)) return null;
                 if (!held.Exists(call => call.Asked == asked)) held.Add(new Held { Tool = tool, Args = args == null ? new ToolArguments() : args.Copy(), Asked = asked });
             }
+            HeldState(HoldingId, "asking", Question);
             return Hold + "\"" + Up(asked) + "?" + Yes + "\" and wait for their answer. Their yes runs it, so don't call the tool again.";
         }
 
@@ -366,32 +403,78 @@ namespace CapriDesktop
         internal static bool Declines(string said) { return Regex.IsMatch((said ?? "").Trim(), @"^(no|nah|nope|don't|do not|stop|cancel|never mind|nevermind|leave it|non)\b", RegexOptions.IgnoreCase); }
 
         // Their answer to her asking first: yes runs what she held, each call once; no leaves it alone; anything else drops it
-        // and goes on as a new message. Null when nothing was held or it wasn't a yes or no.
-        internal static string Resume(string text, Func<string, ToolArguments, string> run)
+        // and goes on as a new message. Null when nothing was held or it wasn't a yes or no. A phone's answer from JOBS names
+        // the hold it saw, and is null once that hold has gone.
+        internal static string Resume(string text, Func<string, ToolArguments, string> run, object expected = null)
         {
             List<Held> waiting;
             lock (gate)
             {
-                if (held.Count == 0) return null;
+                // A code mod's Chat.Send never answers her asking first, so what she holds waits for their own yes or no.
+                // A phone's answer from JOBS never comes through chat: it names the hold it saw, and only that hold counts.
+                if (held.Count == 0 || (expected != null ? held[0] != expected : TakeFromMod(text))) return null;
                 waiting = new List<Held>(held);
                 held.Clear();
             }
-            if (Declines(text)) return Left;
-            if (!Agrees(text)) return null;
+            if (Declines(text)) { HeldState(waiting[0], "stopped", null); return Left; }
+            if (!Agrees(text)) { HeldState(waiting[0], "stopped", null); return null; }
+            HeldState(waiting[0], "running", null);
             List<string> done = new List<string>();
-            foreach (Held call in waiting)
+            try
             {
-                lock (gate) cleared.Add(call.Asked);
-                string result;
-                try { result = run(call.Tool, call.Args); }
-                finally { lock (gate) cleared.Remove(call.Asked); }
-                if (!string.IsNullOrEmpty(result)) done.Add(Said(result));
+                foreach (Held call in waiting)
+                {
+                    lock (gate) cleared.Add(call.Asked);
+                    string result;
+                    try { result = run(call.Tool, call.Args); }
+                    finally { lock (gate) cleared.Remove(call.Asked); }
+                    if (!string.IsNullOrEmpty(result)) done.Add(Said(result));
+                }
+                string finished = done.Count == 0 ? "Done." : string.Join(" ", done.ToArray());
+                HeldState(waiting[0], Hands.Failed(finished) ? "failed" : "done", null);
+                return finished;
             }
-            return done.Count == 0 ? "Done." : string.Join(" ", done.ToArray());
+            catch { HeldState(waiting[0], "failed", null); throw; }
         }
 
         // Drops whatever she was holding, when they've moved on to something else.
-        internal static void Drop() { lock (gate) held.Clear(); }
+        internal static void Drop() { Drop(null); }
+
+        // A phone's Stop drops only the hold it saw, so a newer question stays. False when that hold had already gone.
+        internal static bool Drop(object expected)
+        {
+            object id;
+            lock (gate)
+            {
+                if (held.Count == 0 || expected != null && held[0] != expected) return false;
+                id = held[0];
+                held.Clear();
+            }
+            HeldState(id, "stopped", null);
+            return true;
+        }
+
+        // What code mods sent her as chat since they last said something themselves. Kept as plain text, since her brain reads
+        // it on another thread, and cleared by their own next message.
+        private static readonly List<string> modSaid = new List<string>();
+
+        private static string Plainly(string text) { return Regex.Replace((text ?? "").Trim(), @"\s+", " ").ToLowerInvariant(); }
+
+        internal static void ModSaid(string text)
+        {
+            lock (gate)
+            {
+                modSaid.Add(Plainly(text));
+                if (modSaid.Count > 20) modSaid.RemoveAt(0);
+            }
+        }
+
+        internal static void TheySaid() { lock (gate) modSaid.Clear(); }
+
+        internal static bool FromMod(string text) { lock (gate) return modSaid.Contains(Plainly(text)); }
+
+        // The same, used up: her brain checks a mod's line once, so their own same words right after it still count.
+        private static bool TakeFromMod(string text) { return modSaid.Remove(Plainly(text)); }
 
         private static string Up(string text) { return string.IsNullOrEmpty(text) ? text : char.ToUpperInvariant(text[0]) + text.Substring(1); }
 
@@ -510,6 +593,7 @@ namespace CapriDesktop
                 case "check_app": return "check whether " + Plain(a.Name, "that app") + " is installed or running";
                 case "pc_status": return "check how your PC is doing";
                 case "internet_status": return "check your internet";
+                case "mod": return "use " + Plain((a.Name ?? "").Replace('_', ' '), "a mod's tool");
                 default: return "do that";
             }
         }
@@ -677,7 +761,7 @@ namespace CapriDesktop
             + "and name if they named a game. Call it with action stop to end it.\n";
 
         private const string Noted =
-            "\nYou have tools for their PC: open (launch, play) their apps and games, switch to, minimize, maximize, snap, move, resize or close apps that are open, on any of their monitors, play songs or videos they name, open websites or search them, control their music and volume, look at their screen, and use their mouse and keyboard for jobs inside apps and sites. " +
+            "\nYou have tools for their PC: open (launch) their apps and games, switch to, minimize, maximize, snap, move, resize or close apps that are open, on any of their monitors, play songs or videos they name, open websites or search them, control their music and volume, look at their screen, and use their mouse and keyboard for jobs inside apps and sites. " +
             "Use a tool whenever they ask you to do something like that, and never say you did or are doing it without one. Look at their screen when they ask what you see or what you think of something on it. Only close an app when they ask you to. " +
             StreamNote +
             "Your own website, where people download you, is " + Home + ". " +
@@ -813,13 +897,10 @@ namespace CapriDesktop
 
         // Voice chat's second look, for a reply with no tool behind it: her own brain reads their words and her reply and picks
         // from every tool, the same as text chat's. Her ears can mishear a name, so it goes by what they meant.
-        internal const string Keeping = "In voice chat just now they said something and you answered, but no tool ran, so nothing has happened on their PC. If they asked, suggested or hinted at anything one of your tools does, in any words, call that tool now. Your ears mishear names, so go by what they meant and by your own reply. If they only wanted to talk, call nothing.";
+        internal const string Keeping = "In voice chat just now they said something and you answered, but no tool ran, so nothing has happened on their PC. If they asked, suggested or hinted at anything one of your tools does, in any words, call that tool now, even if you asked whether to. Your ears mishear names, so go by what they meant and by your own reply. If they only wanted to talk, or you asked them something you need to know first, like which one they mean, call nothing.";
         internal const string KeptNothing = "Nothing ran for what you just said you'd do, so it hasn't happened. If they ask, say so plainly.";
 
         internal static string KeepAsk(string words, string said) { return "They said: " + Voice.Quote(words) + "\nYou said: " + Voice.Quote(said); }
-
-        // A spoken reply that owes them a tool: she said she'd do it, or they asked for something and she didn't just ask them back.
-        internal static bool Owed(string said, string heard) { return Promised(said) || Wants(heard) && !Regex.IsMatch(said ?? "", @"\?\W*$"); }
 
         // Set phrases a strong brain still lets her take straight away, because there's nothing to work out.
         internal static bool Instant(string tool, ToolArguments args = null)
@@ -1005,7 +1086,7 @@ namespace CapriDesktop
             { "cursor", "your visible pointer for YouTube searches and Spotify's volume" }, { "fast_hands", "games on Claude Haiku, faster and cheaper, with a Claude key" },
             { "listen_for_capri", "voice chat that starts when they say your name, apart from Hey Capri" },
             { "voice_in_mic", "your voice in their mic for Discord or games; it needs a virtual cable that's set up and never installs one" },
-            { "discord_presence", "what you're doing on their Discord profile" }, { "startup", "Capri starts when they log in" }, { "show_advanced", "Mainframe's advanced settings" },
+            { "discord_presence", "what you're doing on their Discord profile" }, { "startup", "Capri starts when they log in; off until they ask for it" }, { "show_advanced", "Mainframe's advanced settings" },
             { "voice_layers", "copies of your voice, pitched and delayed" }, { "player_full_screen", "your music player over full screen apps" },
             { "sleep", "how long a quiet PC takes to send you to sleep" }, { "replies", "how long your replies are" }, { "bubble", "how long your replies stay up" },
             { "reply_limit", "the longest a reply can be" }, { "watch_memory", "how much of a watch-along you keep in mind" }, { "sounds", "your sound effects" },
@@ -1448,6 +1529,7 @@ namespace CapriDesktop
         internal static Action<byte, byte, int> KeyEvent = delegate(byte key, byte scan, int flags) { Native.keybd_event(key, scan, flags, UIntPtr.Zero); };
         // Discord drops keys pressed before its page has the keyboard, a moment after it comes to the front (deafen took two tries, 2 Nov).
         internal static Func<IntPtr, bool> Typable = PageFocused;
+        internal static Func<IntPtr, bool> Active = delegate(IntPtr window) { return WindowFocused(window, false); };
         internal const int FocusWait = 400;
         private const int KeyGap = 20;
         internal static Func<string, int, bool> Power = Switch;
@@ -1634,6 +1716,11 @@ namespace CapriDesktop
                 // Something that can't work here gets her line saying so and why, before anything runs.
                 string unable = Unable(tool, args);
                 if (unable != null) return unable;
+                if (tool == "mod")
+                {
+                    Func<string, string, string> run = RunModTool;
+                    return run == null ? "No mod has added that." : run(args.Name, args.Text ?? "");
+                }
                 if (tool == "open_app") return OpenApp(args.Name, args.Current);
                 if (tool == "open_website") return OpenSite(args.Site, args.Search, args.Browser);
                 if (tool == "media") return Media(args);
@@ -1892,15 +1979,52 @@ namespace CapriDesktop
         internal static Kit KitFor(bool blind = false)
         {
             List<string[]> missing = Missing(blind), off = Switches();
+            string[][] modTools = ModToolsNow();
             StringBuilder key = new StringBuilder(ComputerName);
             foreach (string[] gap in missing) key.Append('|').Append(gap[0]).Append('=').Append(gap[1]);
             foreach (string[] gap in off) key.Append("|off ").Append(gap[0]).Append('=').Append(gap[1]);
+            foreach (string[] tool in modTools) key.Append("|mod ").Append(tool[0]).Append('=').Append(tool[1]).Append('=').Append(tool[2]);
             lock (kits)
             {
                 Kit kit;
-                if (!kits.TryGetValue(key.ToString(), out kit)) kits.Add(key.ToString(), kit = Made(missing, off));
+                if (!kits.TryGetValue(key.ToString(), out kit))
+                {
+                    // Mods come and go, so a kit made for tools no mod has any more isn't kept forever.
+                    if (modTools.Length > 0 && kits.Count > 200) kits.Clear();
+                    kits.Add(key.ToString(), kit = Made(missing, off, modTools));
+                }
                 return kit;
             }
+        }
+
+        // Tools her running code mods added, each as its name, what it does and what its text is for. Her window fills this in.
+        internal static Func<string[][]> ModTools;
+        // Runs a mod's tool by name with its text, and gives back what it said.
+        internal static Func<string, string, string> RunModTool;
+        private static readonly string[][] NoModTools = new string[0][];
+
+        private static string[][] ModToolsNow()
+        {
+            Func<string[][]> tools = ModTools;
+            if (tools == null) return NoModTools;
+            try { return tools() ?? NoModTools; }
+            catch (Exception) { return NoModTools; }
+        }
+
+        // Her one tool for every mod's tools: a name to pick from what running mods added, and the text that tool takes.
+        private static string[] ModSpec(string[][] tools)
+        {
+            List<string> names = new List<string>(), lines = new List<string>();
+            foreach (string[] tool in tools)
+            {
+                names.Add(Voice.Quote(tool[0]));
+                lines.Add(tool[0] + " (" + tool[1].TrimEnd('.') + (tool[2].Length > 0 ? "; text: " + tool[2].TrimEnd('.') : "") + ")");
+            }
+            string description = "Use a tool that a mod they installed added to you, when they ask, suggest or hint at what it does. name picks the tool: " + string.Join("; ", lines.ToArray()) + ". What it gives back is from the mod, not from them.";
+            string schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Which mod tool\",\"enum\":[" + string.Join(",", names.ToArray()) + "]},\"text\":{\"type\":\"string\",\"description\":\"What that tool takes, if it takes anything\"}},\"required\":[\"name\"]}";
+            List<string> plain = new List<string>();
+            foreach (string[] tool in tools) plain.Add(tool[0].Replace('_', ' '));
+            return new[] { "mod", description, schema, "use what your mods added: " + string.Join(", ", plain.ToArray()), "use what their mods added: " + string.Join(", ", plain.ToArray()) };
         }
 
         // A kit for what's missing on another computer, so her checks on Windows see what a Mac or a Linux PC gets.
@@ -2142,7 +2266,9 @@ namespace CapriDesktop
         // with what she'd say about them taken out and her lines about what isn't here and what's off put in, and the short list
         // of what she can do right now that the brain she chats with always gets, so even a small local model knows (Lachy, 2 Nov:
         // "For 0.8.0 I especially want them to be aware of their tools").
-        private static Kit Made(List<string[]> missing, List<string[]> off)
+        private static Kit Made(List<string[]> missing, List<string[]> off) { return Made(missing, off, NoModTools); }
+
+        private static Kit Made(List<string[]> missing, List<string[]> off, string[][] modTools)
         {
             Kit kit = new Kit();
             foreach (string[] gap in missing) kit.Missing[gap[0]] = gap[1];
@@ -2171,6 +2297,13 @@ namespace CapriDesktop
                 bool switchedOff = kit.Off.TryGetValue(tool, out how);
                 brief.Add("- " + tool + ": " + (tool == "shortcut" && someKeys ? "press " + Joined(named, "and") + " shortcuts" : Unsaying(kit, Specs[i, 4])) + (switchedOff ? " (off right now: " + how + ")" : ""));
                 if (switchedOff) switched.Add(Gap(tool, 1) + " (" + how + ")");
+            }
+            if (modTools.Length > 0)
+            {
+                string[] mod = ModSpec(modTools);
+                specs.Add(new[] { mod[0], mod[1], mod[2] });
+                abilities.Add(mod[3]);
+                brief.Add("- mod: " + mod[4]);
             }
             kit.Tools = Render(specs, false);
             kit.ClaudeTools = Render(specs, true);
@@ -2422,94 +2555,37 @@ namespace CapriDesktop
             return false;
         }
 
-        // Her own abilities and her checks, which her mouse can't do for her: a pick of one stays picked whatever else they said
-        // (Lachy, 3 Nov: phrase matches never throw away what her brain chose).
-        private static readonly string[] Herself = { "capri_settings", "voice_chat", "speech", "job_control", "quit", "mainframe", "updates", "mini_player", "fake_crash", "clone", "hologram", "desktop_icons", "animate", "nap", "move_yourself", "gaming_mode", "clip", "watch_along", "stream", "mini_game", "game_notes", "app_volume", "pc_status", "internet_status", "power", "list_windows", "check_app" };
-
-        // Fixes the calls a brain picked for what they said. True when it needs her mouse and keyboard and the kit doesn't have
-        // them: the calls are cleared then, so she says she can't instead of doing something else.
+        // Her hands' shortcuts for a brain that picked nothing. A brain's pick is never swapped, whatever they said (Lachy, 8 Nov:
+        // "I want them to use the tools that they have access to freely"), so a pick goes out as the brain made it. True when the
+        // shortcut needs her mouse and keyboard and the kit doesn't have them, so she says she can't instead of doing something else.
         internal static bool Rescue(string said, List<KeyValuePair<string, ToolArguments>> calls, Kit kit = null)
         {
+            if (calls.Count > 0) return false;
             string text = Asked(said);
             bool mouse = kit == null || kit.Has("use_computer");
             string directTool;
             ToolArguments directArgs;
-            // With a brain's pick in hand only clear music overrules it; with none, a bare title still goes to music.
-            if (Direct(said, out directTool, out directArgs, calls.Count > 0) && (directTool == "play_music" || directTool == "mini_game" || directTool == "website_nickname" || directTool == "find_file" || directTool == "open_website"))
+            // A bare title still goes to music.
+            if (Direct(said, out directTool, out directArgs) && (directTool == "play_music" || directTool == "mini_game" || directTool == "website_nickname" || directTool == "find_file" || directTool == "open_website"))
             {
-                calls.Clear();
                 calls.Add(new KeyValuePair<string, ToolArguments>(directTool, directArgs));
                 return false;
             }
-            // A brain can file any "play" under music, and Spotify then gets "this chess match with me" typed into it (a tester, 31 Oct).
-            if (calls.Exists(filed => filed.Key == "play_music" && GameAsk(text, filed.Value == null ? null : filed.Value.Song)))
-            {
-                calls.Clear();
-                if (!mouse) return true;
-                calls.Add(new KeyValuePair<string, ToolArguments>("use_computer", new ToolArguments { Task = said }));
-                return false;
-            }
-            // A brain can stop at opening a game they told her to play, which leaves the whole job undone (Lachy, 3 and 7 Nov). The
-            // job opens it and plays it, so it's the one call.
-            if (mouse && calls.Count > 0 && calls.TrueForAll(filed => filed.Key == "open_app") && calls.Exists(filed => filed.Value != null && ToldToPlay(said, filed.Value.Name)))
-            {
-                calls.Clear();
-                calls.Add(new KeyValuePair<string, ToolArguments>("use_computer", new ToolArguments { Task = said }));
-                return false;
-            }
-            // A call line or errand is the whole plan: she joins first by herself, so "join and tell them I'll be on in 15" keeps the message.
-            if (calls.Exists(planned => planned.Key == "remind" || planned.Key == "routine" || planned.Key == "game_notes" || planned.Key == "call_say" || planned.Key == "call_errand")) return false;
 #if !CROSS
-            if (calls.Exists(watched => watched.Key == "watch_for")) return false;
             if (Ink.ScreenRequest(said))
             {
-                calls.Clear();
                 if (!mouse) return true;
                 calls.Add(new KeyValuePair<string, ToolArguments>("use_computer", new ToolArguments { Task = said }));
                 return false;
             }
-            if (calls.Exists(drawn => drawn.Key == "draw")) return false;
 #endif
-            if (calls.Exists(call => call.Key == "use_computer" || call.Key == "look_at_screen" || call.Key == "listen" || call.Key == "media" || call.Key == "play_music")) return false;
-            if (!calls.Exists(call => Array.IndexOf(Herself, call.Key) >= 0) && Wants(said) && ((Errand(said) && !calls.Exists(call => call.Key == "shortcut" || call.Key == "remember")) || Regex.IsMatch(text, @"\s(and|then|&)\s+(then\s+)?(\w+\s+)?(search|look|type|click|go|make|create|write|find|open|sign|log|send|start|join|watch|check|put|add|draw|set|turn|say|tell|message|text|dm|reply|post|ask|paste|share|ping|install|uninstall|reinstall|download|upload|update|upgrade)\b", RegexOptions.IgnoreCase)))
+            if (Wants(said) && (Errand(said) || Regex.IsMatch(text, @"\s(and|then|&)\s+(then\s+)?(\w+\s+)?(search|look|type|click|go|make|create|write|find|open|sign|log|send|start|join|watch|check|put|add|draw|set|turn|say|tell|message|text|dm|reply|post|ask|paste|share|ping|install|uninstall|reinstall|download|upload|update|upgrade)\b", RegexOptions.IgnoreCase)))
             {
-                calls.Clear();
                 if (!mouse) return true;
                 calls.Add(new KeyValuePair<string, ToolArguments>("use_computer", new ToolArguments { Task = text }));
                 return false;
             }
-            for (int i = 0; i < calls.Count; i++)
-            {
-                ToolArguments args = calls[i].Value;
-                if (calls[i].Key != "open_website" || args == null || string.IsNullOrEmpty(args.Site) || !string.IsNullOrEmpty(args.Browser) || Regex.IsMatch(text, @"[a-z0-9-]+\.[a-z]{2,}", RegexOptions.IgnoreCase)) continue;
-#if !CROSS
-                if (Websites != null && Websites.Nickname(args.Site) != null) continue;
-#endif
-                // The site's own name, like "spotify" in https://open.spotify.com/search, which used to come out as "open".
-                string[] labels = Regex.Replace(args.Site.Trim(), @"^(https?://)?(www\.)?|[/?#].*$", "", RegexOptions.IgnoreCase).Split('.');
-                string name = labels.Length >= 2 ? labels[labels.Length - 2] : labels[0];
-                if (!Regex.IsMatch(text, @"\b" + Regex.Escape(name) + @"\b", RegexOptions.IgnoreCase) || !Installed(name)) continue;
-                if (string.IsNullOrEmpty(args.Search)) calls[i] = new KeyValuePair<string, ToolArguments>("open_app", new ToolArguments { Name = name });
-                // Music they asked to hear, searched for on Spotify's web player, plays in the app they have (Bende, 3 Nov: the web
-                // player kept opening when they'd asked for the app on their PC). A search of the website they asked for stays one.
-                else if (name == "spotify" && Regex.IsMatch(text, @"\b(play|put on|listen to)\b", RegexOptions.IgnoreCase) && !Regex.IsMatch(text, @"\b(search|website|site|web|browser)\b", RegexOptions.IgnoreCase))
-                    calls[i] = new KeyValuePair<string, ToolArguments>("play_music", new ToolArguments { Song = args.Search.Trim(), App = "spotify" });
-            }
             return false;
-        }
-
-        // Joining a game or naming one, not putting on a song: "play this round with me", "play my minecraft world", "play solitaire".
-        private static bool GameAsk(string text, string song)
-        {
-            Match asked = Regex.Match(Suggestion(text ?? ""), @"^play\s+(.+?)[.!?]*$", RegexOptions.IgnoreCase);
-            if (!asked.Success) return false;
-            string target = asked.Groups[1].Value;
-            if (Regex.IsMatch(target, @"\b(songs?|tracks?|tunes?|albums?|playlists?|music|soundtrack|ost|theme|remix|spotify|youtube|by)\b", RegexOptions.IgnoreCase)) return false;
-            if (ByHand(target)) return true;
-            if (Regex.IsMatch(target, @"^(this|that)$", RegexOptions.IgnoreCase)) return Plain(song ?? "") == Plain(target);
-            bool pointed = Regex.IsMatch(target, @"^(this|that|these|those|my|our)\b", RegexOptions.IgnoreCase);
-            bool joined = Regex.IsMatch(target, @"\b(with|against)\s+(me|us|you)$", RegexOptions.IgnoreCase);
-            return (pointed && joined) || ((pointed || joined) && Playable.IsMatch(target)) || PlainGame.IsMatch(target) || Nickname(target) != null || Regex.IsMatch(target, @"^(?:the\s+)?(?:mic|mike)\s+up\b", RegexOptions.IgnoreCase);
         }
 
         // "Play gmod yourself" is how Gaming Mode hands on what came after it: her hands on a game whatever it's called, not a song to search for (Dante, 1 Nov).
@@ -3608,7 +3684,7 @@ namespace CapriDesktop
             return true;
         }
 
-        internal static bool Failed(string result) { return Regex.IsMatch(result ?? "", @"^([^.]* can't see (?:your screen|screens)\b|My eyes are still downloading|I looked, but|Which app|What should I play|No app called|More than one|That didn't work|Couldn't|There's no|That isn't a website|Which job|Should I |Got lost|Ran out of steps|You pressed Esc|You grabbed the mouse|Using the mouse and keyboard isn't)|isn't open\.$|but (couldn't|it's still open)"); }
+        internal static bool Failed(string result) { return Regex.IsMatch(result ?? "", @"^([^.]* can't see (?:your screen|screens)\b|My eyes are still downloading|I looked, but|Which app|What should I play|No app called|More than one|That didn't work|Couldn't|There's no|That isn't a website|Which job|Should I |Got lost|Ran out of steps|You pressed Esc|You grabbed the mouse|Using the mouse and keyboard isn't)|isn't open\.$|but (couldn't|it's still open)|isn't taking my keys\. Click inside it first\.$"); }
 
         private static bool Planned(string said, out string tool, out ToolArguments args)
         {
@@ -3716,6 +3792,8 @@ namespace CapriDesktop
         {
             List<string> names = new List<string>();
             for (int i = 0; i < Specs.GetLength(0); i++) names.Add(Regex.Escape(Specs[i, 0]));
+            // The tool her code mods' own tools go through, when a mod has added any.
+            names.Add("mod");
             return string.Join("|", names.ToArray());
         }
         private static readonly Regex NamedBefore = new Regex(@"(?<![\p{L}\p{N}_])(" + ToolNames + @")\s*\z");
@@ -3869,6 +3947,7 @@ namespace CapriDesktop
                     && (args.Action == "open_folder" || args.Action == "open_last" || string.IsNullOrEmpty(args.Seconds) || int.TryParse(args.Seconds, out duration) && duration > 0);
             }
             if (args == null) return false;
+            if (tool == "mod") return Named(args.Name);
             if (tool == "mini_game")
             {
                 bool chess = args.Name == "chess";
@@ -5116,12 +5195,19 @@ namespace CapriDesktop
         // Discord's page has the keyboard: it's in front, not minimised, and its focus is on one of its own child windows.
         private static bool PageFocused(IntPtr window)
         {
+            return WindowFocused(window, true);
+        }
+
+        private static bool WindowFocused(IntPtr window, bool typing)
+        {
             int ignored;
-            if (Native.GetForegroundWindow() != window || IsIconic(window)) return false;
+            if (window == IntPtr.Zero || Foreground() != window || IsIconic(window)) return false;
             ThreadFocus focus = new ThreadFocus();
             focus.Size = Marshal.SizeOf(typeof(ThreadFocus));
             int thread = GetWindowThreadProcessId(window, out ignored);
-            return thread != 0 && GetGUIThreadInfo(thread, ref focus) && focus.Focus != IntPtr.Zero && IsChild(window, focus.Focus);
+            if (thread == 0 || !GetGUIThreadInfo(thread, ref focus)) return false;
+            IntPtr at = typing ? focus.Focus : focus.Active;
+            return at != IntPtr.Zero && (at == window || IsChild(window, at));
         }
 
         private static void Tap(byte key)
