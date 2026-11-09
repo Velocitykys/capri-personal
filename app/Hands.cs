@@ -4058,6 +4058,12 @@ namespace CapriDesktop
             return null;
         }
 
+        // Used by the Discord remote-control door (batch 2); the owner's PC actions rules have already been checked by the caller.
+        internal static string OpenAppFromDiscord(string wanted)
+        {
+            return OpenApp(wanted, null);
+        }
+
         private static string OpenApp(string wanted, Func<bool> current = null)
         {
             if (string.IsNullOrWhiteSpace(wanted)) return "Which app, choom?";

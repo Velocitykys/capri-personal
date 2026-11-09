@@ -209,7 +209,7 @@ namespace CapriDesktop
                 bool on;
                 if (enhancementFlags.TryGetValue(id, out on)) return on;
                 return id == "custom_commands" || id == "highlight_assistance"
-                    || id == "personal_dashboard" || id == "pc_health_monitor";
+                    || id == "personal_dashboard" || id == "pc_health_monitor" || id == "grudges";
             }
         }
 
@@ -530,7 +530,26 @@ namespace CapriDesktop
                     "ON-DEMAND READOUT · NO BACKGROUND MONITORING"),
                 new Enhancement("conversational_continuity", "Conversational Continuity", "VOICE",
                     "After Capri answers in hands-free voice chat, keep the conversation open briefly so natural follow-ups work without saying her name again. Requires a clear follow-up after Capri has been addressed; ignores casual greetings and nearby conversation.",
-                    "5-SECOND FOLLOW-UP WINDOW · HANDS-FREE VOICE")
+                    "5-SECOND FOLLOW-UP WINDOW · HANDS-FREE VOICE"),
+                new Enhancement("outfit_decider", "Outfit Decider", "PERSONALITY",
+                    "Capri picks and changes her own outfit while she runs. Choose how often, or let her decide whenever she wants. Needs the Outfit Decider code mod turned on.",
+                    "OFF BY DEFAULT - RANDOM SKINS AND COLOURS",
+                    new EnhancementOption("how_often", "How often", "Whenever she wants", "Whenever she wants", "Every 10 minutes", "Every 30 minutes", "Every hour", "Every 2 hours", "Every 4 hours")),
+                new Enhancement("autonomy", "Autonomy", "INDEPENDENCE",
+                    "Lets Capri act on her own within limits you set. Off, she only does what you ask. Per area choose Off, Ask first (she waits for your OK) or Free. Actions use a daily budget and are logged.",
+                    "OFF BY DEFAULT · PER-AREA PERMISSIONS · DAILY BUDGET",
+                    new EnhancementOption("messaging", "Messaging", "Off", "Off", "Ask first", "Free"),
+                    new EnhancementOption("research", "Research", "Off", "Off", "Ask first", "Free"),
+                    new EnhancementOption("learning", "Learning", "Off", "Off", "Ask first", "Free"),
+                    new EnhancementOption("self_edits", "Self-edits", "Off", "Off", "Ask first", "Free"),
+                    new EnhancementOption("pc_actions", "PC actions", "Off", "Off", "Ask first", "Free"),
+                    new EnhancementOption("daily_budget", "Daily budget", "100", "25", "100", "250", "1000"),
+                    new EnhancementOption("quiet_hours", "Quiet hours", "Off", "Off", "10 pm - 8 am", "11 pm - 7 am", "12 am - 9 am")),
+                new Enhancement("grudges", "Mood and Grudges", "PERSONALITY",
+                    "Capri can sulk if you throw her around. She still answers and helps; she just won't be picked up until you say sorry, pat her head or leave her alone. Choose how long it lasts, or turn it off.",
+                    "SULKS AFTER THREE THROWS · ALWAYS ENDS ON ITS OWN",
+                    new EnhancementOption("length", "Sulk length", "5 minutes", "1 minute", "5 minutes", "15 minutes"),
+                    new EnhancementOption("emotions", "Emotions", "On", "On", "Off"))
             };
 
             private readonly Panel list;
@@ -715,12 +734,12 @@ namespace CapriDesktop
                     optionMenus[index][optionIndex] = choices;
                 }
 
-                if (feature.Id == "custom_commands" || feature.Id == "highlight_assistance" || feature.Id == "personal_dashboard" || feature.Id == "pc_health_monitor")
+                if (feature.Id == "custom_commands" || feature.Id == "highlight_assistance" || feature.Id == "personal_dashboard" || feature.Id == "pc_health_monitor" || feature.Id == "grudges")
                 {
                     Key action = new Key();
                     action.Font = Type(8f * Zoom);
                     action.Accent = Cyan;
-                    action.Text = feature.Id == "custom_commands" ? "Manage saved commands" : feature.Id == "highlight_assistance" ? "Select screen area" : feature.Id == "personal_dashboard" ? "Open dashboard" : "Check PC now";
+                    action.Text = feature.Id == "grudges" ? "Open Capri's mind" : feature.Id == "custom_commands" ? "Manage saved commands" : feature.Id == "highlight_assistance" ? "Select screen area" : feature.Id == "personal_dashboard" ? "Open dashboard" : "Check PC now";
                     action.AccessibleName = action.Text;
                     action.Click += delegate
                     {
@@ -729,7 +748,8 @@ namespace CapriDesktop
                             MessageBox.Show(this, "Turn this feature on first.", "Enhancements", MessageBoxButtons.OK, MessageBoxIcon.Information);
                             return;
                         }
-                        if (feature.Id == "custom_commands") owner.OpenSavedManager(true);
+                        if (feature.Id == "grudges") owner.OpenMind();
+                        else if (feature.Id == "custom_commands") owner.OpenSavedManager(true);
                         else if (feature.Id == "highlight_assistance") owner.StartHighlightRegionSelection();
                         else if (feature.Id == "personal_dashboard") owner.OpenDashboard();
                         else ShowPcHealth();
@@ -770,7 +790,8 @@ namespace CapriDesktop
                 int y = 8;
                 for (int i = 0; i < features.Length; i++)
                 {
-                    int height = expanded[i] ? 116 : 48;
+                    int optionRows = (optionKeys[i].Length + 2) / 3;
+                    int height = expanded[i] ? 116 + Math.Max(0, optionRows - 1) * 26 : 48;
                     categories[i].Location = new Point(Z(16), Z(y));
                     toggles[i].Location = new Point(Z(16), Z(y + 14));
                     details[i].Location = new Point(Z(570), Z(y + 14));
@@ -783,7 +804,7 @@ namespace CapriDesktop
                     {
                         Key key = optionKeys[i][j];
                         key.Visible = expanded[i];
-                        key.Location = new Point(Z(28 + j * 220), Z(y + 94));
+                        key.Location = new Point(Z(28 + (j % 3) * 220), Z(y + 94 + (j / 3) * 26));
                         key.Size = new Size(Z(205), Z(22));
                     }
                     if (actions[i] != null)

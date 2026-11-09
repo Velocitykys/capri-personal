@@ -30,6 +30,7 @@ namespace CapriDesktop
         [DataMember(Name = "emoji", EmitDefaultValue = false)] public string Emoji;
         [DataMember(Name = "search", EmitDefaultValue = false)] public string Search;
         [DataMember(Name = "count", EmitDefaultValue = false)] public int? Count;
+        [DataMember(Name = "confirmed", EmitDefaultValue = false)] public bool Confirmed;
     }
 
     [DataContract]
@@ -77,6 +78,14 @@ namespace CapriDesktop
         private readonly object publicAskGate = new object();
         private NamedPipeServerStream waiting;
         private volatile bool stopping;
+        // Capri's autonomy rules (action, area, what it is for) answered as "verdict|reason|used/limit". Set after the bridge starts.
+        internal Func<string, string, string, string> Autonomy;
+        // Remote PC actions from the owner's DM (action, target, owner said yes) answered as "verdict|text|used/limit".
+        internal Func<string, string, bool, string> PcAction;
+        // The bot's private mind snapshot, the owner's queued edits to it, and its settings (emotions, quiet hours).
+        internal Func<string, string> MindPut;
+        internal Func<string> MindEdits;
+        internal Func<string> MindSettings;
 
         internal DiscordBridge(string data, Reminders reminders, Func<string, string, bool, string> ask, Func<string, string, string> publicAsk, Func<string> status, Func<string> pcInfo, Func<string> captureScreenshot)
         {
@@ -339,6 +348,21 @@ namespace CapriDesktop
                     return new DiscordBridgeResponse { Ok = true, Value = pcInfo == null ? "PC information is unavailable." : pcInfo() };
                 case "pc_screenshot":
                     return new DiscordBridgeResponse { Ok = true, Value = captureScreenshot == null ? "Screenshot capture is unavailable." : captureScreenshot() };
+
+                case "autonomy":
+                    return new DiscordBridgeResponse { Ok = true, Value = Autonomy == null ? "denied|Autonomy is unavailable.|0/0" : Autonomy(request.Action, request.Target, text) };
+
+                case "mind_put":
+                    return new DiscordBridgeResponse { Ok = true, Value = MindPut == null ? "failed" : MindPut(text) };
+
+                case "mind_edits_take":
+                    return new DiscordBridgeResponse { Ok = true, Value = MindEdits == null ? "[]" : MindEdits() };
+
+                case "mind_settings":
+                    return new DiscordBridgeResponse { Ok = true, Value = MindSettings == null ? "on|-1|-1" : MindSettings() };
+
+                case "pc_action":
+                    return new DiscordBridgeResponse { Ok = true, Value = PcAction == null ? "failed|Remote control is unavailable.|0/0" : PcAction(request.Action, request.Target, request.Confirmed) };
 
                 case "reminder":
                     string answer = reminders == null ? null : reminders.DiscordHandle(text);

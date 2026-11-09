@@ -12,18 +12,22 @@ namespace CapriDesktop
 {
     internal sealed partial class Mainframe
     {
-        private const int ModRows = 4, ModRowTop = 204, ModRowHeight = 62;
+        private const int ModRows = 3, ModRowTop = 204, ModRowHeight = 62, PersonalRows = 5, PersonalRowTop = 488, PersonalRowHeight = 32;
         private readonly List<KeyValuePair<Control, int>> modLeft = new List<KeyValuePair<Control, int>>();
-        private Panel modInstalledPanel, modPersonalPanel;
-        private readonly Key[] modPublishes = new Key[4];
-        private readonly List<Key> personalSwitches = new List<Key>();
+        private readonly Label[] modNames = new Label[ModRows], modAbouts = new Label[ModRows];
+        private readonly Key[] modSwitches = new Key[ModRows], modRemoves = new Key[ModRows], modPublishes = new Key[ModRows];
+        private readonly Label[] personalNames = new Label[PersonalRows];
+        private readonly Key[] personalSwitches = new Key[PersonalRows];
+        private Key personalBack, personalNext;
+        private Label personalPage;
+        private int personalFirst;
         private readonly string[] personalFeatureIds = {
             "custom_commands", "highlight_assistance", "personal_dashboard",
-            "pc_health_monitor", "conversational_continuity"
+            "pc_health_monitor", "conversational_continuity", "autonomy", "grudges", "outfit_decider"
         };
         private readonly string[] personalFeatureNames = {
             "Custom commands", "Highlight assistance", "Personal dashboard",
-            "PC health monitor", "Conversation continuity"
+            "PC health monitor", "Conversation continuity", "Autonomy", "Mood and grudges", "Outfit Decider"
         };
         private Key modsKey, modBack, modNext, modBrowse;
         private Head modListHead;
@@ -31,6 +35,12 @@ namespace CapriDesktop
         private Label modStatus, modEmpty, modPage;
         private bool modded;
         private int modFirst;
+        private readonly Key[] modTabs = new Key[5], modHides = new Key[ModRows];
+        private static readonly string[] ModTabNames = { "All", "Skin", "Code", "Skill", "Mod" };
+        private Key modShowHidden;
+        private int modKind;
+        private bool modShowingHidden;
+        private HashSet<string> modHiddenIds;
 
         private void BuildMods()
         {
@@ -49,49 +59,60 @@ namespace CapriDesktop
             Explain(modBrowse, "Browse mods", "MainframeMods.cs");
             Explain(folder, "Open mods folder", "MainframeMods.cs");
 
-            modStatus = ModLabel("", 28, 138, 328, 36, Font, Faint);
+            modStatus = ModLabel("", 28, 138, 200, 36, Font, Faint);
             ((Note)modStatus).Hovers = true;
 
-            Section("INSTALLED >", 0, 180);
-            modInstalledPanel = new Panel {
-                Location = new Point(28, 204),
-                Size = new Size(328, 220),
-                AutoScroll = true,
-                BackColor = Ground,
-                BorderStyle = BorderStyle.None,
-                TabStop = true
-            };
-            Controls.Add(modInstalledPanel);
-            modEmpty = ModLabel("No mods yet. Import a " + Mods.Extension + " file.", 0, 4, 300, 24, Font, Faint);
-            PutInPanel(modEmpty, modInstalledPanel);
+            modListHead = Section("INSTALLED >", 0, 180);
+            int[] tabLeft = { 140, 179, 224, 269, 314 }, tabWide = { 36, 42, 42, 42, 42 };
+            for (int i = 0; i < modTabs.Length; i++)
+            {
+                int kind = i;
+                modTabs[i] = Make(ModTabNames[i], tabLeft[i], 178, tabWide[i], 24, delegate { SetModTab(kind); });
+                modTabs[i].AccessibleName = kind == 0 ? "Show all mods" : "Show only " + ModTabNames[i].ToLowerInvariant() + " mods";
+                Explain(modTabs[i], "Mod filter", "MainframeMods.cs");
+            }
+            modShowHidden = Make("Show hidden", 236, 142, 120, 24, delegate { ToggleHiddenMods(); });
+            Explain(modShowHidden, "Show hidden mods", "MainframeMods.cs");
+            modEmpty = ModLabel("No mods yet. Import a " + Mods.Extension + " file.", 28, ModRowTop, 328, 20, Font, Faint);
+            for (int i = 0; i < ModRows; i++)
+            {
+                int row = i, top = ModRowTop + ModRowHeight * i;
+                modNames[i] = ModLabel("", 28, top + 3, 196, 20, Type(10f, true), White);
+                modSwitches[i] = Make("On", 230, top, 54, 22, delegate { SwitchMod(row); });
+                modRemoves[i] = Make("Remove", 290, top, 66, 22, delegate { RemoveMod(row); });
+                modAbouts[i] = ModLabel("", 28, top + 26, 196, 30, Look.Mono(8.5f, FontStyle.Regular, GraphicsUnit.Point), Faint);
+                Explain(modSwitches[i], "Mod switch", "MainframeMods.cs", null, "On / Off");
+                Explain(modRemoves[i], "Remove", "MainframeMods.cs");
+                modPublishes[i] = Make("Publish", 290, top + 28, 66, 22, delegate { PublishMod(row); });
+                Explain(modPublishes[i], "Publish mod", "MainframeMods.cs");
+                modHides[i] = Make("Hide", 230, top + 28, 54, 22, delegate { HideMod(row); });
+                Explain(modHides[i], "Hide mod", "MainframeMods.cs");
+            }
+            modBack = Make("Back", 28, ModRowTop + ModRowHeight * ModRows, 60, 22, delegate { modFirst -= ModRows; FillMods(); });
+            modPage = ModLabel("", 96, ModRowTop + ModRowHeight * ModRows + 3, 192, 18, Font, Faint);
+            modPage.TextAlign = ContentAlignment.MiddleCenter;
+            Explain(modBack, "Mod pages", "MainframeMods.cs");
+            modNext = Make("Next", 296, ModRowTop + ModRowHeight * ModRows, 60, 22, delegate { modFirst += ModRows; FillMods(); });
+            Explain(modNext, "Mod pages", "MainframeMods.cs");
 
             Section("PERSONAL MODS >", 0, 438);
             Key personalConfigure = Make("Configure", 240, 438, 78, 25, delegate { OpenEnhancements(); });
             Explain(personalConfigure, "Configure all personal features", "Enhancements.cs");
             Caption("Your built-in Capri features.", 28, 466, Look.Mono(8.5f, FontStyle.Italic, GraphicsUnit.Point), Faint);
-            modPersonalPanel = new Panel {
-                Location = new Point(28, 488),
-                Size = new Size(328, 184),
-                AutoScroll = true,
-                BackColor = Ground,
-                BorderStyle = BorderStyle.None,
-                TabStop = true
-            };
-            Controls.Add(modPersonalPanel);
-
-            personalSwitches.Clear();
-            for (int i = 0; i < personalFeatureIds.Length; i++)
+            for (int i = 0; i < PersonalRows; i++)
             {
-                int feature = i;
-                int top = i * 36;
-                Label name = ModLabel(personalFeatureNames[i], 0, top + 3, 170, 22, Type(9.5f, true), White);
-                PutInPanel(name, modPersonalPanel);
-
-                Key toggle = Make("On", 176, top, 58, 25, delegate { TogglePersonalFeature(feature); });
-                Explain(toggle, "Personal feature", "Enhancements.cs");
-                PutInPanel(toggle, modPersonalPanel);
-                personalSwitches.Add(toggle);
+                int row = i, top = PersonalRowTop + PersonalRowHeight * i;
+                personalNames[i] = ModLabel("", 28, top + 3, 190, 22, Type(9.5f, true), White);
+                personalSwitches[i] = Make("On", 230, top, 58, 25, delegate { TogglePersonalFeature(personalFirst + row); });
+                Explain(personalSwitches[i], "Personal feature", "Enhancements.cs");
             }
+            int personalPagerTop = PersonalRowTop + PersonalRowHeight * PersonalRows + 4;
+            personalBack = Make("Back", 28, personalPagerTop, 60, 22, delegate { personalFirst -= PersonalRows; FillPersonalMods(); });
+            personalPage = ModLabel("", 96, personalPagerTop + 3, 192, 18, Font, Faint);
+            personalPage.TextAlign = ContentAlignment.MiddleCenter;
+            Explain(personalBack, "Personal feature pages", "MainframeMods.cs");
+            personalNext = Make("Next", 296, personalPagerTop, 60, 22, delegate { personalFirst += PersonalRows; FillPersonalMods(); });
+            Explain(personalNext, "Personal feature pages", "MainframeMods.cs");
 
             Section("COLORS >", 0, 688);
             int colourRow = 712;
@@ -115,12 +136,6 @@ namespace CapriDesktop
             }
 
             FillMods();
-        }
-
-        private void PutInPanel(Control control, Panel panel)
-        {
-            if (control.Parent != null) control.Parent.Controls.Remove(control);
-            panel.Controls.Add(control);
         }
 
         private void TogglePersonalFeature(int index)
@@ -149,14 +164,26 @@ namespace CapriDesktop
 
         private void FillPersonalMods()
         {
-            for (int i = 0; i < personalSwitches.Count; i++)
+            int total = personalFeatureIds.Length;
+            personalFirst = Math.Max(0, Math.Min(personalFirst, (Math.Max(0, total - 1) / PersonalRows) * PersonalRows));
+            for (int i = 0; i < PersonalRows; i++)
             {
-                bool on = capri.ExperimentalFeatureOn(personalFeatureIds[i]);
+                int index = personalFirst + i;
+                bool shown = index < total;
+                personalNames[i].Visible = personalSwitches[i].Visible = shown;
+                if (!shown) continue;
+                bool on = capri.ExperimentalFeatureOn(personalFeatureIds[index]);
+                personalNames[i].Text = personalFeatureNames[index];
                 personalSwitches[i].Text = on ? "On" : "Off";
                 personalSwitches[i].Accent = on ? Cyan : Rose;
-                personalSwitches[i].AccessibleName = (on ? "Turn off " : "Turn on ") + personalFeatureNames[i];
+                personalSwitches[i].AccessibleName = (on ? "Turn off " : "Turn on ") + personalFeatureNames[index];
                 personalSwitches[i].Invalidate();
             }
+            bool pages = total > PersonalRows;
+            personalBack.Visible = personalNext.Visible = personalPage.Visible = pages;
+            personalBack.Enabled = personalFirst > 0;
+            personalNext.Enabled = personalFirst + PersonalRows < total;
+            personalPage.Text = "Page " + (personalFirst / PersonalRows + 1) + " of " + ((Math.Max(0, total - 1)) / PersonalRows + 1);
         }
         private Label ModLabel(string text, int x, int y, int width, int height, Font font, Color colour)
         {
@@ -209,60 +236,45 @@ namespace CapriDesktop
 
         private void FillMods()
         {
-            List<Mod> mods = capri.ModList.All;
-            modFirst = 0;
-
-            foreach (Control old in modInstalledPanel.Controls) old.Dispose();
-            modInstalledPanel.Controls.Clear();
-
-            if (mods.Count == 0)
+            List<Mod> mods = ShownMods();
+            int total = mods.Count, pageSize = ModRows;
+            modFirst = Math.Max(0, Math.Min(modFirst, (Math.Max(0, total - 1) / pageSize) * pageSize));
+            modEmpty.Visible = total == 0;
+            modEmpty.Text = capri.ModList.All.Count == 0 ? "No mods yet. Import a " + Mods.Extension + " file." : "Nothing here. Try another filter, or Show hidden.";
+            for (int i = 0; i < ModRows; i++)
             {
-                modEmpty = ModLabel("No mods yet. Import a " + Mods.Extension + " file.", 0, 4, 300, 24, Font, Faint);
-                PutInPanel(modEmpty, modInstalledPanel);
+                Mod mod = modFirst + i < total ? mods[modFirst + i] : null;
+                modNames[i].Visible = modAbouts[i].Visible = modSwitches[i].Visible = modRemoves[i].Visible = modPublishes[i].Visible = modHides[i].Visible = mod != null;
+                if (mod == null) continue;
+                modNames[i].Text = mod.File.Name + (string.IsNullOrEmpty(mod.File.Version) ? "" : " v" + mod.File.Version);
+                modNames[i].ForeColor = mod.On ? White : Faint;
+                bool isHidden = HiddenIds().Contains(mod.File.Id);
+                if (isHidden) modNames[i].Text += " (hidden)";
+                modHides[i].Text = isHidden ? "Unhide" : "Hide";
+                modHides[i].AccessibleName = (isHidden ? "Unhide " : "Hide ") + mod.File.Name + " in this list";
+                modHides[i].Invalidate();
+                modAbouts[i].Text = ((mod.Changed ? "CHANGED, approve it again. " : mod.Code ? "RUNS CODE. " : mod.Skin ? "SKIN. " : mod.Skill ? "SKILL. " : "")
+                    + (string.IsNullOrEmpty(mod.File.Author) ? "" : "by " + mod.File.Author + ". ")
+                    + (mod.File.Description ?? "")
+                    + (mod.Code || mod.File.WakeNames.Length == 0 ? "" : " Names: " + string.Join(", ", mod.File.WakeNames))
+                    + (mod.Skill ? " For " + mod.File.Games[0] + "." : "")).Trim();
+                modAbouts[i].ForeColor = mod.Changed ? Rose : Faint;
+                modSwitches[i].Text = mod.On ? "On" : "Off";
+                modSwitches[i].Accent = mod.On ? Cyan : Rose;
+                modSwitches[i].AccessibleName = (mod.On ? "Turn off " : "Turn on ") + mod.File.Name;
+                modRemoves[i].AccessibleName = "Remove " + mod.File.Name;
+                modPublishes[i].AccessibleName = "Publish " + mod.File.Name + " to the mods directory";
+                modSwitches[i].Invalidate();
             }
-            else
-            {
-                modEmpty = null;
-                for (int i = 0; i < mods.Count; i++)
-                {
-                    int index = i;
-                    Mod mod = mods[i];
-                    int top = i * 62;
-
-                    Label name = ModLabel(
-                        mod.File.Name + (string.IsNullOrEmpty(mod.File.Version) ? "" : " v" + mod.File.Version),
-                        0, top + 3, 196, 20, Type(10f, true), mod.On ? White : Faint);
-                    PutInPanel(name, modInstalledPanel);
-
-                    Key toggle = Make(mod.On ? "On" : "Off", 202, top, 54, 22, delegate { SwitchModAt(index); });
-                    toggle.Accent = mod.On ? Cyan : Rose;
-                    toggle.AccessibleName = (mod.On ? "Turn off " : "Turn on ") + mod.File.Name;
-                    Explain(toggle, "Mod switch", "MainframeMods.cs", null, "On / Off");
-                    PutInPanel(toggle, modInstalledPanel);
-
-                    Key remove = Make("Remove", 262, top, 66, 22, delegate { RemoveModAt(index); });
-                    remove.AccessibleName = "Remove " + mod.File.Name;
-                    Explain(remove, "Remove", "MainframeMods.cs");
-                    PutInPanel(remove, modInstalledPanel);
-
-                    string about = ((mod.Changed ? "CHANGED, approve it again. " : mod.Code ? "RUNS CODE. " : mod.Skin ? "SKIN. " : mod.Skill ? "SKILL. " : "")
-                        + (string.IsNullOrEmpty(mod.File.Author) ? "" : "by " + mod.File.Author + ". ")
-                        + (mod.File.Description ?? "")
-                        + (mod.Code || mod.File.WakeNames.Length == 0 ? "" : " Names: " + string.Join(", ", mod.File.WakeNames))
-                        + (mod.Skill ? " For " + mod.File.Games[0] + "." : "")).Trim();
-
-                    Label description = ModLabel(about, 0, top + 26, 256, 30,
-                        Look.Mono(8.5f, FontStyle.Regular, GraphicsUnit.Point), mod.Changed ? Rose : Faint);
-                    PutInPanel(description, modInstalledPanel);
-
-                    Key publish = Make("Publish", 262, top + 28, 66, 22, delegate { PublishModAt(index); });
-                    publish.AccessibleName = "Publish " + mod.File.Name + " to the mods directory";
-                    Explain(publish, "Publish mod", "MainframeMods.cs");
-                    PutInPanel(publish, modInstalledPanel);
-                }
-            }
+            bool pages = total > pageSize;
+            modBack.Visible = modNext.Visible = modPage.Visible = pages;
+            modBack.Enabled = modFirst > 0;
+            modNext.Enabled = modFirst + pageSize < total;
+            modPage.Text = "Page " + (modFirst / pageSize + 1) + " of " + ((Math.Max(0, total - 1)) / pageSize + 1);
 
             FillPersonalMods();
+
+            FillModTabs();
 
             string[] colours = capri.ModList.ColoursNow;
             for (int i = 0; i < ArtColors.Slots; i++)
@@ -275,9 +287,109 @@ namespace CapriDesktop
             if (capri.ModList.Problems.Count > 0) ModSays("Skipped " + capri.ModList.Problems[0], true);
         }
 
+        private HashSet<string> HiddenIds()
+        {
+            if (modHiddenIds != null) return modHiddenIds;
+            modHiddenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                string file = Path.Combine(capri.ModList.Folder, "hidden-mods.txt");
+                if (File.Exists(file)) foreach (string line in File.ReadAllLines(file)) if (line.Trim().Length > 0) modHiddenIds.Add(line.Trim());
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return modHiddenIds;
+        }
+
+        private void SaveHiddenIds()
+        {
+            try
+            {
+                Directory.CreateDirectory(capri.ModList.Folder);
+                string[] ids = new string[HiddenIds().Count];
+                HiddenIds().CopyTo(ids);
+                File.WriteAllLines(Path.Combine(capri.ModList.Folder, "hidden-mods.txt"), ids, new UTF8Encoding(false));
+            }
+            catch (IOException error) { ModSays("Couldn't save the hidden list: " + error.Message, true); }
+            catch (UnauthorizedAccessException error) { ModSays("Couldn't save the hidden list: " + error.Message, true); }
+        }
+
+        private static bool ModInTab(Mod mod, int kind)
+        {
+            bool skin = mod.Skin || mod.File.Colors != null;
+            if (kind == 0) return true;
+            if (kind == 1) return skin;
+            if (kind == 2) return mod.Code;
+            if (kind == 3) return mod.Skill;
+            return !mod.Code && !mod.Skill && !skin;
+        }
+
+        private List<Mod> ShownMods()
+        {
+            HashSet<string> hidden = HiddenIds();
+            List<Mod> shown = new List<Mod>();
+            foreach (Mod mod in capri.ModList.All)
+                if (ModInTab(mod, modKind) && (modShowingHidden || !hidden.Contains(mod.File.Id))) shown.Add(mod);
+            return shown;
+        }
+
+        private int CountHidden()
+        {
+            int count = 0;
+            foreach (Mod mod in capri.ModList.All) if (HiddenIds().Contains(mod.File.Id)) count++;
+            return count;
+        }
+
+        private void FillModTabs()
+        {
+            for (int i = 0; i < modTabs.Length; i++)
+            {
+                modTabs[i].Accent = i == modKind ? Cyan : Faint;
+                modTabs[i].Invalidate();
+            }
+            modShowHidden.Text = modShowingHidden ? "Hide them again" : "Show hidden";
+            modShowHidden.Accent = modShowingHidden ? Cyan : Faint;
+            modShowHidden.AccessibleName = modShowingHidden ? "Stop showing hidden mods" : "Show hidden mods (" + CountHidden() + ")";
+            modShowHidden.Invalidate();
+        }
+
+        private void SetModTab(int kind)
+        {
+            modKind = kind;
+            modFirst = 0;
+            FillMods();
+        }
+
+        private void ToggleHiddenMods()
+        {
+            modShowingHidden = !modShowingHidden;
+            modFirst = 0;
+            FillMods();
+            int count = CountHidden();
+            ModSays(!modShowingHidden ? "Hidden mods are out of the list again." : count == 0 ? "No mods are hidden." : "Showing " + count + " hidden mod" + (count == 1 ? "" : "s") + ", marked (hidden).", false);
+        }
+
+        private void HideMod(int row)
+        {
+            HideModAt(modFirst + row);
+        }
+
+        private void HideModAt(int index)
+        {
+            List<Mod> mods = ShownMods();
+            if (index < 0 || index >= mods.Count) return;
+            Mod mod = mods[index];
+            HashSet<string> hidden = HiddenIds();
+            bool nowHidden = !hidden.Contains(mod.File.Id);
+            if (nowHidden) hidden.Add(mod.File.Id); else hidden.Remove(mod.File.Id);
+            SaveHiddenIds();
+            FillMods();
+            ModSays(nowHidden ? mod.File.Name + " is hidden from this list. It's still installed and working." : mod.File.Name + " is back in the list.", false);
+        }
+
         private bool SwitchModAt(int index)
         {
-            List<Mod> mods = capri.ModList.All;
+            List<Mod> mods = ShownMods();
             if (index < 0 || index >= mods.Count) return false;
             Mod mod = mods[index];
             try
@@ -295,12 +407,13 @@ namespace CapriDesktop
 
         private void RemoveModAt(int index)
         {
-            List<Mod> mods = capri.ModList.All;
+            List<Mod> mods = ShownMods();
             if (index < 0 || index >= mods.Count) return;
             Mod mod = mods[index];
             try
             {
                 capri.ModList.Remove(mod);
+                if (HiddenIds().Remove(mod.File.Id)) SaveHiddenIds();
                 FillMods();
                 ModSays(mod.File.Name + " is removed.", false);
             }
@@ -310,7 +423,7 @@ namespace CapriDesktop
 
         private void PublishModAt(int index)
         {
-            List<Mod> mods = capri.ModList.All;
+            List<Mod> mods = ShownMods();
             if (index < 0 || index >= mods.Count) return;
             Mod mod = mods[index];
             PublishSheet sheet = new PublishSheet(this, SheetZoom(PublishSheet.Wide, PublishSheet.Tall), mod);

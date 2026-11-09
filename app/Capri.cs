@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -2214,7 +2214,8 @@ namespace CapriDesktop
         private const string FreeKeyLine = "Sign in on that page, press Generate API Key and copy it. Then paste it in the box under BRAIN and press Connect. It's free." + Brain.Stuck;
         private const string GeminiKeyLine = "Sign in on that page, make a key and copy it. Then paste it in the box under BRAIN and press Connect. It's free, but it can be rate limited." + Brain.Stuck;
         private const string RouterKeyLine = "Sign in on that page, make a key and copy it. Then paste it in the box under BRAIN and press Connect. MEDIUM lists only its free models." + Brain.Stuck;
-        internal static Action<string> Browse = delegate(string page) { try { Process.Start(page); } catch (System.ComponentModel.Win32Exception) { } };
+        internal static Action<string> Browse = delegate(string page) { try { string brave = BraveExe(); if (brave != null && page != null && page.StartsWith("http", System.StringComparison.OrdinalIgnoreCase)) Process.Start(new ProcessStartInfo(brave, "\"" + page + "\"") { UseShellExecute = false }); else Process.Start(page); } catch (System.ComponentModel.Win32Exception) { } };
+        internal static string BraveExe() { foreach (System.Environment.SpecialFolder root in new[] { System.Environment.SpecialFolder.ProgramFiles, System.Environment.SpecialFolder.ProgramFilesX86, System.Environment.SpecialFolder.LocalApplicationData }) { string path = System.IO.Path.Combine(System.Environment.GetFolderPath(root), "BraveSoftware", "Brave-Browser", "Application", "brave.exe"); if (System.IO.File.Exists(path)) return path; } return null; }
         // Opens a file of hers in Notepad. Smoke tests swap it to see which file a button opened.
         internal static Action<string> Edit = delegate(string path) { using (Process.Start(new ProcessStartInfo("notepad.exe", "\"" + path + "\"") { UseShellExecute = false })) { } };
         // Room around her square, so her perched legs (they hang 8% of her size below it) aren't cut off at Giant.
@@ -2788,11 +2789,17 @@ namespace CapriDesktop
                 try
                 {
                     discordBridge = new DiscordBridge(data, reminders,
-                        delegate(string message, string sharedMemory, bool initiated) { return brain.AskFromDiscord(message, sharedMemory, initiated); },
+                        delegate(string message, string sharedMemory, bool initiated) { if (!initiated) { string said = (message ?? "").Trim(); if (System.Text.RegularExpressions.Regex.IsMatch(said, @"^(?:stop|halt)\b[\s.!]*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase) && (job != null || DateTime.Now < pcApprovedUntil)) return PcStop(); string pc = PcAnswer(message); if (pc != null) return pc; Job pcWait = job; if (pcWait != null && pcWait.Asking) { string pcText = (message ?? "").Trim(); if (System.Text.RegularExpressions.Regex.IsMatch(pcText, @"^(?:yes|yeah|yep|yup|ya|sure|ok|okay|do it|go ahead)\b[\s.!]*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) { System.Threading.ThreadPool.QueueUserWorkItem(delegate { string pcRes; try { pcRes = ResumeJob(message); } catch (Exception pcErr) { pcRes = "That failed: " + pcErr.Message; } try { if (discordBridge != null && !string.IsNullOrWhiteSpace(pcRes)) discordBridge.QueueMessage(pcRes); } catch (Exception) { } }); return "Okay, carrying on."; } if (System.Text.RegularExpressions.Regex.IsMatch(pcText, @"^(?:no|nah|nope|cancel|do not|never mind|nevermind)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return ResumeJob(message) ?? "Okay, I left it alone."; } } return brain.AskFromDiscord(message, sharedMemory, initiated); },
                         delegate(string message, string publicContext) { return brain.AskFromPublicDiscord(message, publicContext); },
                         DiscordStatus,
                         DiscordPcInfo,
                         SendDiscordScreenshot);
+                    discordBridge.Autonomy = AutonomyBridge;
+                    discordBridge.PcAction = DiscordPcAction;
+                    PcApproved = delegate(string pcHeldTask) { pcApprovedRun = true; System.Threading.ThreadPool.QueueUserWorkItem(delegate { string pcOutcome; try { pcOutcome = RunJob(pcHeldTask, pcHeldTask); PcDiary(pcHeldTask, pcOutcome); PcDiary(pcHeldTask, pcOutcome); } catch (Exception pcFault) { pcOutcome = "That failed: " + pcFault.Message; } try { if (discordBridge != null && !string.IsNullOrWhiteSpace(pcOutcome)) discordBridge.QueueMessage(pcOutcome); } catch (Exception) { } }); };
+                    PcLoopStart(); discordBridge.MindPut = MindPutBridge;
+                    discordBridge.MindEdits = MindEditsBridge;
+                    discordBridge.MindSettings = MindSettingsBridge;
                     brain.DiscordAction = delegate(string action, ToolArguments args) {
                         return discordBridge.ExecuteAction(
                             action,
@@ -8291,8 +8298,8 @@ namespace CapriDesktop
             throwsAt.RemoveAll(at => now - at > SulkWindow || at > now);
             throwsAt.Add(now);
             if (fast >= ThrowHard) Static(false, Cue.Hop);
-            if (throwsAt.Count >= SulkThrows) { throwsAt.Clear(); Sulk(now); sulkLine = true; return; }
-            string line = throwsAt.Count == 2 ? Lines.Pick(WarnLines) : fast >= ThrowHard ? Lines.Pick(ThrowLines) : null;
+            if (throwsAt.Count >= SulkThrows) { throwsAt.Clear(); if (GrudgesOn()) { Sulk(now); sulkLine = true; } return; }
+            string line = throwsAt.Count == 2 && GrudgesOn() ? Lines.Pick(WarnLines) : fast >= ThrowHard ? Lines.Pick(ThrowLines) : null;
             if (line != null) Yelp("throws you", line, false);
         }
 
@@ -8342,7 +8349,9 @@ namespace CapriDesktop
         // Left alone five minutes, she gets over it by herself.
         private void CheckSulk(double now)
         {
-            if (!Sulking || now - sulkBothered < SulkAlone) return;
+            if (!Sulking) return;
+            if (!GrudgesOn()) { Forgive(); return; }
+            if (now - sulkBothered < GrudgeSeconds()) return;
             Forgive();
             if (!Hushed) Yelp(null, Lines.Pick(AloneLines), true);
         }
@@ -9718,6 +9727,7 @@ namespace CapriDesktop
 
         private string RunJob(string task, string asked)
         {
+            if (string.IsNullOrWhiteSpace(asked)) { string held = PcCheck(task); if (held != null) return held; } bool pcOwn = string.IsNullOrWhiteSpace(asked) || pcApprovedRun; pcApprovedRun = false; pcFeed = pcOwn; pcFeedHinted = false; pcFeedPrev = null; if (pcOwn) PcFeed("Starting: " + task);
             int ticket = asking;
             if (CallSession.Joining(task))
             {
@@ -9801,7 +9811,7 @@ namespace CapriDesktop
             running.Reader = testing ? null : new Action<Sight>(delegate(Sight read) { if (Ink.ScreenRequest(running.Task)) Computer.ReadWords(read, Computer.Shoot(null)); else Computer.ReadWords(read); });
             running.Says = delegate(string line) { Post(delegate { if (Computer.Streaming) ChatLine(line, running); else PlayLine(line, running); }); };
             running.Blind = delegate { if (!running.Playing || preferences.SlowHands) blindModel = driver.Model; };
-            running.Progress = delegate(string status) { Post(delegate { working = status + " Esc stops me."; UpdateTalk(clock.Elapsed.TotalSeconds); }); };
+            running.Progress = delegate(string status) { PcFeed(status); Post(delegate { working = status + " Esc stops me."; UpdateTalk(clock.Elapsed.TotalSeconds); }); };
             bool social = Computer.Social(running.Task + " " + running.Words);
             string[] called = { null };
             running.Seen = delegate(Sight sight)
@@ -9816,7 +9826,7 @@ namespace CapriDesktop
                 if (social && !string.IsNullOrEmpty(program) && program != called[0] && Computer.GameWindow(sight)) { called[0] = program; Post(delegate { CallForGame(running, program, name); }); }
             };
             running.Busy = delegate(string what) { Post(delegate { taskPanel.Busy(running, what); }); };
-            running.Stepped = delegate(JobStep step) { Post(delegate { taskPanel.Add(running, step); }); if (step.Finished) AgentStep(running); };
+            running.Stepped = delegate(JobStep step) { PcFeed((step.Finished ? (step.Failed ? "Failed: " : "Done: ") : "Doing: ") + step.Label); Post(delegate { taskPanel.Add(running, step); }); if (step.Finished) AgentStep(running); };
             Computer.PlacePointer(PointerHome());
             Post(delegate { JobOn(running); });
             string result = null;

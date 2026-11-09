@@ -245,7 +245,62 @@ namespace CapriDesktop
                 return Remind(new ToolArguments { Action = "list" });
 
             KeyValuePair<string, ToolArguments> routed = Route(said);
-            return routed.Key == "remind" ? Remind(routed.Value) : null;
+            if (routed.Key == "remind") return Remind(routed.Value);
+            return DiscordLoose(text);
+        }
+
+        // Everyday Discord phrasings the desktop router is too strict for: "can u set a reminder for 1 min to wake up",
+        // "set a reminder for 4:07 pm", "remind me to call mum in 5 minutes" and "show me my reminders".
+        private string DiscordLoose(string text)
+        {
+            string plain = Regex.Replace((text ?? "").Trim(), @"^(?:(?:hey\s+)?capri[,!:\s]+)?(?:(?:can|could|would|will)\s+(?:you|u|ya)\s+)?(?:please\s+|pls\s+)?", "", RegexOptions.IgnoreCase).Trim();
+            plain = plain.TrimEnd('.', '!', '?', ' ');
+            if (plain.Length == 0) return null;
+
+            if (Regex.IsMatch(plain, @"^(?:show|list|check|tell|give|see|what|which|do i have|have i got|any)\b.*\b(?:reminders?|reminds)\b", RegexOptions.IgnoreCase)
+                && !Regex.IsMatch(plain, @"\b(?:set|add|make|create|cancel|delete|remove|forget)\b|remind me", RegexOptions.IgnoreCase))
+                return Remind(new ToolArguments { Action = "list" });
+
+            string rest = null;
+            Match setter = Regex.Match(plain, @"^(?:set|make|add|create|put|give me|get)(?:\s+me)?(?:\s+up)?(?:\s+a|\s+an)?\s+reminder\b[\s,:]*(.*)$", RegexOptions.IgnoreCase);
+            if (setter.Success) rest = setter.Groups[1].Value.Trim();
+            else
+            {
+                Match asked = Regex.Match(plain, @"^remind me\b[\s,:]*(.*)$", RegexOptions.IgnoreCase);
+                if (asked.Success) rest = asked.Groups[1].Value.Trim();
+            }
+            if (rest == null) return null;
+            if (rest.Length == 0) return "What should I remind you about, and when? Try remind me in 10 minutes to stretch.";
+
+            // The time first: "for 30 secs", "in 1 min to wake up", "at 4:07 pm".
+            string first = DiscordWhen(rest);
+            DateTime due;
+            if (Parse(first, Now(), out due)) return Remind(new ToolArguments { Text = "your reminder", When = first });
+            KeyValuePair<string, ToolArguments> routed = Route("remind me " + first);
+            if (routed.Key == "remind") return Remind(routed.Value);
+
+            // The note first: "to call mum in 5 minutes", "call mum on 5 December at 9am".
+            foreach (Match gap in Regex.Matches(rest, @"\s+(?=(?:in|at|on|for|tomorrow|tonight)\b)", RegexOptions.IgnoreCase))
+            {
+                string when = DiscordWhen(rest.Substring(gap.Index + gap.Length).Trim());
+                if (!Parse(when, Now(), out due)) continue;
+                string note = Regex.Replace(rest.Substring(0, gap.Index).Trim().TrimEnd(','), @"^(?:to|that|about|and)\s+", "", RegexOptions.IgnoreCase).Trim();
+                if (note.Length == 0) continue;
+                return Remind(new ToolArguments { Text = note, When = when });
+            }
+            return null;
+        }
+
+        // "for 30 secs" means in 30 seconds and "for 4:07 pm" means at 4:07 pm.
+        private static string DiscordWhen(string text)
+        {
+            Match span = Regex.Match(text, @"^for\s+(.+)$", RegexOptions.IgnoreCase);
+            if (!span.Success) return text;
+            string rest = span.Groups[1].Value;
+            if (Regex.IsMatch(rest, @"^(?:tomorrow|tonight|today|on|at|in)\b", RegexOptions.IgnoreCase)) return rest;
+            if (Regex.IsMatch(rest, @"\d\s*:\s*\d|\d\s*[ap]\.?m\b|^(?:noon|midnight)\b", RegexOptions.IgnoreCase)) return "at " + rest;
+            if (Regex.IsMatch(rest, @"\b(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?|weeks?)\b", RegexOptions.IgnoreCase)) return "in " + rest;
+            return rest;
         }
 
         internal string ImportDiscordReminder(string id, string text, string when, bool discordSaid, string nextAt)
