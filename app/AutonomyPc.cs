@@ -71,7 +71,7 @@ namespace CapriDesktop
         {
             if (!pcFeed || discordBridge == null || string.IsNullOrWhiteSpace(line)) return;
             string t = line.Trim();
-            if (t.Length > 300) t = t.Substring(0, 300);
+            if (t.Length > 300) t = t.Substring(0, 300); if (t.StartsWith("Doing: ") || t.StartsWith("Done: ")) return;
             bool sendNow = false;
             lock (pcFeedGate)
             {
@@ -79,8 +79,8 @@ namespace CapriDesktop
                 pcFeedPrev = t;
                 pcFeedText.Append("- ").Append(t).Append("\n");
                 double since = (DateTime.Now - pcFeedLast).TotalSeconds;
-                if (since >= 5 || pcFeedText.Length > 1500) sendNow = true;
-                else if (pcFeedTimer == null) pcFeedTimer = new System.Threading.Timer(delegate(object state) { PcFlush(); }, null, (int)((5 - since) * 1000) + 50, System.Threading.Timeout.Infinite);
+                if (since >= 20 || pcFeedText.Length > 1500) sendNow = true;
+                else if (pcFeedTimer == null) pcFeedTimer = new System.Threading.Timer(delegate(object state) { PcFlush(); }, null, (int)((20 - since) * 1000) + 50, System.Threading.Timeout.Infinite);
             }
             if (sendNow) PcFlush();
         }
