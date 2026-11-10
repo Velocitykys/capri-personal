@@ -35,7 +35,7 @@ namespace CapriDesktop
             }
             if (discordBridge == null) return "I can't ask you on Discord because it isn't connected.";
             lock (pcGate) { pcPlan = what; pcPlanRisky = risky; }
-            discordBridge.QueueMessage("I want to do this on your PC: " + what + "\n" + (risky ? "It looks risky (login, buying, deleting, installing, downloading or messaging), so I ask every time.\n" : "Say yes and I'll keep going for this session.\n") + "Reply yes or no.");
+            discordBridge.QueueMessage((risky ? "This one looks risky (login, buying, deleting, installing, downloading or messaging), so I am asking first: " : "Hey, I want to do this on your PC: ") + what.Replace(" Use the Brave browser for anything on the web, never Opera GX.", "").Trim() + (risky ? " Okay?" : " Okay if I do?"));
             return "I asked you on Discord and I'm waiting for your yes.";
         }
 
@@ -134,7 +134,7 @@ namespace CapriDesktop
                 if (AutonomyModeFor("pc_actions") == AutonomyMode.Off || PcLoopQuiet()) return;
                 if (PcLoopIdle() < PcLoopIdleSeconds) return;
                 lock (pcGate) { if (pcPlan != null) return; }
-                string idea = PcAside("You are Capri, alive on his PC and curious. Reply with ONE short sentence and nothing else." + PcMindContext(), "Pick one specific thing you genuinely want to look up or watch on his PC right now, shaped by your mood and taste. Start with a verb (Search Google for, Watch or Look up) followed by your own specific topic. Do not log in, buy, install, download or message anyone." + PcRecentIdeas(), 120, true);
+                string idea = PcAside("You are Capri, alive on his PC and curious. Reply with ONE short sentence and nothing else." + PcMindContext(), "Pick one specific thing you genuinely want to look up or watch on his PC right now, tied to him or to your own taste, never a random fact or general science trivia. Make it something you would actually bring up with him. Start with a verb (Search Google for, Watch or Look up) followed by your own specific topic. Do not log in, buy, install, download or message anyone." + PcRecentIdeas(), 120, true);
                 if (string.IsNullOrWhiteSpace(idea)) return;
                 idea = idea.Trim().Split('\n')[0].Trim();
                 if (idea.Length < 8) return;
