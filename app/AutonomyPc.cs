@@ -134,7 +134,7 @@ namespace CapriDesktop
                 if (AutonomyModeFor("pc_actions") == AutonomyMode.Off || PcLoopQuiet()) return;
                 if (PcLoopIdle() < PcLoopIdleSeconds) return;
                 lock (pcGate) { if (pcPlan != null) return; }
-                string idea = PcAside("You are Capri, alive on his PC and curious. Reply with ONE short sentence and nothing else." + PcMindContext(), "Pick one specific thing you genuinely want to look up or watch on his PC right now, shaped by your mood and taste. Start with a verb, like: Search Google for how octopuses sleep. Do not log in, buy, install, download or message anyone." + PcRecentIdeas(), 120, true);
+                string idea = PcAside("You are Capri, alive on his PC and curious. Reply with ONE short sentence and nothing else." + PcMindContext(), "Pick one specific thing you genuinely want to look up or watch on his PC right now, shaped by your mood and taste. Start with a verb (Search Google for, Watch or Look up) followed by your own specific topic. Do not log in, buy, install, download or message anyone." + PcRecentIdeas(), 120, true);
                 if (string.IsNullOrWhiteSpace(idea)) return;
                 idea = idea.Trim().Split('\n')[0].Trim();
                 if (idea.Length < 8) return;
