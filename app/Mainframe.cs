@@ -289,7 +289,7 @@ namespace CapriDesktop
         private readonly Dictionary<Control, int> built = new Dictionary<Control, int>();
         private bool simple;
         private Key advancedKey;
-        private int PageNow { get { return simple ? SimpleTall : PageTall; } }
+        private int PageNow { get { return modded ? ModTall : (simple ? SimpleTall : PageTall); } } private const int ModTall = 890; private bool Paging { get { return paged || modded; } }
         // The same for Simple Settings, with its hidden rows taken out.
         private const int SimpleTall = 1030;
         private int wheel;
@@ -1860,7 +1860,7 @@ namespace CapriDesktop
         // Scrolls just far enough to show all of a control Tab reached. A click leaves the page where it is.
         private void Reveal(Control control)
         {
-            if (!paged || pageView >= PageNow || Control.MouseButtons != MouseButtons.None) return;
+            if (!Paging || pageView >= PageNow || Control.MouseButtons != MouseButtons.None) return;
             EndSlide();
             float s = Unit();
             int edge = Scaled(8);
@@ -1885,7 +1885,7 @@ namespace CapriDesktop
         private void MovePage(int to)
         {
             DismissHint();
-            int next = paged ? Math.Max(0, Math.Min(PageNow - pageView, to)) : 0;
+            int next = Paging ? Math.Max(0, Math.Min(PageNow - pageView, to)) : 0;
             if (next == pageScroll) return;
             MoveControls(next);
             pictureQuiet = true;
@@ -1920,7 +1920,7 @@ namespace CapriDesktop
 
         private void Glide()
         {
-            if (IsDisposed || !paged) { glide.Stop(); EndSlide(); return; }
+            if (IsDisposed || !Paging) { glide.Stop(); EndSlide(); return; }
             if (sliding) { slideCover.Invalidate(); return; }
             double t = Math.Min(1, glideClock.Elapsed.TotalMilliseconds / GlideMs);
             double eased = 1 - Math.Pow(1 - t, 3);
@@ -2026,7 +2026,7 @@ namespace CapriDesktop
         private void ScrollWheel(int delta)
         {
             DismissHint();
-            if (!paged || pageView >= PageNow) return;
+            if (!Paging || pageView >= PageNow) return;
             // A notch is a row, and a touchpad's small turns move the page by as much as they turn, so it follows the finger.
             wheel += delta * ScrollRow;
             int by = wheel / 120;
@@ -2800,10 +2800,10 @@ namespace CapriDesktop
             voiceNote.MaximumSize = new Size(Scaled(328), 0);
             updateNote.MaximumSize = new Size(Scaled(328), 0);
             if (keysNote != null) keysNote.MaximumSize = new Size(Scaled(328), 0);
-            if (paged) pageView = Fit();
-            ClientSize = new Size(Scaled(paged ? Wide + Column : Wide), Scaled(paged ? pageView : Tall + shift + below - fold - hearingFold));
+            if (Paging) pageView = Fit();
+            ClientSize = new Size(Scaled(paged ? Wide + Column : Wide), Scaled(Paging ? pageView : Tall + shift + below - fold - hearingFold));
             ScrollPage(ShownScroll);
-            bool scrolls = paged && pageView < PageNow;
+            bool scrolls = Paging && pageView < PageNow;
             topRim.Visible = bottomRim.Visible = scrolls;
             if (scrolls)
             {

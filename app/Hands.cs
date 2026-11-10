@@ -1721,7 +1721,7 @@ namespace CapriDesktop
                     Func<string, string, string> run = RunModTool;
                     return run == null ? "No mod has added that." : run(args.Name, args.Text ?? "");
                 }
-                if (tool == "open_app") return OpenApp(args.Name, args.Current);
+                if (tool == "open_app") { string appTry = OpenApp(args.Name, args.Current); string siteGuess = (args.Name ?? "").Trim().ToLowerInvariant(); if (appTry != null && appTry.StartsWith("No app called", StringComparison.Ordinal) && System.Text.RegularExpressions.Regex.IsMatch(siteGuess, @"^[a-z0-9-]+(\.[a-z]{2,})+$|^[a-z0-9-]{3,}$")) return OpenSite(siteGuess.Contains(".") ? siteGuess : siteGuess + ".com", null, null); return appTry; }
                 if (tool == "open_website") return OpenSite(args.Site, args.Search, args.Browser);
                 if (tool == "media") return Media(args);
                 if (tool == "look_at_screen") return string.IsNullOrWhiteSpace(args.Screen) ? Look(args.Focus) : LookOn(args.Focus, args.Screen);
@@ -4138,7 +4138,8 @@ namespace CapriDesktop
         }
 
         // Used by the Discord remote-control door (batch 2); the owner's PC actions rules have already been checked by the caller.
-        internal static string OpenAppFromDiscord(string wanted)
+        internal static string OpenAppFromDiscord(string wanted) { string r = OpenAppFromDiscordPlain(wanted); string w = (wanted ?? "").Trim().ToLowerInvariant(); if (r == null || !r.StartsWith("No app called", StringComparison.Ordinal) || !System.Text.RegularExpressions.Regex.IsMatch(w, @"^[a-z0-9-]+(\.[a-z]{2,})+$|^[a-z0-9-]{3,}$")) return r; string site = w.Contains(".") ? w : w + ".com"; try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://" + site) { UseShellExecute = true }); return "Opened " + site + "."; } catch (Exception) { return r; } }
+        private static string OpenAppFromDiscordPlain(string wanted)
         {
             return OpenApp(wanted, null);
         }

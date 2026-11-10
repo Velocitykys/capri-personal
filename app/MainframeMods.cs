@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -148,7 +148,7 @@ namespace CapriDesktop
             for (int i = first; i < Controls.Count; i++)
             {
                 Control control = Controls[i];
-                modLeft.Add(new KeyValuePair<Control, int>(control, control.Left));
+                modLeft.Add(new KeyValuePair<Control, int>(control, control.Left)); Scrolls(control);
                 control.Left += Far;
                 Reachable(control, false);
             }
@@ -252,7 +252,7 @@ namespace CapriDesktop
         {
             DismissHint();
             if (on && paged) ShowSettings(false);
-            modded = on;
+            ScrollPage(0); modded = on; wheel = 0;
             more.Text = on ? "Back" : "Settings";
             more.Invalidate();
             Place();
