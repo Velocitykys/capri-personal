@@ -42,8 +42,8 @@ namespace CapriDesktop
         private static readonly FontFamily Narrow = Family("Bahnschrift SemiBold Condensed");
         private const int Wide = 380;
         private const int Tall = 734;
-        private static readonly int[] Gaps = { 10, 15, 30, 60, 90, 120, 180, 300, 600 };
-        private static readonly string[] GapNames = { "10 s", "15 s", "30 s", "1 min", "1.5 min", "2 min", "3 min", "5 min", "10 min" };
+        private static readonly int[] Gaps = { 3, 5, 10, 15, 30, 60, 90, 120, 180, 300, 600 };
+        private static readonly string[] GapNames = { "3 s", "5 s", "10 s", "15 s", "30 s", "1 min", "1.5 min", "2 min", "3 min", "5 min", "10 min" };
         private const int SetupHeight = 118;
         // The left column is the taller one, and CLIPS' note at its foot sets this, with Free voice in games showing.
         private const int PageTall = 1812;

@@ -2206,7 +2206,7 @@ namespace CapriDesktop
         // Her glance lines from the last hour, so she stops bringing up the same thing on their screen.
         private readonly System.Collections.Generic.List<Tuple<double, string>> glanced = new System.Collections.Generic.List<Tuple<double, string>>();
         private byte[] lastPrint;
-        private double GlanceTalkGap { get { return Math.Min(60, GlanceGap * 2); } }
+        private double GlanceTalkGap { get { return Math.Min(60, Math.Max(30, GlanceGap * 2)); } }
         private Rectangle lastArea;
         private volatile bool fetchingEyes;
         private double thinkingSince = double.NaN;
