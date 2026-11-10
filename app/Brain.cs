@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -2302,7 +2302,7 @@ namespace CapriDesktop
                     shared;
             }
 
-            discordTurn = true; privateDiscordTools = true; try { return Ask(text, false, out after, context, null, false, true, false, initiated); } finally { privateDiscordTools = false; discordTurn = false; }
+            context += "\n\nHONESTY AND VARIETY RULES: Stay fully in your own Capri voice. You only know what this chat, your saved memories or a tool result in this turn actually showed you. You cannot see his face, his room or his screen unless a tool just showed you. Never claim you saw, heard or did something you did not. If you do not know or were not paying attention, say so plainly, for example: I did not catch that, or I got that wrong. Never reuse a phrase, joke or sign-off from your last several replies, and do not repeat his words back as a question. When you talk about what you did on his PC, only say what the job report says. Do not announce your next PC task in chat."; discordTurn = true; privateDiscordTools = true; try { return Ask(text, false, out after, context, null, false, true, false, initiated); } finally { privateDiscordTools = false; discordTurn = false; }
         }
 
         internal string AskFromPublicDiscord(string text, string publicContext)
