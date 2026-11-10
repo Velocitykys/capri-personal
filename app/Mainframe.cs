@@ -43,6 +43,7 @@ namespace CapriDesktop
         private const int Wide = 380;
         private const int Tall = 734;
         private static readonly int[] Gaps = { 1, 3, 5, 10, 15, 30, 60, 90, 120, 180, 300, 600 };
+        private static readonly string[] TalkGapNames = { "10 s", "20 s", "30 s", "1 min", "2 min", "3 min", "5 min" }; private static readonly int[] TalkGaps = { 10, 20, 30, 60, 120, 180, 300 }; private Slider talkGap; private Readout talkGapName;
         private static readonly string[] GapNames = { "1 s", "3 s", "5 s", "10 s", "15 s", "30 s", "1 min", "1.5 min", "2 min", "3 min", "5 min", "10 min" };
         private const int SetupHeight = 118;
         // The left column is the taller one, and CLIPS' note at its foot sets this, with Free voice in games showing.
@@ -862,6 +863,9 @@ namespace CapriDesktop
             watchMemory = Setting("Watch-along memory", WatchLineNames, c, 344, "Lines of PC dialogue held in memory while watching together. The oldest half becomes a note when Remember what she sees is on");
             watchMemoryName = new Readout(watchMemory);
             watchMemory.Changed += delegate { if (!syncing) capri.SetWatchMemory(WatchLines[watchMemory.Value]); };
+            talkGap = Setting("Min between comments", TalkGapNames, c, 344 + Row, "Shortest time she waits between comments about your screen");
+            talkGapName = new Readout(talkGap);
+            talkGap.Changed += delegate { if (syncing) return; talkGapName.Text = TalkGapNames[talkGap.Value]; capri.SetTalkGap(TalkGaps[talkGap.Value]); };
             int afterWatchMemory = Controls.Count;
             Section("BRAIN >", c, 330);
             Named("Code/Husk Mode", c, 354);
@@ -1020,6 +1024,7 @@ namespace CapriDesktop
             clipHint.AutoSize = false;
             clipHint.Bounds = new Rectangle(28, 1438, 328, 36);
             int gamesTo = Controls.Count;
+            for (int talkGapAt = afterWatchMemory; talkGapAt < Controls.Count; talkGapAt++) Controls[talkGapAt].Top += Row;
             for (int talkSettingAt = afterWatchMemory; talkSettingAt < Controls.Count; talkSettingAt++)
                 Controls[talkSettingAt].Top += (talkSettingAt >= afterFollowUps ? 56 : 28) + (Controls[talkSettingAt].Left >= c ? Row : 0);
             for (int huskRow = afterHusk; huskRow < Controls.Count; huskRow++)
@@ -2953,6 +2958,7 @@ namespace CapriDesktop
             int chosen = Array.IndexOf(Gaps, capri.GlanceGap);
             gap.Value = chosen < 0 ? Math.Max(0, Array.IndexOf(Gaps, 120)) : chosen;
             gapName.Text = GapNames[gap.Value];
+            int talkChosen = Array.IndexOf(TalkGaps, capri.TalkGap); talkGap.Value = talkChosen < 0 ? 2 : talkChosen; talkGapName.Text = TalkGapNames[talkGap.Value];
             if (!nickname.Box.Focused) nickname.Box.Text = capri.Nickname;
             SyncLanguages();
             int loud = 0;

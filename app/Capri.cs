@@ -826,7 +826,7 @@ namespace CapriDesktop
         [DataMember] public ThinkingPick[] ThinkingPicks;
         [DataMember] public bool Watch;
         [DataMember] public string WatchScreen;
-        [DataMember] public int GlanceGap;
+        [DataMember] public int GlanceGap; [DataMember] public int TalkGap;
         // Remember what she sees is on by default: what she saw costs a few words per chat, next to the screenshot each glance already sends.
         [DataMember] public bool CaughtUp = true;
         [DataMember] public bool FollowUps = true;
@@ -2206,7 +2206,7 @@ namespace CapriDesktop
         // Her glance lines from the last hour, so she stops bringing up the same thing on their screen.
         private readonly System.Collections.Generic.List<Tuple<double, string>> glanced = new System.Collections.Generic.List<Tuple<double, string>>();
         private byte[] lastPrint;
-        private double GlanceTalkGap { get { return Math.Min(60, Math.Max(30, GlanceGap * 2)); } }
+        private double GlanceTalkGap { get { return Math.Max(TalkGap, Math.Min(60, GlanceGap * 2)); } }
         private Rectangle lastArea;
         private volatile bool fetchingEyes;
         private double thinkingSince = double.NaN;
@@ -8978,6 +8978,8 @@ namespace CapriDesktop
 
         internal int GlanceGap { get { return preferences.GlanceGap > 0 ? preferences.GlanceGap : 120; } }
 
+        internal int TalkGap { get { return preferences.TalkGap > 0 ? preferences.TalkGap : 30; } }
+        internal void SetTalkGap(int seconds) { preferences.TalkGap = seconds; SavePreferences(); mainframe.Sync(); }
         internal void SetGlanceGap(int seconds)
         {
             preferences.GlanceGap = seconds;
