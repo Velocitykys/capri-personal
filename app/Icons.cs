@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -18,175 +21,469 @@ namespace CapriDesktop
         internal IconSpot(int index, string name, Point at) { Index = index; Name = name; At = at; }
     }
 
-    // The desktop's own list of icons: Explorer's SysListView32 under Progman/WorkerW. Reading a position or a name means asking
-    // that window for it through memory inside Explorer's process (VirtualAllocEx, Read/WriteProcessMemory), because the list
-    // items live over there. Moving one is LVM_SETITEMPOSITION32, the 32-bit-coordinate form, so an icon on a monitor left of the
-    // main one isn't truncated. The smoke test points Target at a fake list view of its own, so this never runs on the real desktop.
+    // The desktop's own icons, read and moved through the shell's view of the desktop (IFolderView), the documented way in, so
+    // nothing of Explorer's is opened or written to. Positions are 32-bit, so an icon on a monitor left of the main one isn't
+    // truncated. The smoke test points Open at a fake view of its own, so this never runs on the real desktop.
     internal static class DesktopIcons
     {
         internal static Func<IntPtr> Target = DefaultTarget;
-        internal delegate bool ListMessage(IntPtr list, int message, IntPtr wParam, IntPtr lParam, out IntPtr result);
-        internal static ListMessage Message = Send;
-        internal delegate bool MemoryWrite(IntPtr process, IntPtr address, byte[] buffer, UIntPtr size, out IntPtr written);
-        internal static MemoryWrite WriteMemory = WriteProcessMemory;
-        internal static Action<IntPtr, IntPtr> FreeMemory = delegate(IntPtr process, IntPtr buffer) { VirtualFreeEx(process, buffer, UIntPtr.Zero, MemRelease); };
+        internal static Func<Batch, View> Open = delegate(Batch batch) { return new ShellView(batch); };
 
-        private const int LVM_FIRST = 0x1000;
-        private const int LVM_GETITEMCOUNT = LVM_FIRST + 4;
-        private const int LVM_GETITEMPOSITION = LVM_FIRST + 16;
-        private const int LVM_SETITEMPOSITION32 = LVM_FIRST + 49;
-        private const int LVM_GETITEMTEXTW = LVM_FIRST + 115;
-        private const int GWL_STYLE = -16;
-        private const int LVS_AUTOARRANGE = 0x0100;
         private const int SW_HIDE = 0, SW_SHOWNA = 8;
-        private const int SMTO_ABORTIFHUNG = 0x0002;
-        private const int ProcessVm = 0x0008 | 0x0010 | 0x0020; // VM_OPERATION | VM_READ | VM_WRITE
-        private const uint MemCommit = 0x1000 | 0x2000, PageReadWrite = 0x04, MemRelease = 0x8000;
-        private const int TextChars = 260, TextBytes = TextChars * 2, TextOffset = 256, BufferSize = 1024;
+        private const int PositionItem = 0x0080;
+        private static int busy;
+        internal static bool Busy { get { return System.Threading.Interlocked.CompareExchange(ref busy, 0, 0) != 0; } }
 
-        [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(int access, bool inherit, int process);
-        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool CloseHandle(IntPtr handle);
-        [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr VirtualAllocEx(IntPtr process, IntPtr address, UIntPtr size, uint type, uint protect);
-        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool VirtualFreeEx(IntPtr process, IntPtr address, UIntPtr size, uint type);
-        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] buffer, UIntPtr size, out IntPtr read);
-        [DllImport("kernel32.dll", SetLastError = true)] private static extern bool WriteProcessMemory(IntPtr process, IntPtr address, byte[] buffer, UIntPtr size, out IntPtr written);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessageTimeout(IntPtr window, int message, IntPtr wParam, IntPtr lParam, int flags, int timeout, out IntPtr result);
+        [DllImport("shlwapi.dll", ExactSpelling = true)] private static extern int StrRetToStrW(ref StrRet name, IntPtr item, out IntPtr text);
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
         [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr window, int command);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
         [DllImport("kernel32.dll")] private static extern int GetCurrentThreadId();
+        [DllImport("user32.dll")] private static extern bool ClientToScreen(IntPtr window, ref Point at);
+        [DllImport("shell32.dll")] private static extern int SHGetIDListFromObject([MarshalAs(UnmanagedType.IUnknown)] object value, out IntPtr item);
+        [DllImport("shell32.dll")] private static extern IntPtr ILCombine(IntPtr parent, IntPtr child);
+        [DllImport("shell32.dll")] private static extern uint ILGetSize(IntPtr item);
+        [DllImport("shell32.dll")] private static extern int SHCreateItemFromIDList(IntPtr item, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory factory);
+        [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr value);
+        [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr value);
+        [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr value);
+        [DllImport("gdi32.dll")] private static extern int GetDIBits(IntPtr dc, IntPtr bitmap, uint start, uint lines, IntPtr pixels, ref PictureInfo info, uint usage);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PictureInfo
+        {
+            internal uint Size;
+            internal int Width, Height;
+            internal ushort Planes, Bits;
+            internal uint Compression, Bytes;
+            internal int X, Y;
+            internal uint Used, Important;
+        }
+
+        [ComImport, Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellItemImageFactory
+        {
+            [PreserveSig] int GetImage(Size size, uint flags, out IntPtr bitmap);
+        }
 
         internal static IntPtr DefaultTarget() { return Ledges.DesktopListView(); }
 
-        // One window she holds open while she reads or moves a batch: Explorer's process and a scratch page inside it.
-        private sealed class Reach : IDisposable
+        // Only the methods she calls matter, but every slot before them has to stay, in the SDK's order.
+        [ComImport, Guid("85CB6900-4D95-11CF-960C-0080C7F4EE85"), InterfaceType(ComInterfaceType.InterfaceIsDual)]
+        private interface IShellWindows
         {
-            internal readonly IntPtr List, Process, Buffer;
-            internal readonly bool Ok;
-            private bool failed;
+            [PreserveSig] int get_Count(out int count);
+            [PreserveSig] int Item([MarshalAs(UnmanagedType.Struct)] object index, [MarshalAs(UnmanagedType.IDispatch)] out object folder);
+            [PreserveSig] int _NewEnum([MarshalAs(UnmanagedType.IUnknown)] out object value);
+            [PreserveSig] int Register([MarshalAs(UnmanagedType.IDispatch)] object window, int handle, int kind, out int cookie);
+            [PreserveSig] int RegisterPending(int thread, [MarshalAs(UnmanagedType.Struct)] ref object location, [MarshalAs(UnmanagedType.Struct)] ref object root, int kind, out int cookie);
+            [PreserveSig] int Revoke(int cookie);
+            [PreserveSig] int OnNavigate(int cookie, [MarshalAs(UnmanagedType.Struct)] ref object location);
+            [PreserveSig] int OnActivated(int cookie, [MarshalAs(UnmanagedType.VariantBool)] bool active);
+            [PreserveSig] int FindWindowSW([MarshalAs(UnmanagedType.Struct)] ref object location, [MarshalAs(UnmanagedType.Struct)] ref object root, int kind, out int handle, int options, [MarshalAs(UnmanagedType.IDispatch)] out object window);
+        }
 
-            internal Reach(IntPtr list)
+        [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IServiceProvider
+        {
+            [PreserveSig] int QueryService(ref Guid service, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object value);
+        }
+
+        [ComImport, Guid("000214E2-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellBrowser
+        {
+            [PreserveSig] int GetWindow(out IntPtr window);
+            [PreserveSig] int ContextSensitiveHelp([MarshalAs(UnmanagedType.Bool)] bool enter);
+            [PreserveSig] int InsertMenusSB(IntPtr menu, IntPtr widths);
+            [PreserveSig] int SetMenuSB(IntPtr menu, IntPtr reserved, IntPtr active);
+            [PreserveSig] int RemoveMenusSB(IntPtr menu);
+            [PreserveSig] int SetStatusTextSB([MarshalAs(UnmanagedType.LPWStr)] string text);
+            [PreserveSig] int EnableModelessSB([MarshalAs(UnmanagedType.Bool)] bool enable);
+            [PreserveSig] int TranslateAcceleratorSB(IntPtr message, ushort id);
+            [PreserveSig] int BrowseObject(IntPtr item, uint flags);
+            [PreserveSig] int GetViewStateStream(uint mode, [MarshalAs(UnmanagedType.Interface)] out object stream);
+            [PreserveSig] int GetControlWindow(uint id, out IntPtr window);
+            [PreserveSig] int SendControlMsg(uint id, uint message, UIntPtr wParam, IntPtr lParam, out IntPtr result);
+            [PreserveSig] int QueryActiveShellView([MarshalAs(UnmanagedType.Interface)] out object view);
+        }
+
+        [ComImport, Guid("CDE725B0-CCC9-4519-917E-325D72FAB4CE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IFolderView
+        {
+            [PreserveSig] int GetCurrentViewMode(out uint mode);
+            [PreserveSig] int SetCurrentViewMode(uint mode);
+            [PreserveSig] int GetFolder(ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object folder);
+            [PreserveSig] int Item(int index, out IntPtr item);
+            [PreserveSig] int ItemCount(uint flags, out int count);
+            [PreserveSig] int Items(uint flags, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object items);
+            [PreserveSig] int GetSelectionMarkedItem(out int index);
+            [PreserveSig] int GetFocusedItem(out int index);
+            [PreserveSig] int GetItemPosition(IntPtr item, out Point at);
+            [PreserveSig] int GetSpacing(ref Point spacing);
+            [PreserveSig] int GetDefaultSpacing(out Point spacing);
+            [PreserveSig] int GetAutoArrange();
+            [PreserveSig] int SelectItem(int index, uint flags);
+            [PreserveSig] int SelectAndPositionItems(uint count, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] IntPtr[] items, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] Point[] points, uint flags);
+        }
+
+        [ComImport, Guid("000214E6-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellFolder
+        {
+            [PreserveSig] int ParseDisplayName(IntPtr window, IntPtr context, [MarshalAs(UnmanagedType.LPWStr)] string name, ref uint eaten, out IntPtr item, ref uint attributes);
+            [PreserveSig] int EnumObjects(IntPtr window, uint flags, [MarshalAs(UnmanagedType.Interface)] out object items);
+            [PreserveSig] int BindToObject(IntPtr item, IntPtr context, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object value);
+            [PreserveSig] int BindToStorage(IntPtr item, IntPtr context, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object value);
+            [PreserveSig] int CompareIDs(IntPtr flags, IntPtr first, IntPtr second);
+            [PreserveSig] int CreateViewObject(IntPtr window, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object value);
+            [PreserveSig] int GetAttributesOf(uint count, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 0)] IntPtr[] items, ref uint attributes);
+            [PreserveSig] int GetUIObjectOf(IntPtr window, uint count, [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] IntPtr[] items, ref Guid iid, IntPtr reserved, [MarshalAs(UnmanagedType.Interface)] out object value);
+            [PreserveSig] int GetDisplayNameOf(IntPtr item, uint flags, out StrRet name);
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        internal unsafe struct StrData
+        {
+            [FieldOffset(0)] internal IntPtr Text;
+            [FieldOffset(0)] internal uint Offset;
+            [FieldOffset(0)] internal fixed byte Bytes[260];
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct StrRet
+        {
+            internal uint Type;
+            internal StrData Data;
+        }
+
+        internal interface View : IDisposable
+        {
+            bool AutoArrange();
+            int Count();
+            IconSpot Read(int index);
+            IconItem Item(int index);
+            void Move(int index, Point at, int flags);
+        }
+
+        internal sealed class Batch
+        {
+            internal readonly Stopwatch Clock = Stopwatch.StartNew();
+            internal volatile bool Cancelled;
+            internal bool Ok;
+            internal void Check() { if (Cancelled || Clock.ElapsedMilliseconds >= 2000) throw new OperationCanceledException(); }
+        }
+
+        private sealed class ShellView : View
+        {
+            private readonly Batch batch;
+            private object windows, desktop, browser, shell, folder;
+            private IFolderView view;
+
+            internal ShellView(Batch work)
             {
-                List = list;
-                int process;
-                Native.GetWindowThreadProcessId(list, out process);
-                Process = OpenProcess(ProcessVm, false, process);
-                if (Process != IntPtr.Zero) Buffer = VirtualAllocEx(Process, IntPtr.Zero, new UIntPtr((uint)BufferSize), MemCommit, PageReadWrite);
-                Ok = Process != IntPtr.Zero && Buffer != IntPtr.Zero;
+                batch = work;
+                try
+                {
+                    batch.Check();
+                    windows = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39"), true));
+                    object location = 0, root = null;
+                    int handle;
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(((IShellWindows)windows).FindWindowSW(ref location, ref root, 8, out handle, 1, out desktop));
+                    Guid service = new Guid("4C96BE40-915C-11CF-99D3-00AA004AE837"), iid = typeof(IShellBrowser).GUID;
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(((IServiceProvider)desktop).QueryService(ref service, ref iid, out browser));
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(((IShellBrowser)browser).QueryActiveShellView(out shell));
+                    batch.Check();
+                    view = (IFolderView)shell;
+                    iid = typeof(IShellFolder).GUID;
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(view.GetFolder(ref iid, out folder));
+                }
+                catch { Dispose(); throw; }
+            }
+
+            public bool AutoArrange()
+            {
+                batch.Check();
+                int result = view.GetAutoArrange();
+                Marshal.ThrowExceptionForHR(result);
+                return result == 0;
+            }
+
+            public int Count()
+            {
+                int count;
+                batch.Check();
+                Marshal.ThrowExceptionForHR(view.ItemCount(2, out count));
+                return count;
+            }
+
+            public IconSpot Read(int index)
+            {
+                byte[] id;
+                return Read(index, false, out id);
+            }
+
+            public IconItem Item(int index)
+            {
+                byte[] id;
+                IconSpot spot = Read(index, true, out id);
+                return new IconItem(spot.Name, spot.At, id);
+            }
+
+            private IconSpot Read(int index, bool whole, out byte[] id)
+            {
+                id = null;
+                IntPtr item = IntPtr.Zero, text = IntPtr.Zero;
+                StrRet name = new StrRet();
+                bool converted = false;
+                try
+                {
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(view.Item(index, out item));
+                    if (item == IntPtr.Zero) throw new InvalidOperationException();
+                    Point at;
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(view.GetItemPosition(item, out at));
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(((IShellFolder)folder).GetDisplayNameOf(item, 1, out name));
+                    batch.Check();
+                    int result = StrRetToStrW(ref name, item, out text);
+                    converted = true;
+                    Marshal.ThrowExceptionForHR(result);
+                    if (text == IntPtr.Zero) throw new InvalidOperationException();
+                    if (whole) id = Whole(item);
+                    return new IconSpot(index, Marshal.PtrToStringUni(text), at);
+                }
+                finally
+                {
+                    if (!converted && name.Type == 0 && name.Data.Text != IntPtr.Zero) Marshal.FreeCoTaskMem(name.Data.Text);
+                    if (text != IntPtr.Zero) Marshal.FreeCoTaskMem(text);
+                    if (item != IntPtr.Zero) Marshal.FreeCoTaskMem(item);
+                }
+            }
+
+            // The item's whole address from the desktop down, as bytes, so its picture can be asked for after this view is closed.
+            private byte[] Whole(IntPtr item)
+            {
+                IntPtr parent = IntPtr.Zero, full = IntPtr.Zero;
+                try
+                {
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(SHGetIDListFromObject(folder, out parent));
+                    full = ILCombine(parent, item);
+                    if (full == IntPtr.Zero) throw new InvalidOperationException();
+                    byte[] bytes = new byte[ILGetSize(full)];
+                    Marshal.Copy(full, bytes, 0, bytes.Length);
+                    return bytes;
+                }
+                finally
+                {
+                    if (full != IntPtr.Zero) Marshal.FreeCoTaskMem(full);
+                    if (parent != IntPtr.Zero) Marshal.FreeCoTaskMem(parent);
+                }
+            }
+
+            public void Move(int index, Point at, int flags)
+            {
+                IntPtr item = IntPtr.Zero;
+                try
+                {
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(view.Item(index, out item));
+                    if (item == IntPtr.Zero) throw new InvalidOperationException();
+                    batch.Check();
+                    Marshal.ThrowExceptionForHR(view.SelectAndPositionItems(1, new[] { item }, new[] { at }, (uint)flags));
+                }
+                finally { if (item != IntPtr.Zero) Marshal.FreeCoTaskMem(item); }
             }
 
             public void Dispose()
             {
-                // A timed-out message may still use this page in Explorer. Leave it allocated and untouched.
-                if (Buffer != IntPtr.Zero && !failed) FreeMemory(Process, Buffer);
-                if (Process != IntPtr.Zero) CloseHandle(Process);
+                object[] objects = { folder, shell, browser, desktop, windows };
+                folder = shell = browser = desktop = windows = null;
+                view = null;
+                Exception failure = null;
+                foreach (object value in objects)
+                {
+                    try { if (value != null) Marshal.ReleaseComObject(value); }
+                    catch (Exception problem) { failure = problem; }
+                }
+                if (failure != null) throw failure;
             }
+        }
 
-            internal bool Send(int message, IntPtr wParam, IntPtr lParam, out IntPtr result)
+        // One batch of shell calls on a thread of its own, so a frozen Explorer can't hold her up: she waits 2 seconds at most
+        // and a batch that runs out counts as failed. Only one batch is ever out, even while its thread is still stuck there.
+        // The thread is free-threaded because calls into Explorer come back about a third sooner than from an STA (75 icons read
+        // in 60 ms against 95), and her window waits on every one.
+        private static bool Run(IntPtr list, Action<View, Batch> action)
+        {
+            if (list == IntPtr.Zero || System.Threading.Interlocked.CompareExchange(ref busy, 1, 0) != 0) return false;
+            Batch batch = new Batch();
+            Func<Batch, View> open = Open;
+            System.Threading.Thread worker = new System.Threading.Thread(delegate()
             {
-                result = IntPtr.Zero;
-                if (failed) return false;
-                if (Message(List, message, wParam, lParam, out result)) return true;
-                failed = true;
-                return false;
+                try
+                {
+                    batch.Check();
+                    using (View view = open(batch))
+                    {
+                        batch.Check();
+                        action(view, batch);
+                        batch.Check();
+                    }
+                    batch.Check();
+                    batch.Ok = true;
+                }
+                catch (Exception) { }
+                finally { System.Threading.Interlocked.Exchange(ref busy, 0); }
+            });
+            try
+            {
+                worker.IsBackground = true;
+                worker.SetApartmentState(System.Threading.ApartmentState.MTA);
+                worker.Start();
+            }
+            catch (Exception) { System.Threading.Interlocked.Exchange(ref busy, 0); return false; }
+            int left = Math.Max(0, 2000 - (int)batch.Clock.ElapsedMilliseconds);
+            if (!worker.Join(left)) { batch.Cancelled = true; return false; }
+            return batch.Ok && batch.Clock.ElapsedMilliseconds < 2000;
+        }
+
+        // Every icon with its name, its place on the screen (not in the list) and its address, for drawing copies of them.
+        // The list's own scale comes back too: the desktop's icon size in its settings is for 100%.
+        internal static bool TryItems(IntPtr list, out List<IconItem> items, out int size, out int dpi)
+        {
+            List<IconItem> read = new List<IconItem>();
+            int scale = Ledges.Dpi(list), picture = 48;
+            try
+            {
+                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\Shell\Bags\1\Desktop"))
+                {
+                    object value = key == null ? null : key.GetValue("IconSize");
+                    if (value is int) picture = Math.Max(16, Math.Min(256, (int)value));
+                }
+            }
+            catch (Exception) { }
+            bool ok = Run(list, delegate(View view, Batch batch)
+            {
+                Point origin = Origin(list);
+                int count = view.Count();
+                if (count < 0) throw new InvalidOperationException();
+                for (int i = 0; i < count; i++)
+                {
+                    batch.Check();
+                    IconItem item = view.Item(i);
+                    read.Add(new IconItem(item.Name, new Point(item.At.X + origin.X, item.At.Y + origin.Y), item.Id));
+                }
+            });
+            items = ok ? read : new List<IconItem>();
+            size = picture * scale / 96;
+            dpi = scale;
+            return ok;
+        }
+
+        // Where the list's own top left corner is on the screen. The smoke test's stand-in list says its own.
+        internal static Func<IntPtr, Point> Origin = delegate(IntPtr list)
+        {
+            Point origin = Point.Empty;
+            if (!ClientToScreen(list, ref origin)) throw new InvalidOperationException();
+            return origin;
+        };
+
+        // One icon's picture as Explorer draws it, asked of the shell by the item's address. Shortcuts to games (.url files)
+        // only give their real picture on a single-threaded thread; on a free-threaded one they come back as a blank page.
+        internal static Bitmap Picture(byte[] id, int size)
+        {
+            GCHandle pinned = GCHandle.Alloc(id, GCHandleType.Pinned);
+            IntPtr bitmap = IntPtr.Zero;
+            IShellItemImageFactory factory = null;
+            try
+            {
+                Guid iid = typeof(IShellItemImageFactory).GUID;
+                Marshal.ThrowExceptionForHR(SHCreateItemFromIDList(pinned.AddrOfPinnedObject(), ref iid, out factory));
+                Marshal.ThrowExceptionForHR(factory.GetImage(new Size(size, size), 4, out bitmap));
+                if (bitmap == IntPtr.Zero) throw new InvalidOperationException();
+                return ReadPicture(bitmap);
+            }
+            finally
+            {
+                if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
+                try { if (factory != null) Marshal.ReleaseComObject(factory); }
+                finally { pinned.Free(); }
             }
         }
 
-        // A message to the list view that gives up if the desktop's hung, so a frozen Explorer can't hold her up.
-        private static bool Send(IntPtr list, int message, IntPtr wParam, IntPtr lParam, out IntPtr result)
+        // The shell's bitmap as one of hers, see-through parts kept: its rows are copied out top down, blue, green, red, alpha.
+        private static Bitmap ReadPicture(IntPtr bitmap)
         {
-            result = IntPtr.Zero;
-            IntPtr answer;
-            IntPtr ok = SendMessageTimeout(list, message, wParam, lParam, SMTO_ABORTIFHUNG, 2000, out answer);
-            if (ok == IntPtr.Zero) return false;
-            result = answer;
-            return true;
-        }
-
-        private static void PutInt(byte[] bytes, int offset, int value)
-        {
-            bytes[offset] = (byte)value;
-            bytes[offset + 1] = (byte)(value >> 8);
-            bytes[offset + 2] = (byte)(value >> 16);
-            bytes[offset + 3] = (byte)(value >> 24);
-        }
-
-        private static void PutPtr(byte[] bytes, int offset, IntPtr value)
-        {
-            long raw = value.ToInt64();
-            for (int i = 0; i < IntPtr.Size; i++) bytes[offset + i] = (byte)(raw >> (8 * i));
-        }
-
-        private static int GetInt(byte[] bytes, int offset)
-        {
-            return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24);
+            IntPtr dc = CreateCompatibleDC(IntPtr.Zero);
+            Bitmap picture = null;
+            try
+            {
+                if (dc == IntPtr.Zero) throw new InvalidOperationException();
+                PictureInfo info = new PictureInfo { Size = 40 };
+                if (GetDIBits(dc, bitmap, 0, 0, IntPtr.Zero, ref info, 0) == 0 || info.Width <= 0 || info.Height == 0) throw new InvalidOperationException();
+                int height = Math.Abs(info.Height);
+                info.Height = -height;
+                info.Planes = 1;
+                info.Bits = 32;
+                info.Compression = 0;
+                picture = new Bitmap(info.Width, height, PixelFormat.Format32bppPArgb);
+                BitmapData bits = picture.LockBits(new Rectangle(0, 0, picture.Width, picture.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
+                try { if (GetDIBits(dc, bitmap, 0, (uint)height, bits.Scan0, ref info, 0) != height) throw new InvalidOperationException(); }
+                finally { picture.UnlockBits(bits); }
+                Bitmap result = picture;
+                picture = null;
+                return result;
+            }
+            finally { if (picture != null) picture.Dispose(); if (dc != IntPtr.Zero) DeleteDC(dc); }
         }
 
         internal static List<IconSpot> Read(IntPtr list)
         {
             List<IconSpot> spots;
-            if (!TryRead(list, out spots)) spots.Clear();
+            TryRead(list, out spots);
             return spots;
         }
 
         internal static bool TryRead(IntPtr list, out List<IconSpot> spots)
         {
-            spots = new List<IconSpot>();
-            if (list == IntPtr.Zero) return false;
-            using (Reach reach = new Reach(list))
+            List<IconSpot> read = new List<IconSpot>();
+            bool ok = Run(list, delegate(View view, Batch batch)
             {
-                if (!reach.Ok) return false;
-                IntPtr counted;
-                if (!reach.Send(LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero, out counted)) return false;
-                int count = counted.ToInt32();
-                if (count < 0) return false;
-                for (int i = 0; i < count; i++)
+                int count = view.Count();
+                if (count < 0) throw new InvalidOperationException();
+                for (int i = 0; i < count; i++) { batch.Check(); read.Add(view.Read(i)); }
+            });
+            spots = ok ? read : new List<IconSpot>();
+            return ok;
+        }
+
+        // Only the icons she's already moving, each looked up where it last was in the view, because reading a whole desktop
+        // every step of a scatter holds her window up. One that isn't there under its name any more means the desktop changed,
+        // so the whole desktop is read instead.
+        internal static bool TryRead(IntPtr list, List<IconSpot> wanted, out List<IconSpot> spots)
+        {
+            List<IconSpot> asked = new List<IconSpot>(wanted), read = new List<IconSpot>();
+            bool ok = Run(list, delegate(View view, Batch batch)
+            {
+                int count = view.Count();
+                if (count < 0) throw new InvalidOperationException();
+                foreach (IconSpot want in asked)
                 {
-                    Point at;
-                    string name;
-                    if (!ReadPosition(reach, i, out at) || !ReadName(reach, i, out name)) return false;
-                    spots.Add(new IconSpot(i, name, at));
+                    batch.Check();
+                    IconSpot now = want.Index >= 0 && want.Index < count ? view.Read(want.Index) : null;
+                    if (now == null || now.Name != want.Name) { read.Clear(); break; }
+                    read.Add(now);
                 }
-            }
-            return true;
-        }
-
-        private static bool ReadPosition(Reach reach, int index, out Point at)
-        {
-            at = Point.Empty;
-            IntPtr got;
-            if (!reach.Send(LVM_GETITEMPOSITION, new IntPtr(index), reach.Buffer, out got) || got == IntPtr.Zero) return false;
-            byte[] point = new byte[8];
-            IntPtr read;
-            if (!ReadProcessMemory(reach.Process, reach.Buffer, point, new UIntPtr(8), out read) || read.ToInt64() < 8) return false;
-            at = new Point(GetInt(point, 0), GetInt(point, 4));
-            return true;
-        }
-
-        private static bool ReadName(Reach reach, int index, out string name)
-        {
-            name = null;
-            int pointer = IntPtr.Size;
-            int pszOffset = (20 + pointer - 1) / pointer * pointer;
-            int cchOffset = pszOffset + pointer;
-            byte[] item = new byte[128];
-            PutInt(item, 8, 0); // iSubItem
-            PutPtr(item, pszOffset, new IntPtr(reach.Buffer.ToInt64() + TextOffset));
-            PutInt(item, cchOffset, TextChars);
-            IntPtr written;
-            if (!WriteMemory(reach.Process, reach.Buffer, item, new UIntPtr((uint)item.Length), out written)) return false;
-            IntPtr length;
-            if (!reach.Send(LVM_GETITEMTEXTW, new IntPtr(index), reach.Buffer, out length)) return false;
-            byte[] text = new byte[TextBytes];
-            IntPtr read;
-            if (!ReadProcessMemory(reach.Process, new IntPtr(reach.Buffer.ToInt64() + TextOffset), text, new UIntPtr((uint)TextBytes), out read)) return false;
-            int chars = length.ToInt32();
-            if (chars < 0) chars = 0;
-            if (chars > TextChars) chars = TextChars;
-            name = Encoding.Unicode.GetString(text, 0, chars * 2);
-            int end = name.IndexOf('\0');
-            if (end >= 0) name = name.Substring(0, end);
-            return true;
+                if (read.Count == asked.Count) return;
+                for (int i = 0; i < count; i++) { batch.Check(); read.Add(view.Read(i)); }
+            });
+            spots = ok ? read : new List<IconSpot>();
+            return ok;
         }
 
         internal static bool Move(IntPtr list, int index, Point at)
@@ -196,33 +493,45 @@ namespace CapriDesktop
             return MoveMany(list, one) > 0;
         }
 
-        // Puts a batch of icons where she wants them in one trip into Explorer's process. Returns how many moved.
-        internal static int MoveMany(IntPtr list, List<KeyValuePair<int, Point>> moves)
+        internal static int MoveMany(IntPtr list, List<KeyValuePair<int, Point>> moves) { return MoveMany(list, moves, null); }
+
+        // Puts a batch of icons where she wants them in one trip. Returns how many moved, or none when the trip ran out of time.
+        // Given a list, the same trip also reads where each one landed once they've all moved.
+        internal static int MoveMany(IntPtr list, List<KeyValuePair<int, Point>> moves, List<IconSpot> landed)
         {
-            if (list == IntPtr.Zero || moves == null || moves.Count == 0) return 0;
+            if (moves == null || moves.Count == 0) return 0;
+            List<KeyValuePair<int, Point>> copy = new List<KeyValuePair<int, Point>>(moves);
+            List<IconSpot> seen = new List<IconSpot>();
             int done = 0;
-            using (Reach reach = new Reach(list))
+            bool ok = Run(list, delegate(View view, Batch batch)
             {
-                if (!reach.Ok) return 0;
-                foreach (KeyValuePair<int, Point> move in moves)
+                foreach (KeyValuePair<int, Point> move in copy)
                 {
-                    byte[] point = new byte[8];
-                    PutInt(point, 0, move.Value.X);
-                    PutInt(point, 4, move.Value.Y);
-                    IntPtr written;
-                    if (!WriteMemory(reach.Process, reach.Buffer, point, new UIntPtr(8), out written)) continue;
-                    IntPtr result;
-                    if (!reach.Send(LVM_SETITEMPOSITION32, new IntPtr(move.Key), reach.Buffer, out result)) break;
+                    batch.Check();
+                    try { view.Move(move.Key, move.Value, PositionItem); }
+                    catch (Exception) { break; }
                     done++;
                 }
-            }
-            return done;
+                if (landed == null || done != copy.Count) return;
+                foreach (KeyValuePair<int, Point> move in copy) { batch.Check(); seen.Add(view.Read(move.Key)); }
+            });
+            if (ok && landed != null) landed.AddRange(seen);
+            return ok ? done : 0;
         }
 
         // When Auto arrange icons is on, a move snaps straight back, so she only does the vanish instead.
+        internal static bool TryAutoArrange(IntPtr list, out bool arrange)
+        {
+            bool value = false;
+            bool ok = Run(list, delegate(View view, Batch batch) { value = view.AutoArrange(); });
+            arrange = value;
+            return ok;
+        }
+
         internal static bool AutoArrange(IntPtr list)
         {
-            return list != IntPtr.Zero && (Native.GetWindowLong(list, GWL_STYLE) & LVS_AUTOARRANGE) != 0;
+            bool arrange;
+            return TryAutoArrange(list, out arrange) && arrange;
         }
 
         private static void Visibility(IntPtr list, int command)
@@ -288,10 +597,12 @@ namespace CapriDesktop
         // undo every move or there's nothing to move.
         internal bool Start(double now, bool motion)
         {
-            if (active || Recover() < 0) return false;
+            if (active || IconRampage.Running || Recover() < 0) return false;
             list = target();
             if (list == IntPtr.Zero) return false;
-            if (DesktopIcons.AutoArrange(list)) return Vanish(now);
+            bool arrange;
+            if (!DesktopIcons.TryAutoArrange(list, out arrange)) return false;
+            if (arrange) return Vanish(now);
             List<IconSpot> spots;
             if (!DesktopIcons.TryRead(list, out spots)) return false;
             if (spots.Count == 0) return Vanish(now);
@@ -312,7 +623,7 @@ namespace CapriDesktop
 
         internal bool Vanish(double now)
         {
-            if (active || Recover() < 0) return false;
+            if (active || IconRampage.Running || Recover() < 0) return false;
             list = target();
             if (list == IntPtr.Zero) return false;
             if (!MarkVanish()) return false;
@@ -343,8 +654,9 @@ namespace CapriDesktop
         private void SlideStep()
         {
             double frac = steps <= 0 ? 1 : Math.Min(1.0, (double)step / steps);
-            List<IconSpot> before;
-            if (!DesktopIcons.TryRead(list, out before)) { PutBack(); return; }
+            List<IconSpot> wanted = new List<IconSpot>(), before;
+            foreach (Moved m in moved) if (!m.Released) wanted.Add(new IconSpot(m.Index, m.Name, m.Last));
+            if (!DesktopIcons.TryRead(list, wanted, out before)) { PutBack(); return; }
             List<KeyValuePair<int, Point>> batch = new List<KeyValuePair<int, Point>>();
             foreach (Moved m in moved)
             {
@@ -359,10 +671,9 @@ namespace CapriDesktop
                 batch.Add(new KeyValuePair<int, Point>(cur.Index, m.Pending.Value));
             }
             if (!MarkShuffle()) { PutBack(); return; }
-            if (DesktopIcons.MoveMany(list, batch) != batch.Count) { PutBack(); return; }
             // Where they actually landed, so a desktop that snaps to a grid doesn't read as a hand moving them next step.
-            List<IconSpot> after;
-            if (!DesktopIcons.TryRead(list, out after)) { PutBack(); return; }
+            List<IconSpot> after = new List<IconSpot>();
+            if (DesktopIcons.MoveMany(list, batch, after) != batch.Count) { PutBack(); return; }
             foreach (Moved m in moved)
             {
                 if (m.Released) continue;
@@ -488,7 +799,7 @@ namespace CapriDesktop
             return Write(lines.ToString());
         }
 
-        private bool MarkVanish() { return Write("vanish" + Environment.NewLine); }
+        internal static bool MarkVanish() { return Write("vanish" + Environment.NewLine); }
 
         private static bool Write(string body)
         {
@@ -569,9 +880,521 @@ namespace CapriDesktop
         }
     }
 
+    // One desktop icon as her rampage needs it: its name, where its picture's top left corner is on the screen, and its
+    // address from the desktop down (the shell's item ID list as bytes), which is what its picture is asked for by.
+    internal sealed class IconItem
+    {
+        internal readonly string Name;
+        internal readonly Point At;
+        internal readonly byte[] Id;
+        internal IconItem(string name, Point at, byte[] id) { Name = name; At = at; Id = id; }
+    }
+
+    // The desktop icons' pictures, kept by address and size. Asking the shell for 75 of them takes 1 to 8 seconds the first
+    // time (measured on a real desktop, 10 Nov), far too long for her window to wait, so they're fetched on threads of their
+    // own and a rampage starts once they're all in. After that they're kept, so the next one starts at once.
+    internal static class IconPictures
+    {
+        internal const int Workers = 4, LimitMilliseconds = 10000, KeepSeconds = 600, Most = 600;
+        internal static Func<byte[], int, Bitmap> Fetch = DesktopIcons.Picture;
+        private static readonly Dictionary<string, Bitmap> kept = new Dictionary<string, Bitmap>();
+        private static readonly Stopwatch age = new Stopwatch();
+        private static int loading;
+
+        internal static bool Loading { get { return System.Threading.Interlocked.CompareExchange(ref loading, 0, 0) != 0; } }
+
+        private static string Key(byte[] id, int size) { return size + ":" + Convert.ToBase64String(id); }
+
+        internal static Bitmap Get(IconItem item, int size)
+        {
+            lock (kept) { Bitmap picture; return kept.TryGetValue(Key(item.Id, size), out picture) ? picture : null; }
+        }
+
+        internal static bool Has(List<IconItem> items, int size)
+        {
+            lock (kept)
+            {
+                foreach (IconItem item in items) if (!kept.ContainsKey(Key(item.Id, size))) return false;
+                return true;
+            }
+        }
+
+        // Called from her window's thread only, and never while a fetch is out, so nothing is drawing from a picture it drops.
+        internal static void Forget()
+        {
+            if (Loading) return;
+            lock (kept)
+            {
+                foreach (Bitmap picture in kept.Values) picture.Dispose();
+                kept.Clear();
+                age.Reset();
+            }
+        }
+
+        private static bool One(IconItem item, int size)
+        {
+            Bitmap picture = null;
+            try { picture = Fetch(item.Id, size); }
+            catch (Exception) { }
+            if (picture == null) return false;
+            lock (kept)
+            {
+                Bitmap old;
+                string key = Key(item.Id, size);
+                if (kept.TryGetValue(key, out old)) old.Dispose();
+                kept[key] = picture;
+                if (!age.IsRunning) age.Start();
+            }
+            return true;
+        }
+
+        // Fetches the pictures that aren't kept yet, here and now on the caller's thread. The smoke test's way in.
+        internal static bool Fill(List<IconItem> items, int size)
+        {
+            foreach (IconItem item in items) if (Get(item, size) == null) One(item, size);
+            return Has(items, size);
+        }
+
+        // Fetches the pictures that aren't kept yet on a few threads of their own, then says whether every one is in. One
+        // that fails beside the others is tried once more alone: the shell now and then refuses one of several asked at once.
+        // A call that never comes back only strands its own thread. done runs on one of those threads, not her window's.
+        internal static bool Load(List<IconItem> items, int size, Action<bool> done)
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref loading, 1, 0) != 0) return false;
+            if (age.Elapsed.TotalSeconds > KeepSeconds || kept.Count > Most)
+            {
+                lock (kept)
+                {
+                    foreach (Bitmap picture in kept.Values) picture.Dispose();
+                    kept.Clear();
+                    age.Reset();
+                }
+            }
+            List<IconItem> missing = new List<IconItem>();
+            foreach (IconItem item in items) if (Get(item, size) == null) missing.Add(item);
+            Stopwatch clock = Stopwatch.StartNew();
+            int next = -1;
+            List<IconItem> failed = new List<IconItem>();
+            System.Threading.ThreadStart work = delegate
+            {
+                while (clock.ElapsedMilliseconds < LimitMilliseconds)
+                {
+                    int i = System.Threading.Interlocked.Increment(ref next);
+                    if (i >= missing.Count) return;
+                    if (!One(missing[i], size)) lock (failed) failed.Add(missing[i]);
+                }
+            };
+            System.Threading.Thread lead = new System.Threading.Thread(delegate()
+            {
+                bool all = false;
+                try
+                {
+                    List<System.Threading.Thread> pool = new List<System.Threading.Thread>();
+                    for (int i = 0; i < Math.Min(Workers, missing.Count); i++)
+                    {
+                        System.Threading.Thread worker = new System.Threading.Thread(work);
+                        worker.IsBackground = true;
+                        worker.SetApartmentState(System.Threading.ApartmentState.STA);
+                        worker.Start();
+                        pool.Add(worker);
+                    }
+                    foreach (System.Threading.Thread worker in pool) worker.Join(Math.Max(0, LimitMilliseconds - (int)clock.ElapsedMilliseconds));
+                    List<IconItem> again;
+                    lock (failed) again = new List<IconItem>(failed);
+                    foreach (IconItem item in again) if (clock.ElapsedMilliseconds < LimitMilliseconds) One(item, size);
+                    all = Has(items, size);
+                }
+                catch (Exception) { }
+                finally
+                {
+                    System.Threading.Interlocked.Exchange(ref loading, 0);
+                    try { done(all); } catch (Exception) { }
+                }
+            });
+            try
+            {
+                lead.IsBackground = true;
+                lead.SetApartmentState(System.Threading.ApartmentState.STA);
+                lead.Start();
+            }
+            catch (Exception) { System.Threading.Interlocked.Exchange(ref loading, 0); return false; }
+            return true;
+        }
+    }
+
+    // A drawn copy of one icon, picture and name together, that the rampage throws around while the real one is hidden.
+    internal sealed class IconCopy : IDisposable
+    {
+        internal readonly string Name;
+        internal readonly PointF Home;
+        internal readonly Bitmap Picture;
+        internal double X, Y, Spin, Vx, Vy, Turn, FromX, FromY, FromSpin;
+        internal bool Hit;
+
+        // at is the top left corner of the icon's picture, which is where the desktop says an icon is. The name goes under it
+        // the way the desktop writes it: white Segoe UI 9 with a soft dark shadow, centred, two lines at most.
+        internal IconCopy(string name, Point at, Bitmap picture, int size, int dpi)
+        {
+            Name = name;
+            float scale = dpi / 96f;
+            int width = Math.Max(size + (int)(8 * scale), SystemInformation.IconSpacingSize.Width), gap = (int)Math.Round(4 * scale);
+            using (Font font = new Font("Segoe UI", 12 * scale, FontStyle.Regular, GraphicsUnit.Pixel))
+            {
+                int lines = (int)Math.Ceiling(font.GetHeight(96) * 2) + 1;
+                Picture = new Bitmap(width, size + gap + lines + (int)Math.Ceiling(2 * scale), PixelFormat.Format32bppPArgb);
+                try
+                {
+                    using (Graphics graphics = Graphics.FromImage(Picture))
+                    using (StringFormat format = new StringFormat())
+                    using (Brush shadow = new SolidBrush(Color.FromArgb(100, Color.Black)))
+                    {
+                        graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        int longest = Math.Max(picture.Width, picture.Height), wide = picture.Width * size / longest, tall = picture.Height * size / longest;
+                        if (longest == size) graphics.DrawImageUnscaled(picture, (width - size) / 2 + (size - wide) / 2, (size - tall) / 2);
+                        else graphics.DrawImage(picture, (width - size) / 2 + (size - wide) / 2, (size - tall) / 2, wide, tall);
+                        format.Alignment = StringAlignment.Center;
+                        format.Trimming = StringTrimming.EllipsisCharacter;
+                        format.FormatFlags = StringFormatFlags.LineLimit;
+                        RectangleF label = new RectangleF(1, size + gap, width - 2, lines);
+                        foreach (Point offset in new[] { new Point(-1, 1), new Point(1, 1), new Point(0, 2), new Point(0, 1) })
+                        {
+                            RectangleF dark = label;
+                            dark.Offset(offset.X * scale, offset.Y * scale);
+                            graphics.DrawString(name, font, shadow, dark, format);
+                        }
+                        graphics.DrawString(name, font, Brushes.White, label, format);
+                    }
+                }
+                catch { Picture.Dispose(); throw; }
+            }
+            Home = new PointF(at.X + width / 2 - (width - size) / 2, at.Y + Picture.Height / 2);
+            X = Home.X;
+            Y = Home.Y;
+        }
+
+        internal double Radius { get { return Math.Sqrt(Picture.Width * Picture.Width + Picture.Height * Picture.Height) / 2; } }
+        public void Dispose() { Picture.Dispose(); }
+    }
+
+    internal sealed class IconRampage : IDisposable
+    {
+        internal const double TrainSeconds = 2.5;
+        internal const double CrashSeconds = 0.9;
+        internal const double FlingSeconds = 10;
+        internal const double HomeSeconds = 1;
+        internal const double ThrowSeconds = 1.3;
+        internal const double ShakeSeconds = 0.33;
+        internal const double HookSeconds = 0.65;
+        internal const double GlitchSeconds = 0.65;
+        internal const double StepSeconds = 1.0 / 120;
+        internal const int SwapMilliseconds = 150;
+        internal const int FrameMilliseconds = 15;
+        internal const double HomeAt = TrainSeconds + CrashSeconds + FlingSeconds;
+        internal const double EndAt = HomeAt + HomeSeconds;
+
+        internal static Func<Rectangle[]> Monitors = delegate
+        {
+            List<Rectangle> areas = new List<Rectangle>();
+            foreach (Screen screen in Screen.AllScreens) areas.Add(screen.Bounds);
+            return areas.ToArray();
+        };
+        private static IconRampage running;
+        internal static bool Running { get { return running != null; } }
+        internal readonly List<IconCopy> Copies = new List<IconCopy>();
+        internal Rectangle Room;
+        internal Action Glitch, Crash, Throw;
+        internal bool Active;
+        private readonly Random random;
+        private readonly List<PointF> trail = new List<PointF>();
+        private readonly List<double> lengths = new List<double>();
+        private RampageWindow window;
+        private IntPtr list;
+        private double started, elapsed, length, gap, speed, radius, nextThrow, nextGlitch, glitched = -10;
+        private bool crashed, home;
+        // Her tear bars flicker faintly behind the icons the whole way: a fresh pulse before the last has faded.
+        internal int GlitchSeed;
+        internal double GlitchAge { get { return elapsed - glitched; } }
+        internal IntPtr WindowHandle { get { return window == null ? IntPtr.Zero : window.Handle; } }
+
+        internal IconRampage(int seed) { random = new Random(seed); }
+
+        // What Load found on the desktop, for fetching the pictures it still lacks.
+        internal List<IconItem> Wanted = new List<IconItem>();
+        internal int Size;
+
+        // 1 when the copies are made and it can start, 2 when some pictures have to be fetched first (IconPictures.Load, then
+        // Load again), 0 when the desktop is empty and -1 when the icons can't be read or there's no room to throw them.
+        internal int Load()
+        {
+            if (Running || IconMischief.Recover() < 0) return -1;
+            list = DesktopIcons.Target();
+            int dpi;
+            if (!DesktopIcons.TryItems(list, out Wanted, out Size, out dpi)) return -1;
+            if (Wanted.Count == 0) return 0;
+            if (!IconPictures.Has(Wanted, Size)) return 2;
+            List<IconCopy> read = new List<IconCopy>();
+            try
+            {
+                foreach (IconItem item in Wanted) read.Add(new IconCopy(item.Name, item.At, IconPictures.Get(item, Size), Size, dpi));
+                int best = 0;
+                foreach (Rectangle area in Monitors())
+                {
+                    int count = 0;
+                    foreach (IconCopy copy in read) if (area.Contains(Point.Round(copy.Home))) count++;
+                    if (count > best) { best = count; Room = area; }
+                }
+                if (best == 0) return -1;
+                foreach (IconCopy copy in read) if (Room.Contains(Point.Round(copy.Home))) Copies.Add(copy);
+                foreach (IconCopy copy in Copies) radius = Math.Max(radius, copy.Radius);
+                if (Room.Width <= radius * 2 || Room.Height <= radius * 2) return -1;
+                MakeTrail();
+                return 1;
+            }
+            catch (Exception) { return -1; }
+            finally { foreach (IconCopy copy in read) if (!Copies.Contains(copy)) copy.Dispose(); }
+        }
+
+        internal bool Start(double now, bool draw)
+        {
+            if (Active || Running || Copies.Count == 0 || !IconMischief.MarkVanish()) return false;
+            try
+            {
+                if (draw) { window = new RampageWindow(this); window.Open(); }
+                DesktopIcons.Hide(list);
+                if (!System.Threading.SpinWait.SpinUntil(delegate { return DesktopIcons.Hidden(list); }, SwapMilliseconds)) throw new InvalidOperationException();
+                started = now;
+                elapsed = 0;
+                nextThrow = TrainSeconds + CrashSeconds + ThrowSeconds;
+                Active = true;
+                running = this;
+                if (Glitch != null) Glitch();
+                return true;
+            }
+            catch { PutBack(); return false; }
+        }
+
+        private void MakeTrail()
+        {
+            double left = Room.Left + radius, right = Room.Right - radius, middle = Room.Top + Room.Height / 2.0;
+            // Carriages ride nose to tail, a little closer than their names are wide, and the track is long enough that the
+            // whole train is on the wall within CrashSeconds of its lead hitting it.
+            gap = Size + Copies[0].Picture.Width / 9;
+            int sweeps = Math.Max(3, (int)Math.Ceiling((Copies.Count - 1) * gap * 2.6 / ((right - left) * 0.8)));
+            if (sweeps % 2 == 0) sweeps++;
+            for (int i = 0; i <= 1600; i++)
+            {
+                double t = i / 1600.0, curve = Math.Min(1, t / 0.85);
+                double x = t < 0.85 ? left + (right - left) * (0.45 - 0.4 * Math.Cos(curve * Math.PI * sweeps)) : left + (right - left) * (0.85 + (t - 0.85));
+                double y = middle + (Room.Height / 2.0 - radius) * 0.65 * Math.Sin(curve * Math.PI * 4) * Math.Sin(curve * Math.PI);
+                PointF point = new PointF((float)x, (float)y);
+                if (trail.Count > 0)
+                {
+                    PointF last = trail[trail.Count - 1];
+                    length += Math.Sqrt((point.X - last.X) * (point.X - last.X) + (point.Y - last.Y) * (point.Y - last.Y));
+                }
+                trail.Add(point);
+                lengths.Add(length);
+            }
+            speed = (length - (Copies.Count - 1) * gap) * 1.8 / TrainSeconds;
+        }
+
+        private PointF Along(double distance)
+        {
+            distance = Math.Max(0, distance);
+            if (distance >= length) return trail[trail.Count - 1];
+            int lo = 0, hi = lengths.Count - 1;
+            while (lo + 1 < hi) { int mid = (lo + hi) / 2; if (lengths[mid] < distance) lo = mid; else hi = mid; }
+            double part = (distance - lengths[lo]) / Math.Max(0.001, lengths[hi] - lengths[lo]);
+            return new PointF((float)(trail[lo].X + (trail[hi].X - trail[lo].X) * part), (float)(trail[lo].Y + (trail[hi].Y - trail[lo].Y) * part));
+        }
+
+        internal void Advance(double now, bool escape)
+        {
+            if (!Active) return;
+            if (escape) { PutBack(); return; }
+            double until = Math.Min(EndAt, Math.Max(elapsed, now - started));
+            while (elapsed < until)
+            {
+                double next = Math.Min(until, elapsed + StepSeconds);
+                if (elapsed < HomeAt && next > HomeAt) next = HomeAt;
+                Step(next, next - elapsed);
+                elapsed = next;
+            }
+            if (window != null) window.PaintCopies(Shake);
+            if (elapsed >= EndAt) PutBack();
+        }
+
+        internal double Shake { get { return crashed && elapsed < TrainSeconds + ShakeSeconds ? (1 - (elapsed - TrainSeconds) / ShakeSeconds) * 7 : 0; } }
+
+        private void Step(double t, double dt)
+        {
+            if (t >= nextGlitch && t < HomeAt)
+            {
+                nextGlitch += GlitchSeconds;
+                glitched = t;
+                GlitchSeed++;
+            }
+            if (t >= TrainSeconds && !crashed)
+            {
+                crashed = true;
+                if (Glitch != null) Glitch();
+                if (Crash != null) Crash();
+            }
+            if (t >= nextThrow && t < HomeAt)
+            {
+                nextThrow += ThrowSeconds;
+                foreach (IconCopy copy in Copies) Toss(copy, false);
+                if (Glitch != null) Glitch();
+                if (Throw != null) Throw();
+            }
+            if (t > HomeAt)
+            {
+                if (!home)
+                {
+                    home = true;
+                    foreach (IconCopy copy in Copies) { copy.FromX = copy.X; copy.FromY = copy.Y; copy.FromSpin = copy.Spin; }
+                }
+                double u = Math.Min(1, (t - HomeAt) / HomeSeconds), ease = u * u * (3 - 2 * u);
+                foreach (IconCopy copy in Copies)
+                {
+                    copy.X = u == 1 ? copy.Home.X : copy.FromX + (copy.Home.X - copy.FromX) * ease;
+                    copy.Y = u == 1 ? copy.Home.Y : copy.FromY + (copy.Home.Y - copy.FromY) * ease;
+                    copy.Spin = u == 1 ? 0 : copy.FromSpin * (1 - ease);
+                }
+                return;
+            }
+            double progress = Math.Min(1, t / TrainSeconds);
+            double tail = (Copies.Count - 1) * gap;
+            double head = tail + (length - tail) * (0.2 * progress + 0.8 * progress * progress) + Math.Max(0, t - TrainSeconds) * speed;
+            for (int i = 0; i < Copies.Count; i++)
+            {
+                IconCopy copy = Copies[i];
+                double distance = head - i * gap;
+                if (!copy.Hit && distance >= length)
+                {
+                    copy.Hit = true;
+                    copy.X = Room.Right - copy.Radius;
+                    copy.Y = Room.Top + Room.Height / 2.0;
+                    Toss(copy, true);
+                }
+                if (copy.Hit)
+                {
+                    copy.X += copy.Vx * dt;
+                    copy.Y += copy.Vy * dt;
+                    copy.Spin += copy.Turn * dt;
+                    Bounce(copy);
+                }
+                else
+                {
+                    PointF point = Along(distance);
+                    double u = Math.Min(1, t / HookSeconds), ease = u * u * (3 - 2 * u);
+                    double bob = Math.Sin(t * 12 - i * 0.6) * 3 * Math.Min(1, Math.Max(0, (length - distance) / 80));
+                    copy.X = copy.Home.X + (point.X - copy.Home.X) * ease;
+                    copy.Y = copy.Home.Y + (point.Y + bob - copy.Home.Y) * ease;
+                }
+            }
+        }
+
+        private void Toss(IconCopy copy, bool wall)
+        {
+            double angle = wall ? Math.PI + (random.NextDouble() - 0.5) * 1.9 : random.NextDouble() * Math.PI * 2;
+            double force = Math.Max(700, Math.Min(2200, speed)) * (0.65 + random.NextDouble() * 0.65);
+            copy.Vx = Math.Cos(angle) * force;
+            copy.Vy = Math.Sin(angle) * force;
+            copy.Turn = (random.NextDouble() * 2 - 1) * 1000;
+        }
+
+        private void Bounce(IconCopy copy)
+        {
+            double r = copy.Radius;
+            if (copy.X < Room.Left + r) { copy.X = Room.Left + r; copy.Vx = Math.Abs(copy.Vx); }
+            if (copy.X > Room.Right - r) { copy.X = Room.Right - r; copy.Vx = -Math.Abs(copy.Vx); }
+            if (copy.Y < Room.Top + r) { copy.Y = Room.Top + r; copy.Vy = Math.Abs(copy.Vy); }
+            if (copy.Y > Room.Bottom - r) { copy.Y = Room.Bottom - r; copy.Vy = -Math.Abs(copy.Vy); }
+        }
+
+        internal void PutBack()
+        {
+            Active = false;
+            if (running == this) running = null;
+            try
+            {
+                DesktopIcons.Show(list);
+                System.Threading.SpinWait.SpinUntil(delegate { return !DesktopIcons.Hidden(list); }, SwapMilliseconds);
+            }
+            finally
+            {
+                if (window != null) { window.Close(); window.Dispose(); window = null; }
+                IconMischief.Recover();
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Active || window != null) PutBack();
+            foreach (IconCopy copy in Copies) copy.Dispose();
+            Copies.Clear();
+        }
+    }
+
+    internal sealed class RampageWindow : Overlay
+    {
+        private readonly IconRampage gag;
+        private Native.Surface surface;
+
+        internal RampageWindow(IconRampage rampage) : base("Capri icons") { gag = rampage; ClickThrough = true; }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == 0x0084) { message.Result = new IntPtr(-1); return; }
+            if (message.Msg == 0x0021) { message.Result = new IntPtr(3); return; }
+            if (message.Msg == 0x02E0) return;
+            base.WndProc(ref message);
+        }
+
+        internal void Open()
+        {
+            Bounds = gag.Room;
+            surface = new Native.Surface(gag.Room.Width, gag.Room.Height);
+            PaintCopies(0);
+            Show();
+            Native.SetWindowPos(Handle, new IntPtr(-1), gag.Room.X, gag.Room.Y, gag.Room.Width, gag.Room.Height, 0x0010);
+        }
+
+        internal void PaintCopies(double shake)
+        {
+            using (Graphics graphics = Graphics.FromImage(surface.Image))
+            {
+                graphics.Clear(Color.Transparent);
+                double age = gag.GlitchAge;
+                if (age >= 0 && age < Tear.Length) Tear.Light(graphics, surface.Image.Size, age / Tear.Length, gag.GlitchSeed * 7919, (int)(age * 30));
+                graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                float dx = (float)(Math.Sin(shake * 21) * shake), dy = (float)(Math.Cos(shake * 17) * shake);
+                foreach (IconCopy copy in gag.Copies)
+                {
+                    graphics.ResetTransform();
+                    graphics.TranslateTransform((float)copy.X - gag.Room.X + dx, (float)copy.Y - gag.Room.Y + dy);
+                    graphics.RotateTransform((float)copy.Spin);
+                    graphics.DrawImageUnscaled(copy.Picture, -copy.Picture.Width / 2, -copy.Picture.Height / 2);
+                }
+            }
+            surface.Show(Handle, gag.Room.Location);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && surface != null) { surface.Dispose(); surface = null; }
+            base.Dispose(disposing);
+        }
+    }
+
     internal sealed partial class Companion
     {
         private IconMischief iconChaos;
+        private IconRampage iconRampage;
+        private bool rampageWaiting;
+        private int rampageTicket;
         private readonly Timer iconTimer = new Timer();
         private readonly Timer iconRecoveryTimer = new Timer();
         private static readonly int[] IconRecoveryDelays = { 15000, 45000, 120000 };
@@ -599,60 +1422,25 @@ namespace CapriDesktop
 
         private void IconRecoveryTick(object sender, EventArgs e)
         {
-            if (iconChaos != null) return;
+            if (iconChaos != null || iconRampage != null) return;
             if (IconMischief.Recover() >= 0 || ++iconRecoveryStep >= IconRecoveryDelays.Length) { iconRecoveryTimer.Stop(); return; }
             iconRecoveryTimer.Interval = IconRecoveryDelays[iconRecoveryStep];
         }
 
-        private void SmokeIconFailures(List<string> checks, ListView icons, string marker)
+        private void SmokeIconFailures(List<string> checks, IntPtr handle, FakeIcons icons, string marker)
         {
-            IntPtr handle = icons.Handle;
-            DesktopIcons.ListMessage messageWas = DesktopIcons.Message;
-            DesktopIcons.MemoryWrite writeWas = DesktopIcons.WriteMemory;
-            Action<IntPtr, IntPtr> freeWas = DesktopIcons.FreeMemory;
+            Action<string, int, Point> callWas = icons.Call;
             Func<IntPtr> targetWas = DesktopIcons.Target;
             Func<int, bool> keyWas = KeyHeld;
             Func<List<IconSpot>> read = delegate { return DesktopIcons.Read(handle); };
             List<IconSpot> homes = read();
             try
             {
-                foreach (int fail in new[] { 0x1004, 0x1010, 0x1073, 0x1031 })
-                {
-                    bool failed = false;
-                    int sendsAfter = 0, writesAfter = 0, freesAfter = 0;
-                    DesktopIcons.Message = delegate(IntPtr list, int message, IntPtr wParam, IntPtr lParam, out IntPtr result)
-                    {
-                        if (failed) sendsAfter++;
-                        if (message == fail) { failed = true; result = IntPtr.Zero; return false; }
-                        return messageWas(list, message, wParam, lParam, out result);
-                    };
-                    DesktopIcons.WriteMemory = delegate(IntPtr process, IntPtr buffer, byte[] bytes, UIntPtr size, out IntPtr written)
-                    {
-                        if (failed) writesAfter++;
-                        return writeWas(process, buffer, bytes, size, out written);
-                    };
-                    DesktopIcons.FreeMemory = delegate(IntPtr process, IntPtr buffer)
-                    {
-                        if (failed) freesAfter++;
-                        freeWas(process, buffer);
-                    };
-                    if (fail == 0x1031)
-                    {
-                        List<KeyValuePair<int, Point>> moves = new List<KeyValuePair<int, Point>>();
-                        foreach (IconSpot spot in homes) moves.Add(new KeyValuePair<int, Point>(spot.Index, spot.At));
-                        if (DesktopIcons.MoveMany(handle, moves) != 0) throw new Exception("A failed icon move was counted.");
-                    }
-                    else
-                    {
-                        List<IconSpot> spots;
-                        if (DesktopIcons.TryRead(handle, out spots)) throw new Exception("An unreadable desktop was reported as readable.");
-                    }
-                    if (!failed || sendsAfter != 0 || writesAfter != 0 || freesAfter != 0) throw new Exception("An Explorer timeout reused or freed its scratch buffer, or continued its batch.");
-                }
-                DesktopIcons.Message = messageWas;
-                DesktopIcons.WriteMemory = writeWas;
-                DesktopIcons.FreeMemory = freeWas;
-                checks.Add("PASS failed icon count, position, name and move messages stop the batch immediately without further writes or freeing its scratch buffer");
+                icons.Call = delegate(string action, int index, Point at) { if (action == "arrange") throw new Exception("The fake Auto arrange check failed."); };
+                IconMischief unreadable = new IconMischief(DesktopIcons.Target, 1);
+                if (unreadable.Start(0, false) || unreadable.Active || File.Exists(marker) || DesktopIcons.Hidden(handle)) throw new Exception("An icon gag started without reading Auto arrange.");
+                icons.Call = callWas;
+                checks.Add("PASS an unreadable Auto arrange state prevents a prank");
 
                 foreach (bool hide in new[] { false, true })
                 {
@@ -675,30 +1463,31 @@ namespace CapriDesktop
                 checks.Add("PASS an unwritable first icon journal prevents scatter and vanish; a failed atomic replacement preserves the old journal and prevents the next move");
 
                 bool sawPending = false;
-                DesktopIcons.Message = delegate(IntPtr list, int message, IntPtr wParam, IntPtr lParam, out IntPtr result)
+                string journalError = null;
+                icons.Call = delegate(string action, int index, Point at)
                 {
-                    if (message == 0x1031)
+                    if (action == "move")
                     {
                         bool found = false;
-                        string name = icons.Items[wParam.ToInt32()].Text;
+                        string name = icons.Spots[index].Name;
                         string tag = Convert.ToBase64String(Encoding.UTF8.GetBytes(name)) + " ";
                         foreach (string line in File.ReadAllLines(marker))
                         {
                             if (!line.StartsWith(tag, StringComparison.Ordinal)) continue;
                             string[] words = line.Split(' ');
-                            if (words.Length != 8 || int.Parse(words[6]) != Marshal.ReadInt32(lParam) || int.Parse(words[7]) != Marshal.ReadInt32(lParam, 4)) throw new Exception("An icon moved before its pending destination was journalled.");
+                            if (words.Length != 8 || int.Parse(words[6]) != at.X || int.Parse(words[7]) != at.Y) journalError = "An icon moved before its pending destination was journalled.";
                             found = sawPending = true;
                         }
-                        if (!found) throw new Exception("An icon moved without a journal entry.");
+                        if (!found) journalError = "An icon moved without a journal entry.";
                     }
-                    return messageWas(list, message, wParam, lParam, out result);
                 };
                 IconMischief ordered = new IconMischief(DesktopIcons.Target, 1);
                 if (!ordered.Start(0, false)) throw new Exception("The pending journal fixture did not start.");
                 ordered.Advance(0);
-                DesktopIcons.Message = messageWas;
+                icons.Call = callWas;
+                if (journalError != null) throw new Exception(journalError);
+                if (!sawPending || !ordered.Active || ordered.Sliding) throw new Exception("The reduced motion scatter did not finish its only step.");
                 ordered.PutBack();
-                if (!sawPending) throw new Exception("The pending journal fixture did not move.");
                 IconSpot first = homes[0], second = homes[1];
                 Point last = new Point(first.At.X + 100, first.At.Y + 70), pending = new Point(first.At.X + 240, first.At.Y + 120);
                 foreach (Point at in new[] { last, pending })
@@ -708,6 +1497,34 @@ namespace CapriDesktop
                     if (IconMischief.Recover() != 1 || read()[first.Index].At != first.At || File.Exists(marker)) throw new Exception("Crash recovery did not recognise both sides of a pending icon move.");
                 }
                 checks.Add("PASS each icon destination is journalled before the move and recovery recognises both its last and pending position");
+
+                using (System.Threading.ManualResetEvent entered = new System.Threading.ManualResetEvent(false))
+                using (System.Threading.ManualResetEvent release = new System.Threading.ManualResetEvent(false))
+                {
+                    IconMischief late = new IconMischief(DesktopIcons.Target, 1);
+                    if (!late.Start(0, false)) throw new Exception("The late icon move fixture did not start.");
+                    int moved = icons.Moves;
+                    icons.Call = delegate(string action, int index, Point at)
+                    {
+                        if (action != "move") return;
+                        entered.Set();
+                        release.WaitOne(10000);
+                    };
+                    try
+                    {
+                        late.Advance(0);
+                        if (!entered.WaitOne(0) || late.Active || !DesktopIcons.Busy || !File.Exists(marker)) throw new Exception("A timed-out prank discarded its pending recovery record.");
+                    }
+                    finally
+                    {
+                        release.Set();
+                        if (!System.Threading.SpinWait.SpinUntil(delegate { return !DesktopIcons.Busy; }, 2000)) throw new Exception("The late icon move did not finish.");
+                        icons.Call = callWas;
+                    }
+                    if (icons.Moves != moved + 1 || IconMischief.Recover() < 0 || File.Exists(marker)) throw new Exception("A late icon move could not be recovered.");
+                    foreach (IconSpot spot in read()) if (spot.At != homes[spot.Index].At) throw new Exception("A late icon move was not put back.");
+                }
+                checks.Add("PASS a timed-out prank retains its pending marker and restores an in-flight move after the worker returns");
 
                 File.WriteAllText(marker, "vanish" + Environment.NewLine);
                 DesktopIcons.Hide(handle);
@@ -727,9 +1544,9 @@ namespace CapriDesktop
                 DesktopIcons.Target = delegate { return IntPtr.Zero; };
                 if (IconMischief.Recover() >= 0 || File.ReadAllText(marker) != original) throw new Exception("A missing shuffle target lost its recovery record.");
                 DesktopIcons.Target = targetWas;
-                DesktopIcons.Message = delegate(IntPtr list, int message, IntPtr wParam, IntPtr lParam, out IntPtr result) { result = IntPtr.Zero; return false; };
+                icons.Call = delegate(string action, int index, Point at) { if (action == "count") throw new Exception("The fake view cannot be read."); };
                 if (IconMischief.Recover() >= 0 || File.ReadAllText(marker) != original) throw new Exception("An unreadable list view lost its recovery record.");
-                DesktopIcons.Message = messageWas;
+                icons.Call = callWas;
                 IconMischief.Recover();
 
                 IconMischief live = new IconMischief(DesktopIcons.Target, 1);
@@ -745,13 +1562,12 @@ namespace CapriDesktop
                 Point lastSecond = new Point(second.At.X + 130, second.At.Y + 90);
                 DesktopIcons.Move(handle, second.Index, lastSecond);
                 File.WriteAllLines(marker, new[] { "shuffle", IconMischief.MarkLine(first.Name, first.At, last, false), IconMischief.MarkLine(second.Name, second.At, lastSecond, false) });
-                DesktopIcons.Message = delegate(IntPtr list, int message, IntPtr wParam, IntPtr lParam, out IntPtr result)
+                icons.Call = delegate(string action, int index, Point at)
                 {
-                    if (message == 0x1031 && wParam.ToInt32() == second.Index) { result = IntPtr.Zero; return false; }
-                    return messageWas(list, message, wParam, lParam, out result);
+                    if (action == "move" && index == second.Index) throw new Exception("The second fake move failed.");
                 };
                 if (IconMischief.Recover() >= 0 || File.ReadAllLines(marker).Length != 2 || read()[first.Index].At != first.At) throw new Exception("A partial icon restoration lost or retained the wrong journal entries.");
-                DesktopIcons.Message = messageWas;
+                icons.Call = callWas;
                 if (IconMischief.Recover() != 1 || read()[second.Index].At != second.At || File.Exists(marker)) throw new Exception("An unresolved icon could not be retried.");
                 checks.Add("PASS missing and unreadable desktops retain recovery records; UI retries at 15, 60 and 180 seconds, PutBack reacquires its target, and partial restoration keeps only unresolved icons");
 
@@ -785,9 +1601,7 @@ namespace CapriDesktop
             }
             finally
             {
-                DesktopIcons.Message = messageWas;
-                DesktopIcons.WriteMemory = writeWas;
-                DesktopIcons.FreeMemory = freeWas;
+                icons.Call = callWas;
                 DesktopIcons.Target = targetWas;
                 KeyHeld = keyWas;
                 IconMischief.Marker = marker;
@@ -809,7 +1623,7 @@ namespace CapriDesktop
         // 30 to 70 seconds to scatter or vanish them. Every icon still goes back.
         private void IconChaosTick(double now)
         {
-            if (testing || cloneWindow == null || iconChaos != null) return;
+            if (testing || cloneWindow == null || iconChaos != null || iconRampage != null || rampageWaiting) return;
             if (working != null || hidden || Computer.Streaming || Computer.GameOpen() != null) return;
             if (iconActAt < 0) { iconActAt = now + 4 + random.NextDouble() * 2; iconFirst = true; return; }
             if (now < iconActAt) return;
@@ -822,7 +1636,7 @@ namespace CapriDesktop
 
         private bool StartIconChaos(bool hideOnly)
         {
-            if (iconChaos != null) return false;
+            if (iconChaos != null || iconRampage != null || rampageWaiting || IconRampage.Running) return false;
             IconMischief gag = new IconMischief(DesktopIcons.Target, random.Next());
             gag.Glitch = delegate { if (!testing && preferences.Motion) Animate("glitch"); };
             double now = clock.Elapsed.TotalSeconds;
@@ -835,6 +1649,15 @@ namespace CapriDesktop
 
         internal void ClearIcons()
         {
+            rampageWaiting = false;
+            rampageTicket++;
+            IconRampage rampage = iconRampage;
+            iconRampage = null;
+            if (rampage != null)
+            {
+                try { rampage.PutBack(); }
+                finally { rampage.Dispose(); BeginIconRecovery(); }
+            }
             IconMischief gag = iconChaos;
             iconChaos = null;
             iconTimer.Stop();
@@ -847,24 +1670,89 @@ namespace CapriDesktop
             }
         }
 
-        // mess, hide or back. "back" always works: a running gag is cleared, otherwise anything left in the backup file is put right.
+        // mess, hide, rampage or back. "back" always works: a running gag is cleared, otherwise anything left in the backup file is put right.
         internal string IconPrank(string action)
         {
             if (action == "back")
             {
-                bool running = iconChaos != null;
+                bool running = iconChaos != null || iconRampage != null || rampageWaiting;
                 ClearIcons();
                 int back = IconMischief.Recover();
                 if (back < 0) return "Couldn't put all your icons back just now. I've kept their places to try again.";
                 return back > 0 || running ? "Put your icons back, choom." : "Your icons are already where you left them.";
             }
-            if (iconChaos != null) return "I'm already in there, choom. Say put my icons back when you've had enough.";
+            if (iconChaos != null || iconRampage != null || rampageWaiting || IconRampage.Running) return "I'm already in there, choom. Say put my icons back when you've had enough.";
+            if (action == "rampage")
+            {
+                // With her moves off there's no show, only the vanish.
+                if (!preferences.Motion)
+                {
+                    List<IconSpot> spots;
+                    if (DesktopIcons.TryRead(DesktopIcons.Target(), out spots) && spots.Count == 0) return "Nothing on your desktop to throw, choom.";
+                    return IconPrank("hide");
+                }
+                int begun = BeginRampage(true);
+                if (begun == 0) return "Nothing on your desktop to throw, choom.";
+                if (begun < 0) return IconPrank("mess");
+                return Lines.Pick(new[] { "Say that again. I dare you.", "Wrong answer, choom. Watch your icons.", "Oh, you're funny. Hold on to your desktop.", "Smasher couldn't even catch me. Your icons, though." });
+            }
             bool hide = action == "hide";
             if (!StartIconChaos(hide)) return "Couldn't get at your desktop icons just now, choom.";
             if (hide || (iconChaos != null && iconChaos.Vanishing)) return "Poof. Your icons are gone... I'll put them back in a sec.";
-            return "Messing with your icons, choom. Say put my icons back when you want them.";
+            return "Messing with your icons, choom. They'll go back on their own in a few seconds.";
         }
 
         private string IconTool(string action) { return InvokeRequired ? (string)Invoke(new Func<string, string>(IconPrank), action) : IconPrank(action); }
+
+        // Starts the rampage: 1 when it's running or on its way, 0 when the desktop is empty, -1 when it can't be done. The
+        // first one after she starts has to fetch the icons' pictures, which takes a second or more, so that happens off her
+        // window's thread while she says her line, and the show starts when they're in.
+        private int BeginRampage(bool fetch)
+        {
+            IconRampage rampage = new IconRampage(random.Next());
+            int loaded = rampage.Load();
+            if (loaded == 2 && fetch)
+            {
+                int ticket = ++rampageTicket;
+                List<IconItem> wanted = rampage.Wanted;
+                int size = rampage.Size;
+                rampage.Dispose();
+                rampageWaiting = true;
+                Action<bool> fetched = delegate(bool ok)
+                {
+                    try { BeginInvoke((MethodInvoker)delegate { RampageFetched(ticket, ok); }); }
+                    catch (Exception) { }
+                };
+                if (!IconPictures.Load(wanted, size, fetched)) { rampageWaiting = false; return -1; }
+                return 1;
+            }
+            if (loaded != 1) { rampage.Dispose(); return loaded == 0 ? 0 : -1; }
+            rampage.Glitch = delegate { if (!testing) Animate("glitch"); };
+            rampage.Crash = delegate { if (!testing) Sfx.Play(Cue.Bonk); };
+            if (!rampage.Start(clock.Elapsed.TotalSeconds, !testing)) { rampage.Dispose(); return -1; }
+            iconRampage = rampage;
+            frames.Start();
+            return 1;
+        }
+
+        // The pictures are in, or couldn't all be had: then she does the plain scatter in its place. A ticket from before
+        // "put my icons back", a hide or a quit is stale and starts nothing.
+        private void RampageFetched(int ticket, bool ok)
+        {
+            if (!rampageWaiting || ticket != rampageTicket) return;
+            rampageWaiting = false;
+            if (quitting || hidden || iconChaos != null || iconRampage != null) return;
+            if (ok && BeginRampage(false) == 1) return;
+            StartIconChaos(false);
+        }
+
+        private void RampageTick(double now)
+        {
+            IconRampage rampage = iconRampage;
+            if (rampage == null) return;
+            try { rampage.Advance(now, KeyHeld((int)Keys.Escape)); }
+            catch (Exception problem) { Brain.Log("icons", -1, problem.Message); ClearIcons(); return; }
+            if (!rampage.Active) { iconRampage = null; rampage.Dispose(); BeginIconRecovery(); }
+        }
     }
 }

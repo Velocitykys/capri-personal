@@ -32,8 +32,10 @@ namespace CapriDesktop
         [STAThread]
         private static int Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == "--smoke-child") return SmokeRun.Child(args);
             if (args.Length > 0 && args[0] == "--hook") return HuskHook.Run(args.Length > 1 ? args[1] : "");
             if (args.Length == 4 && args[0] == "--release-input") return InputRelease.Watch(args[1], args[2], args[3]);
+            if (!Packaged.Is && CapriSetup.Program.Wanted(Application.ExecutablePath, args)) return CapriSetup.Program.Run(args);
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch (EntryPointNotFoundException) { Native.SetProcessDPIAware(); }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -2029,6 +2031,7 @@ namespace CapriDesktop
         private readonly TypeBox typer = new TypeBox();
         private readonly Tear tear = new Tear();
         private readonly Shatter shatter = new Shatter();
+        private readonly Ribbons ribbons = new Ribbons();
         private readonly Takeover takeover = new Takeover();
         private readonly ControlGlow controlGlow = new ControlGlow();
         private readonly TaskPanel taskPanel = new TaskPanel();
@@ -2168,12 +2171,20 @@ namespace CapriDesktop
         internal const string MicSilent = "I can't hear anything from your mic. Pick the right one under VOICE, or let desktop apps use your mic in Windows Settings > Privacy & security > Microphone.";
         private volatile bool noiseHold;
         private System.Collections.Generic.List<short[]> utterance;
+        // The line being gathered carries on from sound that hadn't paused for 15 seconds, cut where it was quietest.
+        private bool carrying;
         private int quietRun;
-        // A line heard mid-job while the one before it was still turning into words waits here for its turn.
+        // A line heard mid-job, or cut from sound that never pauses, while the one before it was still turning into words waits
+        // here for its turn.
         private short[][] heldLine;
         private CallChunk[] heldCall;
+        private bool heldUnbroken;
         private int heldTicket, heldRequest, heldCallVersion;
         private double heldWake;
+        // What her ears did since their last line in her log. Counts only, never a line's words.
+        private int earsWords, earsEmpty, earsCuts, earsWaits, earsLogCall;
+        private long earsDropped;
+        private double earsLogAt;
         private double voiceUntil;
         // Follow-ups are allowed only after someone deliberately addresses Capri, and only briefly after her reply.
         private double continuityUntil;
@@ -2992,12 +3003,13 @@ namespace CapriDesktop
         private void Tick()
         {
             double now = clock.Elapsed.TotalSeconds;
+            RampageTick(now);
             MoveExplorePointer(now);
             int interval = FrameInterval(now);
             if (frames.Interval != interval) frames.Interval = interval;
             if (outro != null && now >= outroAt) { Action next = outro; outro = null; next(); }
-            if (docked) { DockTick(now); return; }
-            if (hidden) { frames.Stop(); return; }
+            if (docked) { DockTick(now); if (iconRampage != null) frames.Start(); return; }
+            if (hidden) { if (iconRampage != null) ClearIcons(); frames.Stop(); return; }
             if (riding) FollowCursor(); else if (onPanel) HoldPanel(); else if (falling) Tumble(now); else if (seat != null) HoldSeat(now);
             if (walking) Walk(now);
             if (Sulking) Shy(now);
@@ -3005,13 +3017,14 @@ namespace CapriDesktop
             if (!riding && !dragging && !walking && !falling && outro == null && clip != arrive && clip != leave) Face();
             if (!Steady(now)) RenderFrame();
             else UpdateTalk(now);
-            if (!exploring && !riding && !dragging && !walking && !falling && !Sulking && outro == null && !preferences.Motion && clip == idle && speech == null && talkState == TalkState.Off) frames.Stop();
+            if (!exploring && !riding && !dragging && !walking && !falling && !Sulking && outro == null && !preferences.Motion && clip == idle && speech == null && talkState == TalkState.Off && iconRampage == null) frames.Stop();
         }
 
         // Over a game her quiet body follows its art and her docked mouth follows speech. Otherwise she keeps 33 ms or her
         // selected perch rate. On Windows' 1/64 s clock, 33 ms takes 47 ms; off 30 she asks just under a whole number of ticks.
         private int FrameInterval(double now)
         {
+            if (iconRampage != null) return IconRampage.FrameMilliseconds;
             if (exploring && now - exploreMoved < 0.8) return 33;
             // Thrown, she covers a lot of screen a frame, so she's drawn every 1/64 s; dizzy, her sway needs 30 a second.
             if (Flying) return frontBusy ? 33 : 15;
@@ -3167,7 +3180,8 @@ namespace CapriDesktop
             if (facingLeft && (clip == idle || clip == dance)) WarmStand();
             if (perched && (!seated || (lain && !lying && clip != laydownLeave)) && !walking) Play(lying ? laydown : perch);
             if ((!perched && seated) || (clip == dangle && !dragging && !falling && !hanging)) Play(idle);
-            int index = (int)((now - clipStart) * clip.Fps);
+            // An arrival that waits for her ribbons can start a moment from now, and holds its first frame until then.
+            int index = Math.Max(0, (int)((now - clipStart) * clip.Fps));
             perchMix = 0;
             int perchRate = PerchRateNow(now);
             if ((clip == perch || clip == perchDance || clip == laydown || clip == laydownSleep) && perchRate != 30) index = PerchIndex(now - clipStart, perchRate, out perchMix);
@@ -4043,7 +4057,7 @@ namespace CapriDesktop
         private void Rescreen()
         {
             RefreshWatchScreens();
-            if (cloneWindow != null) ClonesOff();
+            if (cloneWindow != null || iconRampage != null) ClonesOff();
             if (!Refloor())
             {
                 bool aside = Aside;
@@ -6020,10 +6034,15 @@ namespace CapriDesktop
             pendingClick = false;
             clickDelay.Stop();
             Play(lying ? laydownLeave : seat != null || riding || onPanel ? perchLeave : leave);
-            if (frame != null) { shatter.Play(new Bitmap(frame), anchor, Screen.FromPoint(new Point(anchor.X + Width / 2, anchor.Y + Height / 2)).Bounds, true, preferences.Size); veiled = true; }
+            // Going somewhere, she turns into her ribbons, and they need to know where sooner than her shatter takes. Hiding and
+            // quitting go nowhere, so those shatter.
+            bool trip = !everywhere && frame != null;
+            ribbons.Stop();
+            if (trip) { form.Warm(false); ribbons.Leave(new Bitmap(frame), anchor, BodyOnScreen(anchor, lying || seat != null || riding || onPanel ? PerchedBody : Body), RibbonColour(ArtColors.Hair), RibbonColour(ArtColors.Accent), preferences.Size); veiled = true; }
+            else if (frame != null) { shatter.Play(new Bitmap(frame), anchor, Screen.FromPoint(new Point(anchor.X + Width / 2, anchor.Y + Height / 2)).Bounds, true, preferences.Size); veiled = true; }
             Static(everywhere, everywhere ? Cue.Leave : Cue.Hop);
             outro = then;
-            outroAt = clipStart + (clip.Count + 1) / clip.Fps;
+            outroAt = trip ? clipStart + Ribbons.Gather : clipStart + (clip.Count + 1) / clip.Fps;
             frames.Start();
         }
 
@@ -6068,6 +6087,7 @@ namespace CapriDesktop
             if (outro == null || quitting) return;
             outro = null;
             shatter.Stop();
+            ribbons.Stop();
             if (clip == leave || clip == perchLeave || clip == laydownLeave) Play(lying ? laydown : seat != null || riding || onPanel ? perch : idle);
         }
 
@@ -8816,13 +8836,13 @@ namespace CapriDesktop
         private void ApplyHidden(bool value)
         {
             if (quitting) return;
-            if (value) StopExplore();
+            if (value) { StopExplore(); if (iconRampage != null) ClearIcons(); }
             if (docked && !value) { dockHid = true; gaming.Off(); }
             if (value) WakeRest(true);
             outro = null;
             hidden = value;
             visibilityItem.Text = value ? "Show Capri" : "Hide Capri";
-            if (value) { SitUp(false); StopRide(); LeavePanel(true); seat = null; falling = false; hanging = false; walking = false; dropAfter = false; pendingClick = false; clickDelay.Stop(); frames.Stop(); Hide(); pill.Hide(); typer.Hide(); CloseTalk(); StopChat(); }
+            if (value) { SitUp(false); StopRide(); LeavePanel(true); seat = null; falling = false; hanging = false; walking = false; dropAfter = false; pendingClick = false; clickDelay.Stop(); frames.Stop(); ribbons.Stop(); Hide(); pill.Hide(); typer.Hide(); CloseTalk(); StopChat(); }
             else { anchor = KeepOnScreen(anchor); Location = anchor; Play(instant || !preferences.Motion ? grin : arrive); Show(); RenderFrame(); UpdateAnimation(); Static(true, Cue.Arrive); }
             mainframe.Sync();
         }
@@ -11390,6 +11410,7 @@ namespace CapriDesktop
             }
             CheckNameChat(now);
             KeepListening(now);
+            LogEars(now, false);
             if (earsRetryAt >= 0 && now >= earsRetryAt)
             {
                 earsRetryAt = -1;
@@ -11399,13 +11420,42 @@ namespace CapriDesktop
             if (transcribing && chatting && local && Environment.TickCount - transcribingAt > 30000)
             {
                 Brain.Log("ears", -1, "A line took over 30 s to turn into words, so she listened again.");
-                transcribing = false;
                 nameOver = false;
                 NextLine();
                 CheckEars(now);
             }
             // A mic that stopped sending, unplugged, lost in sleep or dropped by its driver, is opened again, like Hey Capri's.
             if (chatting && ears.Stalled) ReopenMic(now);
+        }
+
+        // Her log never holds a line's words, so this is how a game's voice chat can be read back afterwards: at most once a
+        // minute, how many lines gave words and how many gave none, how often sound ran 15 seconds without a pause, and how much
+        // of a call's sound her ears let go to keep up with the mic (Lachy, 10 Nov: she couldn't follow Fortnite's voice chat, and
+        // nothing in her log said what her ears had done with it).
+        private void LogEars(double now, bool closing)
+        {
+            if (!closing && (!chatting || !local || !earsReady || dictation != null || now - earsLogAt < 60)) return;
+            earsDropped += callEars.TakeDropped();
+            int words = Interlocked.Exchange(ref earsWords, 0), empty = Interlocked.Exchange(ref earsEmpty, 0);
+            int cuts = Interlocked.Exchange(ref earsCuts, 0), waits = Interlocked.Exchange(ref earsWaits, 0);
+            bool onCall = Interlocked.Exchange(ref earsLogCall, 0) != 0;
+            // Her log keeps its last 200 lines, and a mic and a call that drift apart drop a little sound every minute. Alone that
+            // earns a line only once it adds up to a second. Under that it goes out with the next line, or is forgotten when her
+            // ears close.
+            if (words == 0 && empty == 0 && cuts == 0 && waits == 0 && earsDropped < Ears.Rate)
+            {
+                if (closing) earsDropped = 0;
+                return;
+            }
+            long dropped = earsDropped;
+            earsDropped = 0;
+            onCall = onCall || CallModeOn || dropped > 0;
+            earsLogAt = now;
+            string counts = "Her ears" + (onCall ? " on a call" : "") + ": " + words + (words == 1 ? " line" : " lines") + " with words, " + empty + " with none";
+            if (cuts > 0) counts += ", " + cuts + " cut after 15 s without a pause";
+            if (waits > 0) counts += ", " + waits + (waits == 1 ? " wait" : " waits") + " for a pause after 15 s of sound";
+            if (onCall) counts += ", " + (dropped / (double)Ears.Rate).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " s of the call's sound dropped";
+            Brain.Log("ears", -1, counts + ".");
         }
 
         // What she says when her ears' engine fails on a line. It isn't the mic, and the reason shows on the hearing line.
@@ -12580,7 +12630,7 @@ namespace CapriDesktop
             hearingOffline = false;
             hearingSpeechProblem = null;
             nameOver = false;
-            lock (waking) { utterance = null; heldLine = null; quietRun = 0; loudRun = 0; noiseHold = false; preroll.Clear(); room = -1; lineAt = -100; }
+            lock (waking) { utterance = null; carrying = false; heldLine = null; heldCall = null; heldUnbroken = false; quietRun = 0; loudRun = 0; noiseHold = false; preroll.Clear(); room = -1; lineAt = -100; }
             earsAwaited = false;
             if (HearingStatus.Own(HearingChoice, OwnEars)) { ListenOwn(); return; }
             if (HearingChoice == 1) { if (parakeet.Fits) AwaitEars(null); else HearingNote(); return; }
@@ -12657,7 +12707,7 @@ namespace CapriDesktop
         // No Windows speech and her own ears aren't in yet: they type until the ears land, then she switches on her own.
         private void AwaitEars(string why)
         {
-            lock (waking) { utterance = null; heldLine = null; quietRun = 0; loudRun = 0; noiseHold = false; preroll.Clear(); room = -1; lineAt = -100; }
+            lock (waking) { utterance = null; carrying = false; heldLine = null; heldCall = null; heldUnbroken = false; quietRun = 0; loudRun = 0; noiseHold = false; preroll.Clear(); room = -1; lineAt = -100; }
             earsReady = false;
             earsAwaited = true;
             Hearing.Own = null;
@@ -12712,7 +12762,7 @@ namespace CapriDesktop
         {
             hearingOffline = false;
             hearingSpeechProblem = null;
-            lock (waking) { utterance = null; heldLine = null; quietRun = 0; loudRun = 0; noiseHold = false; preroll.Clear(); room = -1; lineAt = -100; }
+            lock (waking) { utterance = null; carrying = false; heldLine = null; heldCall = null; heldUnbroken = false; quietRun = 0; loudRun = 0; noiseHold = false; preroll.Clear(); room = -1; lineAt = -100; }
             bool promised = earsAwaited;
             earsAwaited = false;
             Hearing.Own = parakeet;
@@ -12734,7 +12784,7 @@ namespace CapriDesktop
             hearingOffline = true;
             hearingSpeechProblem = why;
             Hearing.Own = null;
-            lock (waking) { utterance = null; heldLine = null; quietRun = 0; loudRun = 0; noiseHold = false; preroll.Clear(); room = -1; lineAt = -100; }
+            lock (waking) { utterance = null; carrying = false; heldLine = null; heldCall = null; heldUnbroken = false; quietRun = 0; loudRun = 0; noiseHold = false; preroll.Clear(); room = -1; lineAt = -100; }
             earsAwaited = false;
             try { if (!testing && !ears.Listening) ears.Start(); }
             catch (VoiceException error)
@@ -12985,16 +13035,23 @@ namespace CapriDesktop
 
         private void CheckEars(double now)
         {
-            // A job leaves her thinking until it ends, but her ears stay open through it so they can tell her more.
-            earsShut = local && (!earsReady || transcribing && !EarsBesideJob || ears.Muted || (talkState == TalkState.Thinking && working == null && !PcEars.Active) || now < voiceUntil && !nameOver);
-            if (!earsShut) return;
-            lock (waking) { utterance = null; preroll.Clear(); loudRun = 0; quietRun = 0; }
+            // A job leaves her thinking until it ends, but her ears stay open through it so they can tell her more. A line carried
+            // on from sound that never pauses stays open too while its last piece turns into words, or what's said right after
+            // the cut is lost.
+            lock (waking)
+            {
+                earsShut = local && (!earsReady || transcribing && !EarsBesideJob && !carrying || ears.Muted || (talkState == TalkState.Thinking && working == null && !PcEars.Active) || now < voiceUntil && !nameOver);
+                if (!earsShut) return;
+                utterance = null; carrying = false; preroll.Clear(); loudRun = 0; quietRun = 0;
+            }
             pill.SetLevel(0);
         }
 
         // Speech she heard but made no words of, said one way wherever it happens.
         internal const string NoWords = "I couldn't make out any words. Try again closer to the mic.";
-        private const string NoPause = "I heard 15 seconds without a pause. Try a shorter line or lower your mic volume.";
+        // Free voice chat's hold after 15 seconds of sound. It only shows under VOICE: she used to say "I heard 15 seconds without
+        // a pause" each time, all through a game (Lachy, 10 Nov: "an annoying unneccesary caution").
+        private const string WaitingForPause = "Waiting for a pause in the sound.";
 
         private void Missed(string text, bool problem)
         {
@@ -13017,7 +13074,7 @@ namespace CapriDesktop
             }
             lock (waking)
             {
-                if (!local || !earsReady || dictation != null || ears.Muted || earsShut && !nameOver || transcribing && !EarsBesideJob) { utterance = null; preroll.Clear(); loudRun = 0; quietRun = 0; return; }
+                if (!local || !earsReady || dictation != null || ears.Muted || earsShut && !nameOver || transcribing && !EarsBesideJob && !carrying) { utterance = null; carrying = false; preroll.Clear(); loudRun = 0; quietRun = 0; return; }
                 // The room's level is its quietest moment: it drops straight to anything quieter and creeps up 2% a chunk between lines, never mid-line. It starts no higher than the old fixed level allows.
                 if (room < 0) room = Math.Min(Math.Max(level, 0.0003), WakeLevel / RoomMargin);
                 else if (level < room) room = Math.Max(level, 0.0003);
@@ -13027,7 +13084,13 @@ namespace CapriDesktop
                 if (noiseHold)
                 {
                     quietRun = loud ? 0 : quietRun + 1;
-                    if (quietRun >= 9) { noiseHold = false; quietRun = 0; }
+                    if (quietRun >= 9)
+                    {
+                        noiseHold = false;
+                        quietRun = 0;
+                        int holding = chatTicket;
+                        Post(delegate { if (holding == chatTicket && local && mainframe.VoiceNoteText == WaitingForPause) mainframe.VoiceNote(LocalListening, false); });
+                    }
                     return;
                 }
                 if (utterance == null)
@@ -13037,6 +13100,7 @@ namespace CapriDesktop
                     loudRun = loud ? loudRun + 1 : 0;
                     if (loudRun < 2) return;
                     utterance = new System.Collections.Generic.List<short[]>(preroll);
+                    carrying = false;
                     lineBegan = clock.Elapsed.TotalSeconds;
                     preroll.Clear();
                     loudRun = 0;
@@ -13056,17 +13120,20 @@ namespace CapriDesktop
                         low = Math.Min(low, piece);
                         high = Math.Max(high, piece);
                     }
-                    if (high < low * 1.2) { room = Math.Max(room, low); utterance = null; quietRun = 0; nameOver = false; return; }
+                    if (high < low * 1.2) { room = Math.Max(room, low); utterance = null; carrying = false; quietRun = 0; nameOver = false; return; }
                 }
                 if (quietRun < 9 && utterance.Count < 150) return;
                 bool capped = quietRun < 9;
-                // Listening for her name, 15 seconds without a pause still gets its words checked for it: a game's sound never pauses,
-                // and holding for a pause left her deaf all through a Roblox job (Lachy, 6 Nov). It's cut at its quietest moment in the
-                // last two seconds so a word isn't split, and the rest starts the next piece. Her name's chat doesn't change that: a
-                // sound that never pauses is the room, so a piece of it needs her name there too, or she'd answer the game.
-                bool named = capped && preferences.ListenCapri && !pushing && !CallModeOn;
+                // A game's sound never pauses, so listening for her name or on a call, 15 seconds without a pause isn't thrown away:
+                // it's cut at its quietest moment in the last two seconds so a word isn't split, its words get checked, and the rest
+                // starts the next piece. Holding for a pause left her deaf all through a Roblox job (Lachy, 6 Nov), and on a call it
+                // threw away Fortnite's voice chat 15 seconds at a time (Lachy, 10 Nov). Her name's chat doesn't change that: a sound
+                // that never pauses is the room, so a piece of it, its last one too, needs her name there, or she'd answer the game.
+                // Free voice chat off a call takes every line as theirs, so there it still holds for a pause.
+                bool unbroken = capped || carrying;
+                bool split = capped && !pushing && (preferences.ListenCapri || CallModeOn);
                 short[][] taken;
-                if (named)
+                if (split)
                 {
                     int cut = utterance.Count - 20;
                     double cutLevel = VoiceLevel(utterance[cut]);
@@ -13077,11 +13144,13 @@ namespace CapriDesktop
                     }
                     taken = utterance.GetRange(0, cut + 1).ToArray();
                     utterance.RemoveRange(0, cut + 1);
+                    carrying = true;
                 }
                 else
                 {
                     taken = utterance.ToArray();
                     utterance = null;
+                    carrying = false;
                 }
                 quietRun = 0;
                 int ticket = chatTicket;
@@ -13093,14 +13162,18 @@ namespace CapriDesktop
                     for (int i = 4; i < taken.Length; i++) quietest = Math.Min(quietest, VoiceLevel(taken[i]));
                     room = Math.Max(room, quietest);
                     nameOver = false;
-                    if (!named)
+                    if (!split)
                     {
                         noiseHold = true;
-                        Post(delegate { if (ticket == chatTicket && local) Missed(NoPause, false); });
+                        Interlocked.Increment(ref earsWaits);
+                        Post(delegate { if (ticket == chatTicket && local) mainframe.VoiceNote(WaitingForPause, false); });
                         return;
                     }
+                    Interlocked.Increment(ref earsCuts);
                 }
-                else if (!LineCounts(taken, wake, clock.Elapsed.TotalSeconds))
+                CallChunk[] callLine = CallModeOn ? CallLine(taken) : null;
+                if (callLine != null) Interlocked.Exchange(ref earsLogCall, 1);
+                if (!capped && !LineCounts(taken, wake, clock.Elapsed.TotalSeconds, CallTranscript.HasSound(callLine)))
                 {
                     nameOver = false;
                     Post(delegate { ModList.LogHearing("(a sound too short or quiet to count as speech)", false); });
@@ -13108,10 +13181,10 @@ namespace CapriDesktop
                 }
                 if (transcribing)
                 {
-                    // Mid-job, a line finished while the one before is still turning into words goes next, joined to any already waiting.
-                    // A PC too busy to keep up keeps the newest 30 seconds. On a call, who said what in it waits with it.
-                    CallChunk[] callPart = CallModeOn ? CallLine(taken) : null;
-                    if (heldLine == null) { heldLine = taken; heldCall = callPart; }
+                    // A line finished while the one before is still turning into words goes next, joined to any already waiting:
+                    // mid-job, and in sound that never pauses. A PC too busy to keep up keeps the newest 30 seconds. On a call,
+                    // who said what in it waits with it.
+                    if (heldLine == null) { heldLine = taken; heldCall = callLine; heldUnbroken = unbroken; }
                     else
                     {
                         int kept = Math.Min(heldLine.Length, Math.Max(0, 300 - taken.Length));
@@ -13119,14 +13192,15 @@ namespace CapriDesktop
                         Array.Copy(heldLine, heldLine.Length - kept, joined, 0, kept);
                         Array.Copy(taken, 0, joined, kept, taken.Length);
                         heldLine = joined;
-                        if (callPart != null && heldCall != null && heldCall.Length >= kept)
+                        if (callLine != null && heldCall != null && heldCall.Length >= kept)
                         {
-                            CallChunk[] calls = new CallChunk[kept + callPart.Length];
+                            CallChunk[] calls = new CallChunk[kept + callLine.Length];
                             Array.Copy(heldCall, heldCall.Length - kept, calls, 0, kept);
-                            Array.Copy(callPart, 0, calls, kept, callPart.Length);
+                            Array.Copy(callLine, 0, calls, kept, callLine.Length);
                             heldCall = calls;
                         }
-                        else heldCall = callPart;
+                        else heldCall = callLine;
+                        heldUnbroken = heldUnbroken || unbroken;
                     }
                     heldTicket = ticket;
                     heldRequest = request;
@@ -13137,17 +13211,18 @@ namespace CapriDesktop
                 transcribing = true;
                 transcribingAt = Environment.TickCount;
                 int callVersion = callSession.Generation;
-                CallChunk[] callLine = CallModeOn ? CallLine(taken) : null;
-                Post(delegate { Transcribe(taken, ticket, request, wake, callLine, callVersion, capped); });
+                Post(delegate { Transcribe(taken, ticket, request, wake, callLine, callVersion, unbroken); });
             }
         }
 
         private double RoomWake() { return Math.Max(QuietWake, Math.Min(room * RoomMargin, Math.Max(WakeLevel, room * 1.6))); }
 
         // A finished line goes to her ears if it sounds like speech at the wake level. Within a minute of a line that came through, one under the old fixed level and over 10 dB quieter than it is someone else or the TV, not them.
-        private bool LineCounts(short[][] taken, double wake, double now)
+        // On a call the quieter voice is the call, so a line with the call's sound in it counts and leaves their own level as it was.
+        private bool LineCounts(short[][] taken, double wake, double now, bool callSound = false)
         {
             if (!Speech(taken, wake)) return false;
+            if (callSound) return true;
             double loudest = 0;
             foreach (short[] piece in taken) loudest = Math.Max(loudest, VoiceLevel(piece));
             if (now - lineAt < 60 && loudest < lineLevel / 3.16 && !Speech(taken)) return false;
@@ -13188,17 +13263,16 @@ namespace CapriDesktop
 
         private void Transcribe(short[][] taken, int ticket, int request, double wake = WakeLevel, CallChunk[] callLine = null, int callVersion = -1, bool unbroken = false)
         {
-            if (callVersion >= 0 && !callSession.Current(callVersion)) return;
+            if (callVersion >= 0 && !callSession.Current(callVersion)) { OldCallLine(ticket); return; }
             if (ticket != chatTicket || !local || !chatting) return;
-            if (request != asking && !EarsBesideJob) { transcribing = false; nameOver = false; NextLine(); CheckEars(clock.Elapsed.TotalSeconds); return; }
+            if (request != asking && !EarsBesideJob) { nameOver = false; NextLine(); CheckEars(clock.Elapsed.TotalSeconds); return; }
             // Mid-job a line was heard with her ears open, so her voice starting since doesn't make it hers.
             if (ears.Muted || (talkState == TalkState.Thinking && working == null && !PcEars.Active) || clock.Elapsed.TotalSeconds < voiceUntil && !nameOver && !EarsBesideJob || !Speech(taken, wake))
             {
-                transcribing = false;
                 nameOver = false;
                 NextLine();
                 CheckEars(clock.Elapsed.TotalSeconds);
-                if (!earsShut) Missed(NoWords, false);
+                if (!earsShut && !unbroken) Missed(NoWords, false);
                 return;
             }
             int total = 0;
@@ -13223,19 +13297,35 @@ namespace CapriDesktop
             });
         }
 
-        // The line that waited mid-job for the one before it to turn into words gets its turn.
+        // A line from before the call ended or its app changed is let go without a word, and her ears open again. Left as it
+        // was, it kept them shut until the 30 second watchdog.
+        private void OldCallLine(int ticket)
+        {
+            if (ticket != chatTicket || !chatting || !local) return;
+            nameOver = false;
+            NextLine();
+            CheckEars(clock.Elapsed.TotalSeconds);
+            if (!NameOnly && mainframe.VoiceNoteText == "Hearing you...") mainframe.VoiceNote(LocalListening, false);
+        }
+
+        // The line that waited for the one before it to turn into words gets its turn. Her ears stop being busy in here, under
+        // the lock the mic thread gathers under, so a line that ends this instant can't start ahead of the one that waited.
         private void NextLine()
         {
             short[][] next;
             CallChunk[] call;
             int ticket, request, callVersion;
             double wake;
+            bool unbroken;
             lock (waking)
             {
+                transcribing = false;
                 next = heldLine;
                 call = heldCall;
                 heldLine = null;
                 heldCall = null;
+                unbroken = heldUnbroken;
+                heldUnbroken = false;
                 ticket = heldTicket;
                 request = heldRequest;
                 wake = heldWake;
@@ -13244,15 +13334,20 @@ namespace CapriDesktop
                 transcribing = true;
                 transcribingAt = Environment.TickCount;
             }
-            Post(delegate { Transcribe(next, ticket, request, wake, call, callVersion); });
+            Post(delegate { Transcribe(next, ticket, request, wake, call, callVersion, unbroken); });
         }
 
         private void HeardLocally(int ticket, int request, string text, string problem, CallTranscript line = null, int callVersion = -1, bool unbroken = false)
         {
-            if (callVersion >= 0 && !callSession.Current(callVersion)) return;
+            if (callVersion >= 0 && !callSession.Current(callVersion)) { OldCallLine(ticket); return; }
             if (ticket != chatTicket || !chatting || !local) return;
             bool chatLine = NameChatLine() && !nameOver && !unbroken;
-            transcribing = false;
+            if (problem == null)
+            {
+                if (line != null) Interlocked.Exchange(ref earsLogCall, 1);
+                if (string.IsNullOrEmpty(text)) Interlocked.Increment(ref earsEmpty);
+                else Interlocked.Increment(ref earsWords);
+            }
             nameOver = false;
             NextLine();
             CheckEars(clock.Elapsed.TotalSeconds);
@@ -13265,13 +13360,21 @@ namespace CapriDesktop
                 mainframe.VoiceNote(problem, true);
                 return;
             }
-            if (string.IsNullOrEmpty(text)) { ModList.LogHearing("(heard speech, but made out no words)", false); HearingResult(null, false); Missed(NoWords, false); return; }
+            if (string.IsNullOrEmpty(text))
+            {
+                ModList.LogHearing("(heard speech, but made out no words)", false);
+                // No words in sound that never paused, or in a call's own sound, is a game or music: nothing was said for her to
+                // miss, and it isn't her ears failing.
+                if (unbroken || CallModeOn && line != null && line.CallSound) { if (!NameOnly) mainframe.VoiceNote(LocalListening, false); return; }
+                HearingResult(null, false);
+                Missed(NoWords, false);
+                return;
+            }
             HearingResult(null, true);
             if (CallModeOn) { if (line != null) HearCall(line); return; }
             if (!VoiceForHer(text, chatLine))
             {
-                if (unbroken) Missed(NoPause, false);
-                else if (!NameOnly) mainframe.VoiceNote(LocalListening, false);
+                if (!NameOnly) mainframe.VoiceNote(LocalListening, false);
                 return;
             }
             if (preferences.ListenCapri && (talkState == TalkState.Talking || clock.Elapsed.TotalSeconds < voiceUntil || speaker.Busy))
@@ -13761,7 +13864,8 @@ namespace CapriDesktop
             checkedIn = false;
             quietSince = -1;
             wokeAt = -1;
-            lock (waking) { resting = false; backlog = null; preroll.Clear(); loudRun = 0; utterance = null; heldLine = null; quietRun = 0; noiseHold = false; }
+            lock (waking) { resting = false; backlog = null; preroll.Clear(); loudRun = 0; utterance = null; carrying = false; heldLine = null; heldCall = null; heldUnbroken = false; quietRun = 0; noiseHold = false; }
+            if (wasLocal) LogEars(clock.Elapsed.TotalSeconds, true);
             earsShut = false;
             transcribing = false;
             nameOver = false;
@@ -13981,7 +14085,7 @@ namespace CapriDesktop
                 else Security.Drop();
             }
             // Volume, mute and music work before she has a brain, and so do her nap, her own moves and her animations.
-            if (callReply == null && Hands.Heard(text, out quick, out quickArgs) && (quick == "hologram" || think == null && (quick == "clip" || quick == "nap" || quick == "watch_along" || quick == "draw" && string.IsNullOrEmpty(quickArgs.Description) || brain.Model == null && WithoutBrain(quick)))) { followAllowed = false; think = delegate { return Hands.Shown(Security.Said(DoTool(quick, quickArgs))); }; }
+            if (callReply == null && Hands.Heard(text, out quick, out quickArgs) && (quick == "hologram" || quick == "desktop_icons" && quickArgs.Action == "rampage" || think == null && (quick == "clip" || quick == "nap" || quick == "watch_along" || quick == "draw" && string.IsNullOrEmpty(quickArgs.Description) || brain.Model == null && WithoutBrain(quick)))) { followAllowed = false; think = delegate { return Hands.Shown(Security.Said(DoTool(quick, quickArgs))); }; }
             if (think == null && fileMessage) think = delegate(string question) { string after; return brain.Ask(question, false, out after, callContext, delegate { return CallReply(ticket, question); }); };
             if (think == null && brain.Model == null && News.Matching(text) != null) think = delegate { return News.Facts; };
             if (think == null)
@@ -14319,7 +14423,9 @@ namespace CapriDesktop
             Point head = Head();
             Point feet = Feet();
             Rectangle area = Screen.FromPoint(head).WorkingArea;
-            box.Update(now, s, head, new Point(feet.X, feet.Y + (int)(44 * s)), area);
+            // A bubble that can't be drawn goes in errors.txt like any crash in a timer, and her body still gets its frame.
+            try { box.Update(now, s, head, new Point(feet.X, feet.Y + (int)(44 * s)), area); }
+            catch (Exception error) { if (testing) throw; Program.Crashed(error); }
             if (typer.Visible) typer.Follow(box.PanelOnScreen, area);
         }
 
@@ -14327,12 +14433,12 @@ namespace CapriDesktop
         {
             if (docked)
             {
-                if (speech != null || talkState != TalkState.Off) frames.Start();
+                if (iconRampage != null || speech != null || talkState != TalkState.Off) frames.Start();
                 else frames.Stop();
                 return;
             }
             if (!preferences.Motion && !riding && seat == null && !falling && clip != glitch && clip != dangle && clip != wake && !Asleep) Play(idle);
-            if ((exploring || preferences.Motion || riding || seat != null || falling || Sulking || clip != idle || speech != null || talkState != TalkState.Off) && !hidden) frames.Start(); else frames.Stop();
+            if ((iconRampage != null || exploring || preferences.Motion || riding || seat != null || falling || Sulking || clip != idle || speech != null || talkState != TalkState.Off) && !hidden) frames.Start(); else frames.Stop();
             RenderFrame();
         }
 
@@ -14346,6 +14452,9 @@ namespace CapriDesktop
                 arrivalDue = false;
                 if ((clip == arrive || clip == perchArrive) && !instant && preferences.Motion) Arrival(now);
             }
+            // Where she shows up with no arrival of her own (hanging, or a quick glitch), her waiting ribbons still go to her,
+            // and she stays out of sight until she has formed there.
+            else if (ribbons.Waiting && outro == null && clip != leave && clip != perchLeave && clip != laydownLeave) LandRibbons(now, lying || seat != null || riding || onPanel);
             Clip shown = clip;
             int blinkFrom = clip == perch || clip == laydown ? PerchBlinkFrom : idle.Old ? BlinkFrom : IdleBlinkFrom;
             int following = (cell + 1) % clip.Count, loopCell = cell;
@@ -14551,6 +14660,15 @@ namespace CapriDesktop
 
         private void Arrival(double now)
         {
+            if (ribbons.Waiting)
+            {
+                // She left as ribbons, and now they know where she's landing. She forms there from the transformation
+                // animation's drawings, and her own window takes over under the last of them with her arrival at its end,
+                // where she's whole: its glitching in is for after her shatter.
+                LandRibbons(now, clip == perchArrive);
+                clipStart = veilUntil - Ribbons.Whole;
+                return;
+            }
             Bitmap target = new Bitmap(Width, Height, PixelFormat.Format32bppPArgb);
             using (Graphics graphics = Graphics.FromImage(target)) Draw(graphics, clip == perchArrive ? perch : idle, 0);
             shatter.Play(target, anchor, Screen.FromPoint(new Point(anchor.X + Width / 2, anchor.Y + Height / 2)).Bounds, false, preferences.Size);
@@ -15019,6 +15137,7 @@ namespace CapriDesktop
             mainframe.Close();
             tear.Close();
             shatter.Close();
+            ribbons.Close();
             takeover.Close();
             controlGlow.Close();
             taskPanel.Close();
@@ -15035,6 +15154,7 @@ namespace CapriDesktop
                 quitting = true;
                 if (afterToolTimer != null) afterToolTimer.Dispose();
                 toolEnds.Clear();
+                if (iconRampage != null) ClearIcons();
                 ChaosOff();
                 CheckKeepAwake();
                 clips.Dispose();
@@ -17239,8 +17359,225 @@ namespace CapriDesktop
             checks.Add("PASS clones' windows after a crash: her next start puts back a window still where they had it, and leaves one moved by hand since, one that's closed and a broken line");
         }
 
-        // Her desktop icon prank (F72). It only ever runs against a fake list view this check makes, never the real desktop, and
-        // VirtualAllocEx on her own process walks the same path as reaching into Explorer's.
+        private sealed class FakeIcons
+        {
+            internal readonly System.Collections.Generic.List<IconSpot> Spots = new System.Collections.Generic.List<IconSpot>();
+            internal Action<string, int, Point> Call;
+            internal bool Arrange, BadThread, BadFlags;
+            internal int Opened, Closed, Moves;
+            private readonly int owner = System.Threading.Thread.CurrentThread.ManagedThreadId;
+
+            internal DesktopIcons.View Open(DesktopIcons.Batch batch)
+            {
+                Held view = new Held(this, batch);
+                try { view.Step("open", -1, Point.Empty); return view; }
+                catch { view.Dispose(); throw; }
+            }
+
+            private sealed class Held : DesktopIcons.View
+            {
+                private readonly FakeIcons icons;
+                private readonly DesktopIcons.Batch batch;
+                private readonly int thread = System.Threading.Thread.CurrentThread.ManagedThreadId;
+                private bool disposed;
+
+                internal Held(FakeIcons view, DesktopIcons.Batch work) { icons = view; batch = work; System.Threading.Interlocked.Increment(ref icons.Opened); }
+
+                private void ThreadCheck()
+                {
+                    if (thread != System.Threading.Thread.CurrentThread.ManagedThreadId || thread == icons.owner || System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.MTA) icons.BadThread = true;
+                }
+
+                internal void Step(string action, int index, Point at)
+                {
+                    ThreadCheck();
+                    batch.Check();
+                    Action<string, int, Point> call = icons.Call;
+                    if (call != null) call(action, index, at);
+                }
+
+                public bool AutoArrange() { Step("arrange", -1, Point.Empty); return icons.Arrange; }
+                public int Count() { Step("count", -1, Point.Empty); return icons.Spots.Count; }
+
+                public IconSpot Read(int index)
+                {
+                    Step("item", index, Point.Empty);
+                    IconSpot spot = icons.Spots[index];
+                    Step("position", index, spot.At);
+                    Step("name", index, spot.At);
+                    return new IconSpot(index, spot.Name, spot.At);
+                }
+
+                public IconItem Item(int index)
+                {
+                    IconSpot spot = Read(index);
+                    Step("address", index, spot.At);
+                    return new IconItem(spot.Name, spot.At, System.Text.Encoding.UTF8.GetBytes(index + ":" + spot.Name));
+                }
+
+                public void Move(int index, Point at, int flags)
+                {
+                    if (flags != 0x0080) { icons.BadFlags = true; throw new Exception("An icon move changed selection flags."); }
+                    Step("item", index, at);
+                    Step("move", index, at);
+                    IconSpot spot = icons.Spots[index];
+                    icons.Spots[index] = new IconSpot(index, spot.Name, at);
+                    System.Threading.Interlocked.Increment(ref icons.Moves);
+                }
+
+                public void Dispose()
+                {
+                    if (disposed) return;
+                    disposed = true;
+                    ThreadCheck();
+                    try
+                    {
+                        Action<string, int, Point> call = icons.Call;
+                        if (call != null) call("close", -1, Point.Empty);
+                    }
+                    finally { System.Threading.Interlocked.Increment(ref icons.Closed); }
+                }
+            }
+        }
+
+        private void SmokeIconBatches(System.Collections.Generic.List<string> checks, IntPtr handle, FakeIcons icons)
+        {
+            if (Marshal.SizeOf(typeof(DesktopIcons.StrRet)) != (IntPtr.Size == 8 ? 272 : 264) || Marshal.OffsetOf(typeof(DesktopIcons.StrRet), "Data").ToInt32() != IntPtr.Size || Marshal.SizeOf(typeof(Point)) != 8) throw new Exception("The shell name or point layout is wrong.");
+            System.Collections.Generic.List<IconSpot> homes = DesktopIcons.Read(handle);
+            System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<int, Point>> moves = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<int, Point>>();
+            foreach (IconSpot spot in homes) moves.Add(new System.Collections.Generic.KeyValuePair<int, Point>(spot.Index, spot.At));
+            try
+            {
+                foreach (string fail in new[] { "open", "arrange", "count", "item", "position", "name", "move" })
+                {
+                    bool failed = false;
+                    int after = 0, opened = icons.Opened, closed = icons.Closed;
+                    icons.Call = delegate(string action, int index, Point at)
+                    {
+                        if (action == "close") return;
+                        if (failed) after++;
+                        if (action == fail && (index < 0 || index == 1)) { failed = true; throw new Exception("The fake view failed."); }
+                    };
+                    if (fail == "move")
+                    {
+                        if (DesktopIcons.MoveMany(handle, moves) != 1) throw new Exception("A partial icon batch counted the wrong moves.");
+                    }
+                    else if (fail == "arrange")
+                    {
+                        bool arrange;
+                        if (DesktopIcons.TryAutoArrange(handle, out arrange)) throw new Exception("An unreadable Auto arrange state was accepted.");
+                    }
+                    else
+                    {
+                        System.Collections.Generic.List<IconSpot> read;
+                        if (DesktopIcons.TryRead(handle, out read) || read.Count != 0) throw new Exception("A failed icon read returned a partial desktop.");
+                    }
+                    if (!failed || after != 0 || icons.Opened != opened + 1 || icons.Closed != closed + 1) throw new Exception("A failed shell batch continued or kept its view.");
+                }
+                icons.Call = null;
+                checks.Add("PASS shell open, count, item, position, name and move failures stop the batch; failed reads return no partial list and partial moves count only completed items");
+
+                int nested = 0, before = icons.Opened;
+                icons.Call = delegate(string action, int index, Point at)
+                {
+                    if (action != "count") return;
+                    System.Collections.Generic.List<IconSpot> read;
+                    bool arrange;
+                    if (!DesktopIcons.TryRead(handle, out read) && read.Count == 0 && !DesktopIcons.Move(handle, 0, homes[0].At) && !DesktopIcons.TryAutoArrange(handle, out arrange)) nested++;
+                };
+                System.Collections.Generic.List<IconSpot> whole;
+                if (!DesktopIcons.TryRead(handle, out whole) || nested != 1 || icons.Opened != before + 1) throw new Exception("A shell batch re-entered its view.");
+                icons.Call = null;
+                checks.Add("PASS a read, move or Auto arrange request cannot re-enter a shell batch");
+
+                foreach (string hang in new[] { "open", "count", "move", "close" })
+                {
+                    using (System.Threading.ManualResetEvent entered = new System.Threading.ManualResetEvent(false))
+                    using (System.Threading.ManualResetEvent release = new System.Threading.ManualResetEvent(false))
+                    {
+                        bool blocked = false;
+                        int opened = icons.Opened, closed = icons.Closed, moved = icons.Moves;
+                        icons.Call = delegate(string action, int index, Point at)
+                        {
+                            if (action != hang || blocked || (hang == "move" && index != 1)) return;
+                            blocked = true;
+                            entered.Set();
+                            release.WaitOne(10000);
+                        };
+                        try
+                        {
+                            Stopwatch elapsed = Stopwatch.StartNew();
+                            if (hang == "move")
+                            {
+                                if (DesktopIcons.MoveMany(handle, moves) != 0) throw new Exception("A timed-out move batch reported success.");
+                            }
+                            else
+                            {
+                                System.Collections.Generic.List<IconSpot> read;
+                                if (DesktopIcons.TryRead(handle, out read) || read.Count != 0) throw new Exception("A timed-out read returned icons.");
+                            }
+                            if (!entered.WaitOne(0) || elapsed.ElapsedMilliseconds < 1700 || elapsed.ElapsedMilliseconds > 3000 || !DesktopIcons.Busy) throw new Exception("A hung shell batch did not give up after two seconds.");
+                            elapsed.Restart();
+                            System.Collections.Generic.List<IconSpot> again;
+                            bool arrange;
+                            if (DesktopIcons.TryRead(handle, out again) || DesktopIcons.Move(handle, 0, homes[0].At) || DesktopIcons.TryAutoArrange(handle, out arrange) || icons.Opened != opened + 1 || elapsed.ElapsedMilliseconds > 500) throw new Exception("A timed-out worker let a second shell batch start.");
+                        }
+                        finally
+                        {
+                            release.Set();
+                            if (!System.Threading.SpinWait.SpinUntil(delegate { return !DesktopIcons.Busy; }, 2000)) throw new Exception("The released shell worker did not finish.");
+                            icons.Call = null;
+                        }
+                        if (icons.Closed != closed + 1 || icons.Moves != moved + (hang == "move" ? 2 : 0)) throw new Exception("A late shell call kept its view or continued the cancelled batch.");
+                    }
+                }
+                checks.Add("PASS hung shell creation, reads, moves and cleanup return failure within two seconds; new batches stay blocked until cleanup and a late move cannot continue its batch");
+
+                int positions = 0;
+                icons.Call = delegate(string action, int index, Point at) { if (action == "position") { positions++; System.Threading.Thread.Sleep(450); } };
+                Stopwatch budget = Stopwatch.StartNew();
+                try
+                {
+                    if (DesktopIcons.TryRead(handle, out whole) || whole.Count != 0 || budget.ElapsedMilliseconds > 3000) throw new Exception("A shell batch restarted its timeout for each item.");
+                }
+                finally
+                {
+                    if (!System.Threading.SpinWait.SpinUntil(delegate { return !DesktopIcons.Busy; }, 2000)) throw new Exception("The slow shell worker did not finish.");
+                    icons.Call = null;
+                }
+                if (positions >= homes.Count) throw new Exception("A slow shell read continued after its deadline.");
+                checks.Add("PASS the two second limit covers a whole shell batch and returns no partial read");
+
+                int items = 0;
+                icons.Call = delegate(string action, int index, Point at) { if (action == "item") items++; };
+                System.Collections.Generic.List<IconSpot> some, landed = new System.Collections.Generic.List<IconSpot>();
+                if (!DesktopIcons.TryRead(handle, new System.Collections.Generic.List<IconSpot> { homes[2], homes[4] }, out some) || items != 2 || some.Count != 2 || some[0].Index != 2 || some[0].Name != homes[2].Name || some[1].At != homes[4].At) throw new Exception("A read of two icons went past the two she asked for.");
+                if (!DesktopIcons.TryRead(handle, new System.Collections.Generic.List<IconSpot> { new IconSpot(3, homes[2].Name, homes[2].At) }, out some) || some.Count != homes.Count || some[2].Name != homes[2].Name) throw new Exception("An icon that changed place in the view did not send her back to the whole desktop.");
+                if (!DesktopIcons.TryRead(handle, new System.Collections.Generic.List<IconSpot> { new IconSpot(homes.Count, homes[2].Name, homes[2].At) }, out some) || some.Count != homes.Count) throw new Exception("An icon past the end of the view did not send her back to the whole desktop.");
+                Point nudged = new Point(homes[1].At.X + 7, homes[1].At.Y + 9);
+                if (DesktopIcons.MoveMany(handle, new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<int, Point>> { new System.Collections.Generic.KeyValuePair<int, Point>(1, nudged) }, landed) != 1 || landed.Count != 1 || landed[0].Index != 1 || landed[0].At != nudged || landed[0].Name != homes[1].Name) throw new Exception("A move did not say where its icon landed.");
+                if (!DesktopIcons.Move(handle, 1, homes[1].At)) throw new Exception("The nudged icon could not go home.");
+                icons.Call = null;
+                checks.Add("PASS a scatter step reads only the icons she's moving, goes back to the whole desktop when one has changed place in the view, and learns where each move landed in the same trip");
+
+                Point far = new Point(-90000, 120000);
+                string name = "\u684c\u9762 " + new string('x', 300);
+                IconSpot first = icons.Spots[0];
+                icons.Spots[0] = new IconSpot(0, name, first.At);
+                try
+                {
+                    if (!DesktopIcons.Move(handle, 0, far)) throw new Exception("A signed desktop position could not be moved.");
+                    whole = DesktopIcons.Read(handle);
+                    if (whole.Count != homes.Count || whole[0].At != far || whole[0].Name != name) throw new Exception("A desktop label or signed position was truncated.");
+                }
+                finally { icons.Spots[0] = first; }
+                if (icons.BadThread || icons.BadFlags || icons.Opened != icons.Closed) throw new Exception("Shell work crossed threads, changed selection flags or kept a view.");
+                checks.Add("PASS shell batches create, use and close views on their own free-threaded worker, request only position flags, and retain long labels and signed coordinates");
+            }
+            finally { icons.Call = null; }
+        }
+
+        // Her desktop icon prank (F72). It only ever runs against a fake view this check makes, never the real desktop.
         private void SmokeIcons(System.Collections.Generic.List<string> checks)
         {
             string iconsTool;
@@ -17254,6 +17591,7 @@ namespace CapriDesktop
                 throw new Exception("Asking her to mess with the desktop icons went the wrong way.");
 
             Func<IntPtr> targetWas = DesktopIcons.Target;
+            Func<DesktopIcons.Batch, DesktopIcons.View> openWas = DesktopIcons.Open;
             string markerWas = IconMischief.Marker;
             int iconsPid;
             using (Process iconsSelf = Process.GetCurrentProcess()) iconsPid = iconsSelf.Id;
@@ -17261,23 +17599,23 @@ namespace CapriDesktop
             using (Form iconsHost = new Form())
             using (ListView iconsList = new ListView())
             {
+                FakeIcons icons = new FakeIcons();
                 try
                 {
                     iconsHost.Text = "Capri icon check";
                     iconsHost.StartPosition = FormStartPosition.Manual;
                     iconsHost.Bounds = new Rectangle(Screen.PrimaryScreen.WorkingArea.Left + 10, Screen.PrimaryScreen.WorkingArea.Top + 10, 1000, 560);
                     iconsList.View = View.LargeIcon;
-                    iconsList.AutoArrange = false;
                     iconsList.Dock = DockStyle.Fill;
-                    for (int i = 0; i < 6; i++) iconsList.Items.Add("icon" + i);
+                    for (int i = 0; i < 6; i++) icons.Spots.Add(new IconSpot(i, "icon" + i, new Point(30 + i * 110, 30)));
                     iconsHost.Controls.Add(iconsList);
                     iconsHost.Show();
                     Application.DoEvents();
-                    for (int i = 0; i < 6; i++) iconsList.Items[i].Position = new Point(30 + i * 110, 30);
-                    Application.DoEvents();
                     IntPtr iconsHandle = iconsList.Handle;
                     DesktopIcons.Target = delegate { return iconsHandle; };
+                    DesktopIcons.Open = icons.Open;
                     IconMischief.Marker = iconsFile;
+                    SmokeIconBatches(checks, iconsHandle, icons);
 
                     Func<System.Collections.Generic.Dictionary<string, Point>> map = delegate
                     {
@@ -17318,15 +17656,25 @@ namespace CapriDesktop
                     if (vanish.Active || DesktopIcons.Hidden(iconsHandle)) throw new Exception("Her icon vanish didn't bring the icons back within 10 to 20 seconds.");
 
                     // With Auto arrange on, moves won't stick, so she falls back to the vanish.
-                    iconsList.AutoArrange = true;
-                    Application.DoEvents();
+                    icons.Arrange = true;
                     if (!DesktopIcons.AutoArrange(iconsHandle)) throw new Exception("Auto arrange wasn't detected on the fake list view.");
                     IconMischief arrange = new IconMischief(DesktopIcons.Target, 3);
                     if (!arrange.Start(0, true) || !arrange.Vanishing || arrange.Moves != 0 || !DesktopIcons.Hidden(iconsHandle)) throw new Exception("Auto arrange didn't make her fall back to the vanish.");
                     arrange.PutBack();
                     if (DesktopIcons.Hidden(iconsHandle)) throw new Exception("The Auto arrange fallback vanish didn't restore the list view.");
-                    iconsList.AutoArrange = false;
-                    Application.DoEvents();
+                    icons.Arrange = false;
+
+                    System.Collections.Generic.List<IconSpot> saved = new System.Collections.Generic.List<IconSpot>(icons.Spots);
+                    icons.Spots.Clear();
+                    try
+                    {
+                        IconMischief empty = new IconMischief(DesktopIcons.Target, 3);
+                        if (!empty.Start(0, true) || !empty.Vanishing || empty.Moves != 0 || !DesktopIcons.Hidden(iconsHandle)) throw new Exception("An empty desktop did not fall back to the vanish.");
+                        empty.PutBack();
+                        if (DesktopIcons.Hidden(iconsHandle) || File.Exists(iconsFile)) throw new Exception("The empty desktop vanish did not restore its window.");
+                    }
+                    finally { icons.Spots.AddRange(saved); }
+                    checks.Add("PASS an empty desktop falls back to the vanish and restores its window");
 
                     // The backup file puts a scatter right after a crash, matching by name, and leaves an icon moved by hand alone.
                     System.Collections.Generic.Dictionary<string, Point> baseline = map();
@@ -17349,6 +17697,7 @@ namespace CapriDesktop
                     leftAt.Add(new System.Collections.Generic.KeyValuePair<int, Point>(indexOf(crashMove), movedByHand));
                     DesktopIcons.MoveMany(iconsHandle, leftAt);
                     File.WriteAllLines(iconsFile, lines.ToArray());
+                    icons.Spots.Reverse();
                     int recovered = IconMischief.Recover();
                     System.Collections.Generic.Dictionary<string, Point> afterCrash = map();
                     foreach (string name in crashBack) if (afterCrash[name] != baseline[name]) throw new Exception("Her next start didn't put " + name + " back from the backup file: " + afterCrash[name] + " vs " + baseline[name]);
@@ -17369,18 +17718,208 @@ namespace CapriDesktop
                     System.Collections.Generic.Dictionary<string, Point> afterLive = map();
                     if (afterLive[hijacked] != grabbed) throw new Exception("She didn't leave the icon a hand grabbed mid-scatter alone: " + afterLive[hijacked] + " vs " + grabbed);
                     if (afterLive[kept] != before[kept]) throw new Exception("She didn't put the icon she scattered back home: " + afterLive[kept] + " vs " + before[kept]);
-                    SmokeIconFailures(checks, iconsList, iconsFile);
+                    SmokeIconFailures(checks, iconsHandle, icons, iconsFile);
+                    SmokeRampage(checks, iconsHandle, icons, iconsFile, iconsList.PointToScreen(Point.Empty));
+                    if (icons.BadThread || icons.BadFlags || icons.Opened != icons.Closed) throw new Exception("An icon prank crossed threads, changed selection flags or kept a view.");
                 }
                 finally
                 {
                     DesktopIcons.Target = targetWas;
+                    DesktopIcons.Open = openWas;
                     IconMischief.Marker = markerWas;
                     try { File.Delete(iconsFile); }
                     catch (IOException) { }
                 }
             }
-            checks.Add("PASS desktop icon chaos on a fake list view: reads icon names and spots through her own process the way she'd reach into Explorer's, a scatter slides several and puts every one back exactly, a vanish hides the list view and brings it back in 10 to 20 s, Auto arrange falls back to the vanish, the backup file restores a scatter after a simulated crash matched by name, and an icon moved by hand meanwhile is left where it was put");
-            checks.Add("LIMIT desktop icon chaos on the real desktop: the smoke test only ever runs against a fake list view it creates, so moving, hiding and restoring real Explorer icons is for Lachy to check live");
+            checks.Add("PASS desktop icon chaos on a fake view: names and positions, slide and exact return, vanish for 10 to 20 seconds, Auto arrange fallback, crash recovery by name after item order changes, and hand-moved icons left alone");
+            checks.Add("LIMIT real desktop shell calls, labels, selection, grid snapping and Explorer hangs need a live check");
+        }
+
+        private void SmokeRampage(System.Collections.Generic.List<string> checks, IntPtr handle, FakeIcons icons, string marker, Point origin)
+        {
+            string tool;
+            ToolArguments args;
+            foreach (string verb in new[] { "rock", "wreck", "beat", "destroy", "smash", "crush", "kill", "fold", "clap", "stomp" })
+                foreach (string prefix in new[] { "", "Capri, " })
+                    foreach (string target in new[] { "your shit", "you", "ur shit" })
+                        if (!Hands.Heard(prefix + "Adam Smasher would " + verb + " " + target, out tool, out args) || tool != "desktop_icons" || args.Action != "rampage") throw new Exception("An Adam Smasher taunt missed the rampage: " + verb + " " + target);
+            if (!Hands.Heard("Capri, Adam Smasher would win", out tool, out args, true) || tool != "desktop_icons" || args.Action != "rampage"
+                || Hands.Heard("who is adam smasher", out tool, out args) && tool == "desktop_icons"
+                || !Hands.Valid("desktop_icons", new ToolArguments { Action = "rampage" }) || Hands.Valid("desktop_icons", new ToolArguments { Action = "nuke" })) throw new Exception("The rampage route, question exclusion or action validation failed.");
+            checks.Add("PASS Adam Smasher taunts route to desktop_icons rampage with every verb, prefix and target; his name alone stays chat and nuke stays invalid");
+            using (Bitmap full = Tear.Frame(new Size(800, 600), 0.15, 42))
+            using (Bitmap light = new Bitmap(800, 600, PixelFormat.Format32bppPArgb))
+            {
+                using (Graphics graphics = Graphics.FromImage(light)) Tear.Light(graphics, light.Size, 0.15, 42, 0);
+                long fullAlpha = 0, lightAlpha = 0;
+                int fullPixels = 0, lightPixels = 0;
+                for (int y = 0; y < full.Height; y++)
+                    for (int x = 0; x < full.Width; x++)
+                    {
+                        int a = full.GetPixel(x, y).A, b = light.GetPixel(x, y).A;
+                        fullAlpha += a;
+                        lightAlpha += b;
+                        if (a != 0) fullPixels++;
+                        if (b != 0) lightPixels++;
+                    }
+                if (lightAlpha <= 0 || lightAlpha >= fullAlpha / 3 || lightPixels >= fullPixels / 3) throw new Exception("Light tear bars were missing, too bright or too broad.");
+            }
+            checks.Add("PASS light tear bars cover fewer pixels with less alpha than the ordinary bars");
+
+            Func<Rectangle[]> monitorsWas = IconRampage.Monitors;
+            Func<int, bool> keysWas = KeyHeld;
+            Func<byte[], int, Bitmap> fetchWas = IconPictures.Fetch;
+            bool motionWas = preferences.Motion;
+            Action<string, int, Point> callWas = icons.Call;
+            System.Collections.Generic.List<IconSpot> saved = new System.Collections.Generic.List<IconSpot>(icons.Spots);
+            Rectangle room = new Rectangle(-1600, -200, 1200, 900);
+            IconRampage rampage = null;
+            int fetches = 0, fetchThread = Thread.CurrentThread.ManagedThreadId;
+            bool fetchedHere = false, fetchFails = false;
+            Func<byte[], int, Bitmap> fakePicture = delegate(byte[] id, int size)
+            {
+                Interlocked.Increment(ref fetches);
+                if (Thread.CurrentThread.ManagedThreadId == fetchThread) fetchedHere = true;
+                if (fetchFails) throw new Exception("The fake shell picture failed.");
+                Bitmap picture = new Bitmap(size, size, PixelFormat.Format32bppPArgb);
+                using (Graphics graphics = Graphics.FromImage(picture)) graphics.Clear(Color.Cyan);
+                return picture;
+            };
+            // The pictures the show needs, fetched ahead on this thread, so a check that isn't about fetching starts at once.
+            Action prime = delegate
+            {
+                System.Collections.Generic.List<IconItem> items;
+                int size, dpi;
+                if (!DesktopIcons.TryItems(handle, out items, out size, out dpi) || !IconPictures.Fill(items, size)) throw new Exception("The fake icon pictures could not be fetched.");
+            };
+            Action settle = delegate
+            {
+                Stopwatch wait = Stopwatch.StartNew();
+                while (IconPictures.Loading && wait.ElapsedMilliseconds < 5000) Thread.Sleep(5);
+                if (IconPictures.Loading) throw new Exception("The icon pictures were still being fetched after five seconds.");
+                Application.DoEvents();
+            };
+            try
+            {
+                ClearIcons();
+                IconPictures.Forget();
+                IconPictures.Fetch = fakePicture;
+                preferences.Motion = true;
+                IconRampage.Monitors = delegate { return new[] { new Rectangle(0, 0, 1000, 800), room }; };
+                icons.Spots.Clear();
+                for (int i = 0; i < 6; i++)
+                {
+                    Point at = i == 5 ? new Point(100, 100) : new Point(-1450 + i * 150, -50 + i * 30);
+                    icons.Spots.Add(new IconSpot(i, "rampage" + i, new Point(at.X - origin.X, at.Y - origin.Y)));
+                }
+                int moves = icons.Moves, glitches = 0, crashes = 0, throws = 0;
+                rampage = new IconRampage(73);
+                if (rampage.Load() != 2 || rampage.Wanted.Count != 6 || rampage.Copies.Count != 0) throw new Exception("A rampage with no pictures yet didn't ask for them first.");
+                rampage.Dispose();
+                prime();
+                rampage = new IconRampage(73);
+                if (rampage.Load() != 1 || rampage.Room != room || rampage.Copies.Count != 5) throw new Exception("The rampage did not choose the monitor holding most icons.");
+                foreach (IconCopy copy in rampage.Copies)
+                    if (copy.X != copy.Home.X || copy.Y != copy.Home.Y || copy.Spin != 0 || copy.Picture.PixelFormat != PixelFormat.Format32bppPArgb) throw new Exception("An icon copy jumped or lost its premultiplied picture before the swap.");
+                rampage.Glitch = delegate { glitches++; };
+                rampage.Crash = delegate { crashes++; };
+                rampage.Throw = delegate { throws++; };
+                if (!rampage.Start(0, false) || !DesktopIcons.Hidden(handle) || !File.Exists(marker) || File.ReadAllText(marker).Trim() != "vanish") throw new Exception("The rampage did not hide the list behind its vanish marker.");
+                IconMischief other = new IconMischief(DesktopIcons.Target, 2);
+                if (other.Start(0, true) || other.Vanish(0) || StartIconChaos(false) || !IconPrank("rampage").StartsWith("I'm already", StringComparison.Ordinal)) throw new Exception("A second prank started during the rampage.");
+                double t = 0;
+                while (t < IconRampage.EndAt)
+                {
+                    t = Math.Min(IconRampage.EndAt, t + IconRampage.StepSeconds);
+                    rampage.Advance(t, false);
+                    if (t < IconRampage.EndAt && (!DesktopIcons.Hidden(handle) || !File.Exists(marker))) throw new Exception("The rampage showed its real icons or dropped its marker early.");
+                    if (t >= IconRampage.TrainSeconds + IconRampage.CrashSeconds && t <= IconRampage.HomeAt)
+                        foreach (IconCopy copy in rampage.Copies)
+                        {
+                            double r = copy.Radius;
+                            if (!copy.Hit || copy.X - r < room.Left - 0.001 || copy.X + r > room.Right + 0.001 || copy.Y - r < room.Top - 0.001 || copy.Y + r > room.Bottom + 0.001) throw new Exception("A spinning icon left a wall during the fling.");
+                        }
+                }
+                foreach (IconCopy copy in rampage.Copies)
+                    if (copy.X != copy.Home.X || copy.Y != copy.Home.Y || copy.Spin != 0) throw new Exception("An icon copy did not end exactly home with no spin.");
+                if (rampage.Active || DesktopIcons.Hidden(handle) || File.Exists(marker) || icons.Moves != moves || glitches != 9 || crashes != 1 || throws != 7) throw new Exception("The rampage changed a real icon, missed a cue or kept its list hidden.");
+                rampage.Dispose();
+                rampage = null;
+                checks.Add("PASS a stepped rampage chooses one monitor, starts at each home, hides behind a vanish marker, blocks other pranks, keeps every spinning copy inside all four walls, returns exactly home and never moves a real icon; swap, crash and seven throws have their cues");
+
+                rampage = new IconRampage(73);
+                if (rampage.Load() != 1 || !rampage.Start(0, false)) throw new Exception("The rampage Esc fixture did not start.");
+                rampage.Advance(4, false);
+                iconRampage = rampage;
+                KeyHeld = delegate(int key) { return key == (int)Keys.Escape; };
+                RampageTick(4.01);
+                rampage = null;
+                if (iconRampage != null || DesktopIcons.Hidden(handle) || File.Exists(marker)) throw new Exception("Esc did not restore the rampage in that step.");
+                KeyHeld = keysWas;
+                if (IconPrank("rampage").StartsWith("Couldn't", StringComparison.Ordinal) || iconRampage == null) throw new Exception("The tool did not start a fake rampage.");
+                if (IconPrank("back") != "Put your icons back, choom." || iconRampage != null || DesktopIcons.Hidden(handle) || File.Exists(marker)) throw new Exception("Back did not clear the rampage.");
+                if (IconPrank("rampage").StartsWith("Couldn't", StringComparison.Ordinal) || iconRampage == null) throw new Exception("The clear fixture did not start.");
+                ClearIcons();
+                if (IconRampage.Running || DesktopIcons.Hidden(handle) || File.Exists(marker)) throw new Exception("ClearIcons did not clear the rampage.");
+                checks.Add("PASS Esc restores a rampage in the same frame; desktop_icons back and ClearIcons close it and remove its marker");
+
+                foreach (bool hide in new[] { false, true })
+                {
+                    if (!StartIconChaos(hide)) throw new Exception("The existing prank exclusion fixture did not start.");
+                    if (!IconPrank("rampage").StartsWith("I'm already", StringComparison.Ordinal) || iconRampage != null) throw new Exception("A rampage started during scatter or vanish.");
+                    ClearIcons();
+                }
+                // The first rampage has no pictures: they're fetched off her window's thread while she says her line, and the
+                // show starts when they're in.
+                IconPictures.Forget();
+                fetches = 0;
+                fetchedHere = false;
+                string first = IconPrank("rampage");
+                if (first.StartsWith("Couldn't", StringComparison.Ordinal) || first.StartsWith("Messing", StringComparison.Ordinal) || iconRampage != null || iconChaos != null || !rampageWaiting || DesktopIcons.Hidden(handle) || File.Exists(marker)) throw new Exception("A rampage with no pictures yet didn't wait for them with her line: " + first);
+                if (!IconPrank("mess").StartsWith("I'm already", StringComparison.Ordinal) || StartIconChaos(true)) throw new Exception("Another prank started while the rampage's pictures were being fetched.");
+                settle();
+                if (iconRampage == null || rampageWaiting || fetches != 6 || fetchedHere || !DesktopIcons.Hidden(handle) || !File.Exists(marker)) throw new Exception("The rampage didn't start once its pictures were in, or fetched them on her window's thread: " + fetches + " fetched.");
+                ClearIcons();
+                fetches = 0;
+                if (IconPrank("rampage").StartsWith("Couldn't", StringComparison.Ordinal) || iconRampage == null || fetches != 0) throw new Exception("A second rampage didn't start at once from the pictures she kept.");
+                ClearIcons();
+                IconPictures.Forget();
+                IconPrank("rampage");
+                if (!rampageWaiting || IconPrank("back") != "Put your icons back, choom." || rampageWaiting) throw new Exception("Back didn't call off a rampage that was waiting for its pictures.");
+                settle();
+                if (iconRampage != null || iconChaos != null || DesktopIcons.Hidden(handle) || File.Exists(marker)) throw new Exception("A rampage that was called off started anyway when its pictures came in.");
+                checks.Add("PASS the first rampage fetches its six pictures off her window's thread behind her line and starts when they're in, the next starts at once from the ones she kept, nothing else starts in between, and back calls off one that's still waiting");
+                IconPictures.Forget();
+                fetchFails = true;
+                string fallback = IconPrank("rampage");
+                settle();
+                fetchFails = false;
+                if (fallback.StartsWith("Couldn't", StringComparison.Ordinal) || iconChaos == null || !iconChaos.Sliding || iconRampage != null || rampageWaiting) throw new Exception("Pictures that couldn't be had didn't end in the plain scatter.");
+                ClearIcons();
+                prime();
+                preferences.Motion = false;
+                if (!IconPrank("rampage").StartsWith("Poof.", StringComparison.Ordinal) || iconChaos == null || !iconChaos.Vanishing || iconRampage != null) throw new Exception("Reduced motion did not use the plain hide prank.");
+                ClearIcons();
+                icons.Spots.Clear();
+                preferences.Motion = true;
+                if (IconPrank("rampage") != "Nothing on your desktop to throw, choom." || iconRampage != null || iconChaos != null || DesktopIcons.Hidden(handle) || File.Exists(marker)) throw new Exception("An empty desktop started a prank.");
+                checks.Add("PASS scatter and vanish block rampage; pictures that can't be had end in the plain scatter, moves off uses hide, and an empty desktop only gets its line");
+            }
+            finally
+            {
+                icons.Call = callWas;
+                KeyHeld = keysWas;
+                if (rampage != null) rampage.Dispose();
+                ClearIcons();
+                Stopwatch last = Stopwatch.StartNew();
+                while (IconPictures.Loading && last.ElapsedMilliseconds < 5000) Thread.Sleep(5);
+                IconPictures.Fetch = fetchWas;
+                IconPictures.Forget();
+                IconRampage.Monitors = monitorsWas;
+                preferences.Motion = motionWas;
+                icons.Spots.Clear();
+                icons.Spots.AddRange(saved);
+            }
         }
 
         private void SmokeChaosScreen(System.Collections.Generic.List<string> checks)
@@ -21265,6 +21804,132 @@ namespace CapriDesktop
             }
         }
 
+        // A draw that fails leaves none of Windows' drawing objects behind, never brings a window's old picture back up, takes a
+        // torn bubble off screen, and doesn't cost her body its frame.
+        private void SmokeOverlayDraw(System.Collections.Generic.List<string> checks)
+        {
+            using (Bitmap broken = new Bitmap(8, 8))
+            {
+                broken.Dispose();
+                Action draw = delegate
+                {
+                    try { Native.DrawLayered(IntPtr.Zero, broken, Point.Empty); }
+                    catch (ArgumentException) { return; }
+                    throw new Exception("The native draw check did not fail before its bitmap was made.");
+                };
+                draw();
+                int before = WindowUse.Read().Gdi;
+                for (int i = 0; i < 32; i++) draw();
+                int after = WindowUse.Read().Gdi;
+                if (before < 1 || after > before + 2) throw new Exception("Failed native draws leaked drawing objects: " + before + " to " + after + ".");
+                checks.Add("PASS native drawing releases its drawing contexts when making the bitmap fails");
+            }
+            InvalidOperationException fault = new InvalidOperationException("test overlay draw");
+            Action<Action> fails = delegate(Action attempt)
+            {
+                try { attempt(); }
+                catch (InvalidOperationException error) { if (error == fault) return; throw; }
+                throw new Exception("An overlay draw failure was swallowed.");
+            };
+            using (Overlay overlay = new Overlay("draw check"))
+            using (Bitmap image = new Bitmap(8, 8))
+            {
+                Action<IntPtr, Bitmap, Point> layerWas = overlay.Layer;
+                try
+                {
+                    overlay.Present(new Bitmap(8, 8), Point.Empty);
+                    Bitmap still = overlay.Image;
+                    overlay.Hide();
+                    overlay.Layer = delegate { throw fault; };
+                    fails(delegate { overlay.Present(image, Point.Empty); });
+                    image.GetPixel(0, 0);
+                    if (overlay.Visible || overlay.Image != still) throw new Exception("A failed overlay draw showed its old picture or took the caller's image.");
+                    overlay.Show();
+                    fails(delegate { overlay.Present(image, Point.Empty); });
+                    if (!overlay.Visible || overlay.Image != still) throw new Exception("A failed overlay draw hid a window it did not show.");
+                    checks.Add("PASS a failed overlay open stays hidden, keeps its old picture and leaves the caller's image alone");
+                }
+                finally { overlay.Layer = layerWas; }
+            }
+            using (SpeechBox bubble = new SpeechBox())
+            {
+                Action<IntPtr, Bitmap, Point> layerWas = bubble.Layer;
+                try
+                {
+                    Point head = new Point(600, 400), feet = new Point(600, 650);
+                    Rectangle area = new Rectangle(0, 0, 1200, 800);
+                    bubble.State = TalkState.Online;
+                    bubble.Reply = "Hello.";
+                    bubble.Revealed = bubble.Reply.Length;
+                    bubble.Opened = 20;
+                    bubble.Update(20.01, 1, head, feet, area);
+                    if (!bubble.Visible) throw new Exception("The torn bubble check never opened.");
+                    Bitmap still = bubble.Image, rejected = null;
+                    bubble.Layer = delegate(IntPtr window, Bitmap image, Point at) { rejected = image; throw fault; };
+                    fails(delegate { bubble.Update(20.3, 1, head, feet, area); });
+                    bool disposed = false;
+                    try { rejected.GetPixel(0, 0); } catch (ArgumentException) { disposed = true; }
+                    if (bubble.Visible || bubble.Image != still || !disposed) throw new Exception("A failed bubble draw kept a torn frame up or kept its new bitmap.");
+                    bubble.Layer = layerWas;
+                    bubble.Update(20.3, 1, head, feet, area);
+                    if (!bubble.Visible || bubble.Image == still) throw new Exception("The bubble did not return after a failed draw.");
+                    still = bubble.Image;
+                    bubble.Update(20.31, 1, head, feet, area);
+                    if (bubble.Image != still) throw new Exception("The recovered bubble was not clean.");
+                    bubble.Reply = "Changed.";
+                    bubble.Layer = delegate { throw fault; };
+                    fails(delegate { bubble.Update(20.31, 1, head, feet, area); });
+                    if (!bubble.Visible || bubble.Image != still) throw new Exception("A failed bubble draw hid its clean frame.");
+                    bubble.Layer = layerWas;
+                    bubble.Update(20.31, 1, head, feet, area);
+                    if (bubble.Image == still) throw new Exception("A failed bubble draw cached the rejected content.");
+                    checks.Add("PASS a torn bubble hides on a failed draw, frees its bitmap and returns clean on the next draw; a clean frame stays up until its new content draws");
+                }
+                finally { bubble.Layer = layerWas; }
+            }
+            Action<IntPtr, Bitmap, Point> boxLayer = box.Layer;
+            bool dockWas = docked, hiddenWas = hidden, arrivalWas = arrivalDue, testWas = testing;
+            Clip clipWas = clip;
+            double startWas = clipStart;
+            string logWas = Brain.LogPath;
+            FieldInfo test = typeof(Companion).GetField("testing", BindingFlags.Instance | BindingFlags.NonPublic);
+            try
+            {
+                CloseTalk();
+                docked = hidden = false;
+                talkState = TalkState.Dormant;
+                box.Layer = delegate { throw fault; };
+                fails(delegate { UpdateTalk(clock.Elapsed.TotalSeconds); });
+                checks.Add("PASS a bubble draw failure still reaches the smoke test");
+                string folder = Path.Combine(Path.GetDirectoryName(logWas), "overlay-draw");
+                Directory.CreateDirectory(folder);
+                Brain.LogPath = Path.Combine(folder, "errors.txt");
+                File.WriteAllText(Brain.LogPath, "");
+                arrivalDue = false;
+                clip = idle;
+                clipStart = clock.Elapsed.TotalSeconds;
+                drawnClip = null;
+                int paints = bodyPaints;
+                test.SetValue(this, false);
+                RenderFrame();
+                if (bodyPaints <= paints || !File.ReadAllText(Brain.LogPath).Contains(" | crash | - | InvalidOperationException: test overlay draw")) throw new Exception("A failed bubble draw stopped her body or lost its crash log.");
+                checks.Add("PASS a bubble draw failure is logged and her body still draws outside the smoke test");
+            }
+            finally
+            {
+                test.SetValue(this, testWas);
+                box.Layer = boxLayer;
+                Brain.LogPath = logWas;
+                CloseTalk();
+                docked = dockWas;
+                hidden = hiddenWas;
+                arrivalDue = arrivalWas;
+                clip = clipWas;
+                clipStart = startWas;
+                drawnClip = null;
+            }
+        }
+
         private static void SmokeTalkLogic(System.Collections.Generic.List<string> checks)
         {
             string[,] parts = {
@@ -23692,6 +24357,15 @@ namespace CapriDesktop
 
         private static void SmokeSetupFiles(System.Collections.Generic.List<string> checks, string output)
         {
+            if (CapriSetup.Program.Wanted("Capri.exe", new string[0]) || CapriSetup.Program.Wanted("Capri.exe", new[] { "--smoke-test", "out" }) || CapriSetup.Program.Wanted("Capri.exe", new[] { "--bench", "x" }) || CapriSetup.Program.Wanted("Capri.exe", new[] { "--stream" }) || CapriSetup.Program.Wanted("Capri.exe", new[] { "--hook", "x" }) || CapriSetup.Program.Wanted(@"C:\setup\Capri.exe", new string[0])) throw new Exception("Capri took herself for her installer.");
+            foreach (string name in new[] { "Capri-Setup.exe", "capri-setup (1).exe", "Capri-Setup-0.8.8-123.exe", "Uninstall.exe", "CAPRI-SETUP.EXE", "UNINSTALL.EXE" })
+                if (!CapriSetup.Program.Wanted(name, new string[0])) throw new Exception("Capri didn't recognise her installer name: " + name);
+            foreach (string[] command in new[] { new[] { "--silent" }, new[] { "--silent", "--package", "winget" }, new[] { "--package", "winget" }, new[] { "--uninstall" }, new[] { "--update", "1", "2" }, new[] { "--verify", "out" }, new[] { "--verify-voice", "out" }, new[] { "--remove-files" }, new[] { "--close", @"C:\x" }, new[] { "--uninstall", "--silent" }, new[] { "--unknown", "--silent" }, new[] { "--unknown", "--package", "winget" } })
+                if (!CapriSetup.Program.Wanted("Capri.exe", command)) throw new Exception("Capri didn't recognise her setup command: " + string.Join(" ", command));
+            if (CapriSetup.Program.Wanted("Capri.exe", new[] { "x", "--update", "1", "2" }) || CapriSetup.Program.Wanted("Capri.exe", new[] { "--SILENT" }) || CapriSetup.Program.Wanted("Capri.exe", new[] { "--PACKAGE", "winget" })) throw new Exception("Capri took another command for her installer.");
+            foreach (string packed in Assembly.GetExecutingAssembly().GetManifestResourceNames())
+                if (packed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) throw new Exception("Capri still has a program packed inside her: " + packed);
+            checks.Add("PASS setup names and commands choose the installer, normal app commands stay with Capri and no app is packed inside her");
             if (SetupFiles.Mode(new string[0]) != 0 || SetupFiles.Mode(new[] { "--uninstall" }) != 0 || SetupFiles.Mode(new[] { "--silent" }) != 1 || SetupFiles.Mode(new[] { "--uninstall", "--silent" }) != 2 || SetupFiles.Mode(new[] { "--silent", "--uninstall" }) != 2) throw new Exception("Silent setup flags chose the wrong path.");
             foreach (string flag in new[] { "--update", "--remove-files", "--verify", "--unknown" })
             {
@@ -25561,10 +26235,12 @@ namespace CapriDesktop
                 double unbrokenUntil = nameChatUntil;
                 earsWarned = -10;
                 int beforeUnbroken = reachedCount();
+                int unbrokenAsked = asking, unbrokenNotice = earsNotice;
+                string unbrokenReply = reply;
                 HeardLocally(chatTicket, asking, "i love pasta", null, null, -1, true);
-                if (reachedCount() != beforeUnbroken || nameChatUntil != unbrokenUntil || reply != NoPause || mainframe.VoiceNoteText != NoPause) throw new Exception("15 seconds without a pause counted as a line in her name's chat, or said nothing: " + reply + " / " + mainframe.VoiceNoteText);
+                if (reachedCount() != beforeUnbroken || nameChatUntil != unbrokenUntil || reply != unbrokenReply || asking != unbrokenAsked || earsNotice != unbrokenNotice || mainframe.VoiceNoteWarning) throw new Exception("An unbroken line without her name reached her, held her name's chat open or said something: " + reply + " / " + mainframe.VoiceNoteText);
                 CheckNameChat(at());
-                if (nameChatUntil != unbrokenUntil) throw new Exception("A note about her ears held her name's chat open.");
+                if (nameChatUntil != unbrokenUntil) throw new Exception("An unbroken line held her name's chat open.");
                 CloseTalk();
                 reaches("capri are you there", delegate { HeardLocally(chatTicket, asking, "capri are you there", null, null, -1, true); });
                 decoded = "i love pasta";
@@ -25582,7 +26258,7 @@ namespace CapriDesktop
                 CloseNameChat();
                 earsWarned = -10;
                 stays("Words she couldn't make out with no chat going", delegate { HeardLocally(chatTicket, asking, "", null); });
-                checks.Add("PASS in her name's chat 15 seconds without a pause still gets its words checked but needs her name, so a game's sound can't reach her, and her ears say so when they miss a line; those notes don't hold the chat open");
+                checks.Add("PASS in her name's chat sound without a pause still gets checked but needs her name and says nothing without it; an ordinary missed line still says so, and neither holds the chat open");
 
                 StopChat();
                 ownEarsTest = false;
@@ -25649,6 +26325,399 @@ namespace CapriDesktop
                 Brain.Keeper = keeperWas;
                 mainframe.Sync();
                 SavePreferences();
+            }
+        }
+
+        // Lachy, 10 Nov: in Fortnite with another player in voice chat she "wasnt able to understand the people I was talking to",
+        // and kept saying "I heard 15 seconds without a pause". On a call, sound that never paused for 15 seconds was thrown away
+        // unheard and her ears held shut for a pause, which a game with people talking over it doesn't give. His recording of that
+        // game, cut the way her ears cut it, gave her ears 405 words; cut and carried on, 865.
+        private void SmokeCallNoise(List<string> checks, string output)
+        {
+            bool callWas = CallModeOn, savedCallWas = preferences.CallMode, listenWas = preferences.ListenCapri, quietWas = preferences.Quiet, silentWas = preferences.Silent, discordWas = preferences.CallDiscordOff;
+            bool chatWas = chatting, localWas = local, readyWas = earsReady, shutWas = earsShut, mutedWas = ears.Muted, pushWas = pushing, transcribeWas = transcribing, nameWas = nameOver, holdWas = noiseHold;
+            bool loudWas = hearingLoud, keepingWas = Brain.Keeping, stepsWas = brain.OwnSteps, captionWas = callCaptionRun, pillNameWas = pill.ListenForName;
+            int askWas = asking, escWas = escAsk, ticketWas = chatTicket, noticeWas = earsNotice, typingWas = preferences.Typing, missesWas = hearingMisses, transcribeAtWas = transcribingAt;
+            int answerWas = callAnswer, userWas = callUser, userVersionWas = callUserVersion, heardVersionWas = callHeardVersion, answersWas = callAnswers, countedWas = callCounted;
+            int wordsWas = Volatile.Read(ref earsWords), emptyWas = Volatile.Read(ref earsEmpty), cutsWas = Volatile.Read(ref earsCuts), waitsWas = Volatile.Read(ref earsWaits), logCallWas = Volatile.Read(ref earsLogCall);
+            long droppedWas = earsDropped;
+            double logAtWas = earsLogAt, untilWas = voiceUntil, warnedWas = earsWarned, nameUntilWas = nameChatUntil, beganWas = lineBegan;
+            string logWas = Brain.LogPath, transcriptWas = Brain.TranscriptPath, memoryWas = Brain.MemoryPath, modelWas = brain.Model, workWas = working, replyWas = reply, heardWas = heard, speechWas = speech, resultWas = hearingResultProblem;
+            string appWas = preferences.CallApp, appNameWas = preferences.CallAppName, beforeWas = preferences.CallAppBefore, beforeNameWas = preferences.CallAppNameBefore;
+            CallApp[] appsWas = CallApps.All, lastWas = CallApps.Last;
+            string noteWas = mainframe.VoiceNoteText, securityWas = Security.Saved, whoWas = callWho, saidWas = callSaid;
+            bool noteWarningWas = mainframe.VoiceNoteWarning, wakeWas = Security.On(Security.Wake);
+            DateTime saidAtWas = callSaidAt, captionAtWas = callCaptionAt;
+            TalkState talkWas = talkState;
+            Cloud remoteWas = brain.Remote;
+            Job jobWas = job;
+            Agent agentWas = agent;
+            Dictation dictationWas = dictation;
+            LocalEars ownWas = Hearing.Own;
+            Func<short[], string> hearingWas = Hearing.Run;
+            Func<string, string> thinkWas = Think;
+            Func<string, byte[]> speakWas = Speak, freeSpeakWas = FreeSpeak;
+            List<short[]> pushLineWas = pushed;
+            List<CallChunk> pushCallWas = pushedCall;
+            CallPart[] captionsWas = callCaptions.ToArray();
+            List<short[]> utteranceWas;
+            short[][] heldWas, prerollWas;
+            CallChunk[] heldCallWas, audioWas;
+            bool carryingWas, unbrokenWas;
+            int loudRunWas, quietRunWas, heldTicketWas, heldRequestWas, heldVersionWas;
+            double roomWas, lineAtWas, lineLevelWas, heldWakeWas;
+            lock (waking)
+            {
+                utteranceWas = utterance; heldWas = heldLine; heldCallWas = heldCall; prerollWas = preroll.ToArray(); audioWas = callAudio.ToArray();
+                carryingWas = carrying; unbrokenWas = heldUnbroken; loudRunWas = loudRun; quietRunWas = quietRun;
+                roomWas = room; lineAtWas = lineAt; lineLevelWas = lineLevel; heldWakeWas = heldWake; heldTicketWas = heldTicket; heldRequestWas = heldRequest; heldVersionWas = heldCallVersion;
+            }
+            callEars.TakeDropped();
+            TcpListener fake = null;
+            List<string> requests = new List<string>();
+            ManualResetEvent slow = new ManualResetEvent(true), entered = new ManualResetEvent(false);
+            const string said = "stay behind the blue wall", softSaid = "take the left path", loudSaid = "the user spoke loudly", answered = "Got it.";
+            bool softWords = false, loudWords = false;
+            int decoded = 0, whole = 0, nameReached = 0;
+            Func<int, short[]> wave = delegate(int amplitude)
+            {
+                short[] samples = new short[Ears.Chunk];
+                for (int at = 0; at < samples.Length; at++) samples[at] = (short)(Math.Sin(at * Math.PI / 40) * amplitude);
+                return samples;
+            };
+            short[] hush = new short[Ears.Chunk], low = wave(400), hit = wave(3000), bang = wave(5000), soft = wave(500), softer = wave(700);
+            short[][] marker = { wave(14000), wave(20000) };
+            int markerCount = 0;
+            for (int at = 145; at < 180; at++) foreach (short sample in marker[at % 2]) if (Math.Abs((int)sample) > 10000) markerCount++;
+            Func<int, short[]> game = delegate(int at) { return at % 5 < 2 ? at % 2 == 0 ? hit : bang : low; };
+            Action<short[], short[]> feed = delegate(short[] mic, short[] call)
+            {
+                callEars.Add(call, call.Length);
+                Listen(mic);
+                if (CallModeOn && noiseHold) throw new Exception("A call held her ears for a pause.");
+            };
+            Action<Func<bool>> wait = delegate(Func<bool> done)
+            {
+                Stopwatch waited = Stopwatch.StartNew();
+                while (!done() && waited.ElapsedMilliseconds < 5000) { Application.DoEvents(); Thread.Sleep(5); }
+                if (!done()) throw new Exception("The call noise check did not finish: " + decoded + " pieces, " + requests.Count + " brain turns, " + reply + ".");
+            };
+            Action<bool, bool> open = delegate(bool onCall, bool named)
+            {
+                slow.Set();
+                wait(delegate { return !transcribing && talkState != TalkState.Thinking; });
+                CloseTalk();
+                chatTicket++;
+                callSession.Change(onCall);
+                preferences.CallMode = onCall;
+                preferences.ListenCapri = named;
+                chatting = local = earsReady = true;
+                ears.Muted = pushing = nameOver = transcribing = false;
+                dictation = null;
+                pushed = null; pushedCall = null;
+                callEars.Stop(); callEars.TakeDropped(); callOver.Reset();
+                lock (waking)
+                {
+                    utterance = null; carrying = false; heldLine = null; heldCall = null; heldUnbroken = false;
+                    preroll.Clear(); callAudio.Clear(); loudRun = quietRun = 0; noiseHold = false; room = -1; lineAt = -100; lineLevel = 0;
+                }
+                callCaptions.Clear(); callCaptionRun = false;
+                nameChatUntil = lineBegan = -1;
+                hearingLoud = true; hearingMisses = 2; hearingResultProblem = null;
+                Interlocked.Exchange(ref earsWords, 0); Interlocked.Exchange(ref earsEmpty, 0); Interlocked.Exchange(ref earsCuts, 0); Interlocked.Exchange(ref earsWaits, 0); Interlocked.Exchange(ref earsLogCall, 0);
+                earsDropped = 0;
+                earsLogAt = clock.Elapsed.TotalSeconds;
+                requests.Clear(); decoded = whole = 0; softWords = loudWords = false;
+                heard = "";
+                entered.Reset();
+                CheckEars(clock.Elapsed.TotalSeconds);
+                mainframe.VoiceNote(LocalListening, false);
+            };
+            try
+            {
+                preferences.Quiet = preferences.Silent = true;
+                preferences.CallDiscordOff = false;
+                preferences.Typing = 2;
+                Brain.Keeping = false;
+                Brain.TranscriptPath = Brain.MemoryPath = null;
+                Brain.LogPath = Path.Combine(output, "call-noise-log.txt");
+                File.WriteAllText(Brain.LogPath, "");
+                Security.Load("1111111000");
+                job = null; working = null; agent = null; dictation = null;
+                transcribing = false;
+                CloseTalk();
+                Think = null;
+                Speak = FreeSpeak = delegate { return null; };
+                brain.Model = "call-noise-check"; brain.OwnSteps = false;
+                brain.Remote = new Cloud(0, "call-noise-check", FakeServer(new[] { LocalReply(answered), LocalReply(answered), LocalReply(answered), LocalReply(answered) }, requests, out fake));
+                Hearing.Run = delegate(short[] samples)
+                {
+                    entered.Set();
+                    slow.WaitOne(5000);
+                    int marked = 0, peak = 0;
+                    foreach (short sample in samples) { int level = Math.Abs((int)sample); peak = Math.Max(peak, level); if (level > 10000) marked++; }
+                    Interlocked.Increment(ref decoded);
+                    if (marked == markerCount) { Interlocked.Increment(ref whole); return said; }
+                    if (softWords && peak >= 650 && peak < 800) return softSaid;
+                    return loudWords && peak >= 19000 ? loudSaid : "";
+                };
+
+                open(true, false);
+                int beforeNotice = earsNotice;
+                slow.Reset();
+                for (int at = 0; at < 150; at++) feed(hush, at >= 145 ? marker[at % 2] : game(at));
+                wait(delegate { return entered.WaitOne(0); });
+                lock (waking) if (!carrying || utterance == null || earsShut) throw new Exception("Transcribing dropped the start of a carried call line.");
+                for (int at = 150; at < 400; at++) feed(hush, at < 180 ? marker[at % 2] : game(at));
+                lock (waking) if (heldLine == null || heldCall == null || !heldUnbroken) throw new Exception("A second cut did not wait with its call sound and unbroken flag.");
+                if (reply != null || earsNotice != beforeNotice) throw new Exception("The game said something before her ears made words.");
+                slow.Set();
+                wait(delegate { return !transcribing && reply == answered; });
+                if (requests.Count != 1 || !requests[0].Contains(said) || heard != said || whole != 1 || earsNotice != beforeNotice || noiseHold) throw new Exception("The friend's line across the cut did not reach her once and whole.");
+                checks.Add("PASS on a call with Listen for Capri off, a friend's whole line across the 15 second cut reaches her brain once over 40 seconds of game sound, even while the first piece waits for words; her ears never hold and say no ears note");
+
+                callEars.Add(new short[Ears.Chunk * 5], Ears.Chunk * 5);
+                Listen(hush);
+                double loggedAt = clock.Elapsed.TotalSeconds;
+                LogEars(loggedAt, true);
+                string logged = File.ReadAllText(Brain.LogPath);
+                if (!logged.Contains("Her ears on a call: 1 line with words, 1 with none, 2 cut after 15 s without a pause, 0.3 s of the call's sound dropped.") || logged.Contains(said) || logged.Contains(softSaid) || logged.Contains(loudSaid) || callEars.TakeDropped() != 0) throw new Exception("Her ears log lost its counts, repeated dropped sound or kept words: " + logged);
+                int loggedLines = File.ReadAllLines(Brain.LogPath).Length;
+                HeardLocally(chatTicket, asking, "", null, null, -1, true);
+                LogEars(loggedAt + 59, false);
+                if (File.ReadAllLines(Brain.LogPath).Length != loggedLines) throw new Exception("Her ears logged twice within a minute.");
+                LogEars(loggedAt + 61, false);
+                if (File.ReadAllLines(Brain.LogPath).Length != loggedLines + 1) throw new Exception("Her ears did not log pending counts after a minute.");
+                LogEars(loggedAt + 125, false);
+                if (File.ReadAllLines(Brain.LogPath).Length != loggedLines + 1) throw new Exception("Her ears logged a minute with nothing in it.");
+
+                Action<int> drop = delegate(int chunks)
+                {
+                    callEars.Stop();
+                    int samples = Ears.Chunk * (chunks + 2);
+                    callEars.Add(new short[samples], samples);
+                    double mine, theirs;
+                    callEars.Mix(hush, out mine, out theirs);
+                };
+                drop(2);
+                LogEars(loggedAt + 190, false);
+                if (File.ReadAllLines(Brain.LogPath).Length != loggedLines + 1 || earsDropped != Ears.Chunk * 2 || callEars.TakeDropped() != 0) throw new Exception("A small drop of call sound wrote a log line or was lost.");
+                HeardLocally(chatTicket, asking, "", null, null, -1, true);
+                LogEars(loggedAt + 255, false);
+                string[] logLines = File.ReadAllLines(Brain.LogPath);
+                if (logLines.Length != loggedLines + 2 || !logLines[logLines.Length - 1].Contains("Her ears on a call: 0 lines with words, 1 with none, 0.2 s of the call's sound dropped.") || earsDropped != 0) throw new Exception("A wordless line lost the call sound waiting for its log.");
+                drop(10);
+                LogEars(loggedAt + 320, false);
+                logLines = File.ReadAllLines(Brain.LogPath);
+                if (logLines.Length != loggedLines + 3 || !logLines[logLines.Length - 1].Contains("Her ears on a call: 0 lines with words, 0 with none, 1.0 s of the call's sound dropped.") || earsDropped != 0) throw new Exception("A full second of dropped call sound did not log once.");
+                drop(2);
+                LogEars(loggedAt + 385, false);
+                if (File.ReadAllLines(Brain.LogPath).Length != loggedLines + 3 || earsDropped != Ears.Chunk * 2) throw new Exception("A small drop of call sound did not wait before closing.");
+                LogEars(loggedAt + 386, true);
+                if (File.ReadAllLines(Brain.LogPath).Length != loggedLines + 3 || earsDropped != 0) throw new Exception("Closing her ears logged or kept a small drop of call sound.");
+                HeardLocally(chatTicket, asking, "", null, null, -1, true);
+                LogEars(loggedAt + 450, false);
+                logLines = File.ReadAllLines(Brain.LogPath);
+                if (logLines.Length != loggedLines + 4 || !logLines[logLines.Length - 1].Contains("Her ears on a call: 0 lines with words, 1 with none, 0.0 s of the call's sound dropped.")) throw new Exception("A later ears line kept dropped sound from closed ears.");
+                checks.Add("PASS her log's ears line can't fill her log on a quiet call: under a second of dropped call sound waits for the next line, a full second logs on its own, and closing her ears forgets a small drop");
+
+                open(true, false);
+                ChooseCallApp("Discord");
+                int changedAsk = asking, changedNotice = earsNotice, oldVersion = callSession.Generation;
+                int changedWords = Volatile.Read(ref earsWords), changedEmpty = Volatile.Read(ref earsEmpty);
+                string changedReply = reply;
+                loudWords = true;
+                slow.Reset();
+                for (int at = 0; at < 150; at++) feed(hush, at < 8 ? marker[at % 2] : game(at));
+                wait(delegate { return entered.WaitOne(0); });
+                for (int at = 150; at < 300; at++) feed(hush, game(at));
+                lock (waking) if (!transcribing || heldLine == null || heldCall == null || !heldUnbroken) throw new Exception("The call app check had no line waiting behind slow words.");
+                if (mainframe.VoiceNoteText != "Hearing you...") throw new Exception("The call app check's line was not turning into words: " + mainframe.VoiceNoteText);
+                ChooseCallApp("Zoom");
+                lock (waking) if (heldLine != null || heldCall != null || heldUnbroken || utterance != null || carrying) throw new Exception("Changing the call app kept old call sound.");
+                Stopwatch released = Stopwatch.StartNew();
+                slow.Set();
+                while (transcribing && released.ElapsedMilliseconds < 750) { Application.DoEvents(); Thread.Sleep(5); }
+                if (transcribing || released.ElapsedMilliseconds >= 750 || decoded != 1 || earsShut || nameOver || requests.Count != 0 || asking != changedAsk || reply != changedReply || earsNotice != changedNotice || mainframe.VoiceNoteText != LocalListening || mainframe.VoiceNoteWarning || Volatile.Read(ref earsWords) != changedWords || Volatile.Read(ref earsEmpty) != changedEmpty) throw new Exception("Old call words did not let her listen again quietly after an app change: " + released.ElapsedMilliseconds + " ms, " + decoded + " pieces, " + mainframe.VoiceNoteText);
+                transcribing = nameOver = true;
+                mainframe.VoiceNote("Hearing you...", false);
+                HeardLocally(chatTicket - 1, asking, loudSaid, null, null, oldVersion);
+                Transcribe(new[] { hit, bang, hit, bang }, chatTicket - 1, asking, WakeLevel, null, oldVersion);
+                if (!transcribing || !nameOver || mainframe.VoiceNoteText != "Hearing you...") throw new Exception("Old call words released another chat's line.");
+                Transcribe(new[] { hit, bang, hit, bang }, chatTicket, asking, WakeLevel, null, oldVersion);
+                if (transcribing || nameOver || earsShut || requests.Count != 0 || asking != changedAsk || reply != changedReply || earsNotice != changedNotice || mainframe.VoiceNoteText != LocalListening || mainframe.VoiceNoteWarning || Volatile.Read(ref earsWords) != changedWords || Volatile.Read(ref earsEmpty) != changedEmpty) throw new Exception("Queued old call sound did not let her listen again quietly.");
+                for (int at = 145; at < 180; at++) feed(hush, marker[at % 2]);
+                for (int at = 0; at < 9; at++) feed(hush, hush);
+                wait(delegate { return !transcribing && reply == answered; });
+                if (requests.Count != 1 || !requests[0].Contains(said) || heard != said || whole != 1 || decoded != 2 || earsNotice != changedNotice) throw new Exception("A fresh call line after the app change did not reach her once.");
+                open(true, false);
+                slow.Reset();
+                lock (waking)
+                {
+                    transcribing = true; heldLine = new[] { hit, bang, hit, bang }; heldCall = null; heldUnbroken = true;
+                    heldTicket = chatTicket; heldRequest = asking; heldWake = WakeLevel; heldCallVersion = callSession.Generation;
+                }
+                NextLine();
+                lock (waking) if (!transcribing || heldLine != null || heldCall != null || heldUnbroken) throw new Exception("A waiting line did not take its turn alone.");
+                wait(delegate { return entered.WaitOne(0); });
+                slow.Set();
+                wait(delegate { return !transcribing; });
+                if (decoded != 1 || requests.Count != 0) throw new Exception("The waiting line did not finish alone.");
+                transcribing = true;
+                NextLine();
+                if (transcribing) throw new Exception("Her ears stayed busy with no waiting line.");
+                checks.Add("PASS changing the call app while a line turns into words drops the old call's sound and she listens again at once, not after the 30 second watchdog; another chat's line is left alone, a fresh line reaches her brain once, and waiting lines turn into words one at a time");
+
+                foreach (bool named in new[] { false, true })
+                {
+                    open(true, named);
+                    int quietAsked = asking, quietNotice = earsNotice, quietMisses = hearingMisses;
+                    string quietReply = reply;
+                    slow.Reset();
+                    for (int at = 0; at < 150; at++) feed(hush, game(at));
+                    wait(delegate { return entered.WaitOne(0); });
+                    for (int at = 150; at < 400; at++) feed(hush, game(at));
+                    for (int at = 0; at < 9; at++) feed(hush, hush);
+                    lock (waking) if (heldLine == null || !heldUnbroken || carrying) throw new Exception("The paused tail did not wait as an unbroken call piece.");
+                    slow.Set();
+                    wait(delegate { return !transcribing; });
+                    if (decoded != 2 || requests.Count != 0 || asking != quietAsked || reply != quietReply || earsNotice != quietNotice || hearingMisses != quietMisses || hearingResultProblem != null || noiseHold || earsShut || !local || !earsReady || mainframe.VoiceNoteText != LocalListening || mainframe.VoiceNoteWarning) throw new Exception("Game sound alone reached her brain, said something or shut her ears.");
+                    for (int at = 0; at < 8; at++) feed(hush, game(at));
+                    for (int at = 0; at < 9; at++) feed(hush, hush);
+                    wait(delegate { return !transcribing; });
+                    if (requests.Count != 0 || asking != quietAsked || reply != quietReply || earsNotice != quietNotice || hearingMisses != quietMisses || hearingResultProblem != null) throw new Exception("A paused call line with sound and no words said something or counted as a hearing failure.");
+                }
+                checks.Add("PASS 40 seconds of game sound alone on a call says nothing and leaves her listening with Listen for Capri on or off; its paused tail and a short call line with no words do not count as hearing failures");
+
+                open(true, false);
+                softWords = loudWords = true;
+                for (int at = 0; at < 8; at++) feed(marker[at % 2], hush);
+                for (int at = 0; at < 9; at++) feed(hush, hush);
+                wait(delegate { return !transcribing && reply == answered; });
+                if (requests.Count != 1) throw new Exception("The loud user line did not reach the call.");
+                CloseTalk();
+                double loudAt, loudLevel;
+                lock (waking) { loudAt = lineAt; loudLevel = lineLevel; }
+                if (VoiceLevel(soft) <= QuietWake || VoiceLevel(softer) >= WakeLevel) throw new Exception("The quiet call check used the wrong loudness.");
+                for (int at = 0; at < 8; at++) feed(hush, at % 2 == 0 ? soft : softer);
+                for (int at = 0; at < 9; at++) feed(hush, hush);
+                wait(delegate { return !transcribing && reply == answered; });
+                lock (waking) if (lineAt != loudAt || lineLevel != loudLevel) throw new Exception("The quiet call voice moved the user's loudness reference.");
+                if (requests.Count != 2 || !requests[1].Contains(softSaid) || heard != softSaid) throw new Exception("The quiet friend within a minute of the loud user was dropped.");
+                open(false, false);
+                softWords = true;
+                lock (waking) { lineAt = loudAt; lineLevel = loudLevel; }
+                int softAsked = asking;
+                for (int at = 0; at < 8; at++) feed(at % 2 == 0 ? soft : softer, hush);
+                for (int at = 0; at < 9; at++) feed(hush, hush);
+                Application.DoEvents();
+                if (decoded != 0 || requests.Count != 0 || asking != softAsked || reply != null || transcribing) throw new Exception("The same quiet mic sound off a call stopped being background.");
+                CallChunk fromCall = new CallChunk(hush, soft);
+                if (CallTranscript.HasSound(new[] { fromCall, fromCall }) || !CallTranscript.HasSound(new[] { fromCall, fromCall, fromCall })) throw new Exception("Call sound did not need three active chunks.");
+                softWords = false;
+                CallTranscript emptyCall = CallTranscript.Read(new[] { fromCall, fromCall, fromCall });
+                if (!emptyCall.CallSound || emptyCall.Text.Length != 0) throw new Exception("A call transcript lost its sound when it made no words.");
+                checks.Add("PASS a quiet friend on the call reaches her within a minute of a loud user without changing the user's loudness reference; the same quiet mic sound off a call is still dropped, and call sound needs three active chunks");
+
+                open(false, true);
+                Think = delegate { Interlocked.Increment(ref nameReached); return answered; };
+                nameChatUntil = clock.Elapsed.TotalSeconds + 15;
+                mainframe.VoiceNote(LocalListening, false);
+                double namedUntil = nameChatUntil;
+                int namedAsked = asking, namedNotice = earsNotice;
+                slow.Reset();
+                for (int at = 0; at < 150; at++) feed(at >= 145 ? marker[at % 2] : game(at), hush);
+                wait(delegate { return entered.WaitOne(0); });
+                for (int at = 150; at < 180; at++) feed(marker[at % 2], hush);
+                for (int at = 0; at < 9; at++) feed(hush, hush);
+                lock (waking) if (heldLine == null || !heldUnbroken || carrying) throw new Exception("The tail of her name's line lost its unbroken flag while it waited.");
+                slow.Set();
+                wait(delegate { return !transcribing; });
+                if (whole != 1 || decoded != 2 || nameReached != 0 || asking != namedAsked || reply != null || earsNotice != namedNotice || nameChatUntil != namedUntil || mainframe.VoiceNoteWarning) throw new Exception("A carried tail without her name reached her or held her name's chat open.");
+                feed(hit, hush); feed(bang, hush);
+                lock (waking) if (utterance == null || carrying) throw new Exception("A new line from preroll kept the cut's flag.");
+                checks.Add("PASS the paused tail of an unbroken name-chat line still needs Capri after waiting for transcription, says nothing without her name and does not hold the chat open; a new line clears the flag");
+
+                open(true, false);
+                Transcribe(new[] { hit, hit, hit, hit, hit, hit, hit, hit }, chatTicket, asking, WakeLevel, null, -1, true);
+                if (reply != null || earsNotice != namedNotice) throw new Exception("An unbroken piece rejected before transcription said it had no words.");
+                transcribing = true;
+                lock (waking) { utterance = new List<short[]> { hit, bang }; carrying = true; }
+                CheckEars(clock.Elapsed.TotalSeconds);
+                lock (waking) if (earsShut || utterance == null || !carrying) throw new Exception("Transcribing alone shut a carried line.");
+                for (int reason = 0; reason < 6; reason++)
+                {
+                    local = reason != 5; earsReady = reason != 0; ears.Muted = reason == 1;
+                    talkState = reason == 2 ? TalkState.Thinking : TalkState.Off;
+                    voiceUntil = reason == 3 ? clock.Elapsed.TotalSeconds + 10 : 0;
+                    dictation = reason == 4 ? new StandInDictation() : null;
+                    lock (waking) { utterance = new List<short[]> { hit, bang }; carrying = true; }
+                    CheckEars(clock.Elapsed.TotalSeconds);
+                    Gather(hush);
+                    lock (waking) if (utterance != null || carrying) throw new Exception("A carried line survived shut ears: " + reason + ".");
+                }
+                local = earsReady = true; ears.Muted = transcribing = false; talkState = TalkState.Off; voiceUntil = 0; dictation = null;
+                checks.Add("PASS transcribing alone keeps a carried line, while not ready, mute, thinking, her voice, Windows speech and closed chat still discard it; an unbroken piece rejected before transcription says nothing");
+
+                open(false, false);
+                int heldAsked = asking, heldNotice = earsNotice;
+                string heldReply = reply;
+                for (int at = 0; at < 160; at++) feed(game(at + 2), hush);
+                Application.DoEvents();
+                if (!noiseHold || asking != heldAsked || reply != heldReply || earsNotice != heldNotice || mainframe.VoiceNoteText != WaitingForPause || mainframe.VoiceNoteWarning) throw new Exception("Free chat did not hold silently with its VOICE note.");
+                for (int at = 0; at < 8; at++) feed(hush, hush);
+                if (!noiseHold) throw new Exception("The silent hold ended before nine quiet chunks.");
+                feed(hush, hush);
+                Application.DoEvents();
+                if (noiseHold || mainframe.VoiceNoteText != LocalListening || asking != heldAsked || reply != heldReply || earsNotice != heldNotice) throw new Exception("Nine quiet chunks did not end the silent hold and restore listening.");
+                for (int at = 0; at < 160; at++) feed(game(at + 2), hush);
+                Application.DoEvents();
+                mainframe.VoiceNote("Another mic note.", false);
+                for (int at = 0; at < 9; at++) feed(hush, hush);
+                Application.DoEvents();
+                if (noiseHold || mainframe.VoiceNoteText != "Another mic note.") throw new Exception("The end of a hold replaced a newer VOICE note.");
+                StopChat();
+                logged = File.ReadAllText(Brain.LogPath);
+                if (!logged.Contains("Her ears: 0 lines with words, 0 with none, 2 waits for a pause after 15 s of sound.") || logged.Contains(said) || logged.Contains(softSaid) || logged.Contains(loudSaid)) throw new Exception("Closing her ears lost the pending waits or logged line words.");
+                checks.Add("PASS free chat without Listen for Capri holds after 15 seconds and says nothing, nine quiet chunks restore listening, and a newer VOICE note stays; closing her ears writes pending counts, once a minute stays quiet without counts, and her log has no line words");
+            }
+            finally
+            {
+                slow.Set();
+                Stopwatch waited = Stopwatch.StartNew();
+                while (transcribing && waited.ElapsedMilliseconds < 5000) { Application.DoEvents(); Thread.Sleep(5); }
+                CloseTalk();
+                if (fake != null) fake.Stop();
+                callEars.Stop();
+                callEars.TakeDropped();
+                callSession.Change(callWas);
+                brain.Remote = remoteWas; brain.Model = modelWas; brain.OwnSteps = stepsWas;
+                Brain.Keeping = keepingWas; Brain.TranscriptPath = transcriptWas; Brain.MemoryPath = memoryWas; Brain.LogPath = logWas;
+                preferences.CallMode = savedCallWas; preferences.ListenCapri = listenWas; preferences.Quiet = quietWas; preferences.Silent = silentWas; preferences.CallDiscordOff = discordWas; preferences.Typing = typingWas;
+                CallApps.Restore(appsWas, lastWas);
+                preferences.CallApp = appWas; preferences.CallAppName = appNameWas; CallApps.Choose(appWas, appNameWas);
+                preferences.CallAppBefore = beforeWas; preferences.CallAppNameBefore = beforeNameWas;
+                Hearing.Run = hearingWas; Think = thinkWas; Speak = speakWas; FreeSpeak = freeSpeakWas; Hearing.Own = ownWas;
+                Security.Load(securityWas, wakeWas);
+                job = jobWas; working = workWas; agent = agentWas; dictation = dictationWas;
+                chatting = chatWas; local = localWas; earsReady = readyWas; earsShut = shutWas; ears.Muted = mutedWas; pushing = pushWas; transcribing = transcribeWas; transcribingAt = transcribeAtWas; nameOver = nameWas;
+                asking = askWas; escAsk = escWas; chatTicket = ticketWas; earsNotice = noticeWas; earsWarned = warnedWas;
+                voiceUntil = untilWas; nameChatUntil = nameUntilWas; lineBegan = beganWas; talkState = talkWas; reply = replyWas; heard = heardWas; speech = speechWas;
+                hearingLoud = loudWas; hearingMisses = missesWas; hearingResultProblem = resultWas;
+                callAnswer = answerWas; callUser = userWas; callUserVersion = userVersionWas; callHeardVersion = heardVersionWas; callAnswers = answersWas; callCounted = countedWas;
+                callWho = whoWas; callSaid = saidWas; callSaidAt = saidAtWas; callCaptionAt = captionAtWas; callCaptionRun = captionWas;
+                callCaptions.Clear(); foreach (CallPart part in captionsWas) callCaptions.Enqueue(part);
+                pushed = pushLineWas; pushedCall = pushCallWas; pill.ListenForName = pillNameWas;
+                lock (waking)
+                {
+                    utterance = utteranceWas; carrying = carryingWas; heldLine = heldWas; heldCall = heldCallWas; heldUnbroken = unbrokenWas;
+                    preroll.Clear(); preroll.AddRange(prerollWas); callAudio.Clear(); callAudio.AddRange(audioWas);
+                    loudRun = loudRunWas; quietRun = quietRunWas; noiseHold = holdWas; room = roomWas; lineAt = lineAtWas; lineLevel = lineLevelWas;
+                    heldWake = heldWakeWas; heldTicket = heldTicketWas; heldRequest = heldRequestWas; heldCallVersion = heldVersionWas;
+                }
+                Interlocked.Exchange(ref earsWords, wordsWas); Interlocked.Exchange(ref earsEmpty, emptyWas); Interlocked.Exchange(ref earsCuts, cutsWas); Interlocked.Exchange(ref earsWaits, waitsWas); Interlocked.Exchange(ref earsLogCall, logCallWas); earsDropped = droppedWas; earsLogAt = logAtWas;
+                SavePreferences(); mainframe.ShowCallApp();
+                mainframe.VoiceNote(noteWas, noteWarningWas);
             }
         }
 
@@ -25781,10 +26850,12 @@ namespace CapriDesktop
                 working = null;
                 preferences.ListenCapri = false;
                 reopen();
+                int heldAsked = asking, heldNotice = earsNotice;
+                string heldReply = reply;
                 dig(160);
                 pump(delegate { return false; }, 300);
-                if (!noiseHold) throw new Exception("Free voice chat stopped holding for a pause after 15 seconds of sound.");
-                checks.Add("PASS free voice chat without Listen for Capri still takes 15 seconds without a pause as the room and holds for a pause");
+                if (!noiseHold || asking != heldAsked || earsNotice != heldNotice || reply != heldReply) throw new Exception("Free voice chat stopped holding for a pause after 15 seconds of sound, or said something.");
+                checks.Add("PASS free voice chat without Listen for Capri still takes 15 seconds without a pause as the room, holds for a pause and says nothing");
             }
             finally
             {
@@ -26835,6 +27906,7 @@ namespace CapriDesktop
             Section(checks, "SmokeReactQuick", delegate { ReactCheck(checks, SmokeReactQuick); });
             Section(checks, "SmokeReactFeed", delegate { ReactCheck(checks, SmokeReactFeed); });
             Section(checks, "SmokeReactFade", delegate { ReactCheck(checks, SmokeReactFade); });
+            Section(checks, "SmokeReactDraw", delegate { ReactCheck(checks, SmokeReactDraw); });
             Section(checks, "SmokeReactMoods", delegate { ReactCheck(checks, SmokeReactMoods); });
             Section(checks, "SmokeReactWritten", delegate { ReactCheck(checks, SmokeReactWritten); });
             Section(checks, "SmokeReactBrain", delegate { ReactCheck(checks, SmokeReactBrain); });
@@ -27107,6 +28179,98 @@ namespace CapriDesktop
             feed.Step();
             ReactMust(feed.Count == 0 && !feed.Visible && feed.Area.IsEmpty, "The feed didn't fade away: " + feed.Count + " left");
             checks.Add("PASS live reactions fade after 4 s, the oldest first, and the feed goes once they have");
+        }
+
+        // A reaction that can't be drawn still runs out after its 4 s, and a feed whose timer stopped clears itself on the next line.
+        private void SmokeReactDraw(System.Collections.Generic.List<string> checks, ReactRig rig)
+        {
+            Action<IntPtr, Bitmap, Point> layerWas = feed.Layer;
+            bool motionWas = feed.Motion;
+            string logWas = Brain.LogPath;
+            string folder = Path.Combine(Path.GetDirectoryName(logWas), "reaction-draw");
+            Directory.CreateDirectory(folder);
+            string log = Path.Combine(folder, "errors.txt");
+            System.Windows.Forms.Timer timer = (System.Windows.Forms.Timer)typeof(ReactionFeed).GetField("ticks", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(feed);
+            InvalidOperationException fault = new InvalidOperationException("test reaction draw");
+            Action<Action> fails = delegate(Action attempt)
+            {
+                try { attempt(); }
+                catch (InvalidOperationException error) { if (error == fault) return; throw; }
+                throw new Exception("A reaction draw failure was swallowed.");
+            };
+            try
+            {
+                feed.Motion = false;
+                feed.Place(rig.GameArea);
+                Bitmap rejected = null;
+                feed.Layer = delegate(IntPtr window, Bitmap image, Point at) { rejected = image; throw fault; };
+                fails(delegate { feed.Add("First line.", false); });
+                if (feed.Count != 1 || feed.Visible || !feed.Area.IsEmpty || !feed.Ticking || timer.Interval != 30) throw new Exception("A failed first reaction draw left its feed visible or its timer asleep.");
+                bool disposed = false;
+                try { rejected.GetPixel(0, 0); } catch (ArgumentException) { disposed = true; }
+                if (!disposed) throw new Exception("A failed reaction draw kept its canvas.");
+                rig.Now += Reactions.Stay - 1;
+                fails(delegate { feed.Step(); });
+                if (feed.Count != 1 || !feed.Ticking || timer.Interval != 30) throw new Exception("A failed reaction step stopped retrying before its line expired.");
+                rig.Now++;
+                feed.Step();
+                if (feed.Count != 0 || feed.Visible || feed.Ticking || !feed.Area.IsEmpty) throw new Exception("A reaction whose drawing kept failing stayed past four seconds.");
+                checks.Add("PASS a failed first reaction draw keeps retrying, frees its canvas and expires at four seconds with the feed hidden and empty");
+
+                fails(delegate { feed.Add("Try again.", false); });
+                rig.Now += 250;
+                feed.Layer = layerWas;
+                feed.Step();
+                if (!feed.Visible || !feed.Ticking || timer.Interval <= 30 || feed.Area.IsEmpty) throw new Exception("A reaction draw did not recover or kept its failed retry rate.");
+                feed.Layer = delegate { throw fault; };
+                fails(delegate { feed.Step(); });
+                if (feed.Visible || !feed.Ticking || timer.Interval != 30 || !feed.Area.IsEmpty) throw new Exception("A failed reaction step left its old frame up or lost its retry.");
+                feed.Layer = layerWas;
+                feed.Step();
+                feed.Layer = delegate { throw fault; };
+                Rectangle moved = rig.GameArea;
+                moved.Width--;
+                fails(delegate { feed.Place(moved); });
+                if (feed.Visible || !feed.Ticking || timer.Interval != 30) throw new Exception("A failed reaction move lost its retry.");
+                feed.Layer = layerWas;
+                feed.Step();
+                if (!feed.Visible || timer.Interval <= 30) throw new Exception("A reaction did not return after a failed move.");
+                feed.Clear();
+                checks.Add("PASS reaction draws recover on the next tick, hide failed frames and retry failed moves at 30 ms");
+
+                Brain.LogPath = log;
+                File.WriteAllText(log, "");
+                feed.Add("Just late.", false);
+                timer.Stop();
+                rig.Now += Reactions.Stay + 900;
+                feed.Add("Within grace.", false);
+                if (feed.Count != 1 || File.ReadAllLines(log).Length != 0) throw new Exception("A reaction under a second late stayed or was logged as a timer stall.");
+                feed.Clear();
+                feed.Add("Old one.", false);
+                feed.Add("Old two.", true);
+                timer.Stop();
+                if (feed.Ticking) throw new Exception("The stalled reaction check left its timer running.");
+                rig.Now += Reactions.Stay + 2000;
+                feed.Add("Fresh line.", false);
+                string[] logged = File.ReadAllLines(log);
+                if (feed.Count != 1 || feed.Texts[0] != "Fresh line." || feed.Slots[0] != 0 || !feed.Ticking || logged.Length != 1 || !logged[0].Contains(" | reactions | - | ") || !logged[0].Contains("A line stayed up 2.0 s past its time. The feed's timer didn't run.")) throw new Exception("A new reaction kept expired lines or lost the stalled timer's log.");
+                timer.Stop();
+                rig.Now += Reactions.Stay + 2000;
+                feed.Add("Another line.", false);
+                if (feed.Count != 1 || File.ReadAllLines(log).Length != 1) throw new Exception("A stalled reaction timer logged twice within a minute.");
+                timer.Stop();
+                rig.Now += 60000;
+                feed.Add("Later line.", false);
+                if (feed.Count != 1 || File.ReadAllLines(log).Length != 2) throw new Exception("A later reaction timer stall was not logged.");
+                checks.Add("PASS a new reaction drops every expired line from a stopped timer and errors.txt records the delay at most once a minute");
+            }
+            finally
+            {
+                feed.Layer = layerWas;
+                feed.Motion = motionWas;
+                Brain.LogPath = logWas;
+                feed.Clear();
+            }
         }
 
         // Her brain is asked in the mood the run of the game has put her in: each kind of moment comes with three of its own lines
@@ -27810,6 +28974,7 @@ namespace CapriDesktop
                 LeavePanel(true);
                 outro = null;
                 homeTrip = null;
+                ribbons.Stop();
             }
         }
 
@@ -31530,25 +32695,15 @@ namespace CapriDesktop
                 }
                 if (SelfKnow.Matching("what's new in the latest update notes?") == null || !SelfKnow.Matching("what did this update add to call mode?").Contains(News.Facts)) throw new Exception("Update help missed a question that names the update.");
                 foreach (string fact in new[] {
+                    "Teleporting:",
+                    "Icon rampage:",
+                    "Game voice chat:",
+                    "Bubbles in games:",
+                    "Desktop icons:",
+                    "Installer:",
                     "CAPRI > Remote",
-                    "Her tools:",
-                    "Local jobs:",
-                    "Voice chat:",
-                    "BRAIN > Thinking",
-                    "BRAIN > Code/Husk Mode",
-                    "Browse mods",
-                    "Update mods",
-                    "Mod messages:",
-                    "skins can carry both stands",
-                    "Stacking skins:",
-                    "HER MODS > Use tools your code mods added",
-                    "HABITS > Start with Windows",
-                    "YOU > File editor",
-                    "Game keys:",
-                    "Hide in full screen",
-                    "Windows 10 ears:",
-                    "every 15 seconds",
-                    "From 0.8.6.1:"
+                    "From 0.8.7:",
+                    "always been checked for malware"
                 })
                     if (!News.Facts.Contains(fact)) throw new Exception("Windows update help missed " + fact);
                 CloseTalk(); Think = null;
@@ -34131,6 +35286,7 @@ namespace CapriDesktop
             Section(checks, "SmokeCallMode", delegate { SmokeCallMode(checks, Path.Combine(output, "call-mode")); });
             Section(checks, "SmokeCallApps", delegate { SmokeCallApps(checks); });
             Section(checks, "SmokeCapriCodes", delegate { SmokeCapriCodes(checks); });
+            Section(checks, "SmokeRibbons", delegate { SmokeRibbons(checks, output); });
             Section(checks, "SmokeCallErrands", delegate { SmokeCallErrands(checks); });
             Section(checks, "SmokeCallFriends", delegate { SmokeCallFriends(checks); });
             Section(checks, "SmokeCallModeUi", delegate { Directory.CreateDirectory(Path.Combine(output, "call-mode")); SmokeCallModeUi(checks, Path.Combine(output, "call-mode")); });
@@ -34147,6 +35303,7 @@ namespace CapriDesktop
             Section(checks, "SmokeChaosScreen", delegate { SmokeChaosScreen(checks); });
             Section(checks, "SmokeListen", delegate { SmokeListen(checks); });
             Section(checks, "SmokeTalkLogic", delegate { SmokeTalkLogic(checks); });
+            Section(checks, "SmokeOverlayDraw", delegate { SmokeOverlayDraw(checks); });
             Section(checks, "SmokeTalkSettings", delegate { SmokeTalkSettings(checks); });
             Section(checks, "SmokeTalkBrain", delegate { SmokeTalkBrain(checks, Path.Combine(output, "talk-checks")); });
             Section(checks, "SmokeClipToggle", delegate { SmokeClipToggle(checks); });
@@ -34163,6 +35320,7 @@ namespace CapriDesktop
             Section(checks, "SmokeShownToYou", delegate { SmokeShownToYou(checks); });
             Section(checks, "SmokeJobPanelFixes", delegate { SmokeJobPanelFixes(checks); });
             Section(checks, "SmokeCallHearing", delegate { SmokeCallHearing(checks); });
+            Section(checks, "SmokeCallNoise", delegate { SmokeCallNoise(checks, output); });
             Section(checks, "SmokeRateLimits", delegate { SmokeRateLimits(checks); });
             Section(checks, "SmokeVoiceCredit", delegate { SmokeVoiceCredit(checks, output); });
             Section(checks, "SmokeThinking", delegate { SmokeThinking(checks); });
@@ -46304,6 +47462,7 @@ namespace CapriDesktop
                             bool cleaned = false, emptyKept = false;
                             try
                             {
+                                if (!string.Equals(tarPath, Path.Combine(Environment.SystemDirectory, "tar.exe"), StringComparison.OrdinalIgnoreCase)) throw new Exception("The smoke tar isn't Windows tar.");
                                 if (systemBzip != (Environment.OSVersion.Version.Build >= 22000) || tarTimeout != 600000) throw new Exception("Her ears picked the wrong Windows tar bzip2 default, or changed its timeout.");
                                 LocalEars.SystemBzip = false;
                                 LocalEars.Untar(bunzipTar, bunzipInto);
@@ -46326,6 +47485,28 @@ namespace CapriDesktop
                                 LocalEars.TarPath = tarPath;
                                 LocalEars.StartTar = tarStart;
                                 checks.Add("PASS ears without tar.exe: a missing TarPath uses Bunzip and her tar reader, keeps the files unchanged and removes the plain archive and stale folder contents");
+                                string pipeTar = Path.Combine(bunzipRoot, "pipe check.tar"), pipeInto = Path.Combine(bunzipRoot, "pipe check");
+                                using (MemoryStream packed = new MemoryStream(bunzipPack))
+                                using (FileStream plain = new FileStream(pipeTar, FileMode.Create, FileAccess.Write)) Bunzip.Copy(packed, plain);
+                                Directory.CreateDirectory(pipeInto);
+                                using (SmokeJob pipeJob = new SmokeJob())
+                                using (Process pipe = Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--smoke-child pipes " + SmokeRun.Quote(pipeTar) + " " + SmokeRun.Quote(pipeInto + Path.DirectorySeparatorChar)) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true }))
+                                try
+                                {
+                                    pipeJob.Assign(pipe);
+                                    string pipeError = null, pipeOutput = null;
+                                    Thread errors = new Thread(delegate() { try { pipeError = pipe.StandardError.ReadToEnd(); } catch (IOException) { } catch (ObjectDisposedException) { } });
+                                    Thread outputPipe = new Thread(delegate() { try { pipeOutput = pipe.StandardOutput.ReadToEnd(); } catch (IOException) { } catch (ObjectDisposedException) { } });
+                                    errors.IsBackground = outputPipe.IsBackground = true;
+                                    errors.Start(); outputPipe.Start();
+                                    if (!pipe.WaitForExit(15000) || !errors.Join(2000) || !outputPipe.Join(2000)) throw new Exception("The smoke child's pipes did not finish.");
+                                    if (pipe.ExitCode != 0 || pipeError != new string('e', 131072) || pipeOutput != new string('o', 131072)
+                                        || shaOf(File.ReadAllBytes(Path.Combine(Path.Combine(pipeInto, "pack"), "tricky.bin"))) != shaOf(trickyBytes)) throw new Exception("The smoke child's pipes or paths changed.");
+                                }
+                                finally { pipeJob.Stop(); }
+                                File.Delete(pipeTar);
+                                Directory.Delete(pipeInto, true);
+                                checks.Add("PASS smoke child pipes: both streams carry 131072 characters; spaced paths and a trailing folder slash reach tar");
                                 foreach (string tarTest in new[] { "pipes", "failure", "start", "hang", "plain-hang", "plain-failure", "plain-empty", "plain-start" })
                                 {
                                     string tarInstallRoot = Path.Combine(bunzipRoot, "install");
@@ -46362,19 +47543,15 @@ namespace CapriDesktop
                                                 info.Arguments = tarTest == "plain-empty" ? "/d /c exit /b 3" : "/d /c echo tar test failed 1>&2 & exit /b 3";
                                                 return tarStart(info);
                                             }
-                                            string script;
-                                            if (tarTest == "pipes")
-                                                script = "[Console]::Error.Write(('e' * 131072)); [Console]::Out.Write(('o' * 131072)); & '" + info.FileName.Replace("'", "''") + "' -xf '" + Path.ChangeExtension(bunzipTar, null).Replace("'", "''") + "' -C '" + tarInto.Replace("'", "''") + "'; exit $LASTEXITCODE";
-                                            else
-                                                script = "$child = Start-Process -FilePath '" + Path.Combine(Environment.SystemDirectory, "ping.exe").Replace("'", "''") + "' -ArgumentList '-t 127.0.0.1' -WindowStyle Hidden -PassThru; [IO.File]::WriteAllText('" + tarChildFile.Replace("'", "''") + ".new', $child.Id.ToString()); [IO.File]::Move('" + tarChildFile.Replace("'", "''") + ".new', '" + tarChildFile.Replace("'", "''") + "'); while ($true) { [Threading.Thread]::Sleep(1000) }";
-                                            info.FileName = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
-                                            info.Arguments = "-NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script));
+                                            info.FileName = Application.ExecutablePath;
+                                            info.Arguments = tarTest == "pipes" ? "--smoke-child pipes " + SmokeRun.Quote(Path.ChangeExtension(bunzipTar, null)) + " " + SmokeRun.Quote(tarInto + Path.DirectorySeparatorChar)
+                                                : "--smoke-child hang " + SmokeRun.Quote(tarChildFile);
                                             Process fakeTar = tarStart(info);
                                             tarJob.Assign(fakeTar);
+                                            tarWatch = Process.GetProcessById(fakeTar.Id);
+                                            tarWatch.EnableRaisingEvents = true;
                                             if (tarTest != "pipes")
                                             {
-                                                tarWatch = Process.GetProcessById(fakeTar.Id);
-                                                tarWatch.EnableRaisingEvents = true;
                                                 Stopwatch ready = Stopwatch.StartNew();
                                                 while (!File.Exists(tarChildFile) && !fakeTar.HasExited && ready.ElapsedMilliseconds < 10000) Thread.Sleep(10);
                                                 if (!File.Exists(tarChildFile)) throw new Exception("The fake tar did not start its child.");
@@ -46407,7 +47584,8 @@ namespace CapriDesktop
                                                 throw new Exception("Tar did not unpack after " + tarTest + ": " + tarProblem);
                                         }
                                         if (tarCalls != (LocalEars.SystemBzip ? 2 : 1) || File.Exists(Path.Combine(bunzipRoot, "pack.tar"))) throw new Exception("Tar used the wrong path or left its plain archive after " + tarTest + ".");
-                                        if (tarWatch != null && (!tarWatch.WaitForExit(2000) || !tarChild.WaitForExit(2000) || tarWaited.ElapsedMilliseconds > tarLimit + 12000)) throw new Exception("Tar or its child survived the unpacking timeout.");
+                                        if (tarWatch != null && (!tarWatch.WaitForExit(2000) || (tarChild != null && !tarChild.WaitForExit(2000)) || tarWaited.ElapsedMilliseconds > tarLimit + 12000)) throw new Exception("Tar or its child survived the unpacking timeout.");
+                                        if (tarTest == "pipes" && (tarWatch.ExitCode != 0 || !File.Exists(tarPartial))) throw new Exception("The smoke child's tar needed a fallback.");
                                     }
                                     finally
                                     {
@@ -50471,12 +51649,15 @@ namespace CapriDesktop
 
         internal static void DrawLayered(IntPtr window, Bitmap bitmap, System.Drawing.Point location)
         {
-            IntPtr screen = GetDC(IntPtr.Zero);
-            IntPtr memory = CreateCompatibleDC(screen);
-            IntPtr nativeBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
-            IntPtr previous = SelectObject(memory, nativeBitmap);
+            // Everything is taken inside the try. Taken before it, a bitmap Windows couldn't make left two drawing contexts
+            // behind on every try, and a process only gets 10,000 drawing objects.
+            IntPtr screen = IntPtr.Zero, memory = IntPtr.Zero, nativeBitmap = IntPtr.Zero, previous = IntPtr.Zero;
             try
             {
+                screen = GetDC(IntPtr.Zero);
+                memory = CreateCompatibleDC(screen);
+                nativeBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
+                previous = SelectObject(memory, nativeBitmap);
                 Point destination = new Point(location.X, location.Y);
                 Point origin = new Point(0, 0);
                 Size size = new Size(bitmap.Width, bitmap.Height);
@@ -50485,10 +51666,10 @@ namespace CapriDesktop
             }
             finally
             {
-                SelectObject(memory, previous);
-                DeleteObject(nativeBitmap);
-                DeleteDC(memory);
-                ReleaseDC(IntPtr.Zero, screen);
+                if (previous != IntPtr.Zero) SelectObject(memory, previous);
+                if (nativeBitmap != IntPtr.Zero) DeleteObject(nativeBitmap);
+                if (memory != IntPtr.Zero) DeleteDC(memory);
+                if (screen != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screen);
             }
         }
     }

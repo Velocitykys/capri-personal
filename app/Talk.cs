@@ -610,6 +610,7 @@ namespace CapriDesktop
         internal bool ClickThrough;
         private Bitmap shown;
         internal bool Above = true;
+        internal Action<IntPtr, Bitmap, Point> Layer = Native.DrawLayered;
 
         internal Overlay(string name)
         {
@@ -646,8 +647,12 @@ namespace CapriDesktop
         {
             Rectangle target = new Rectangle(at, image.Size);
             if (Bounds != target) Bounds = target;
-            if (!Visible) Show();
-            Native.DrawLayered(Handle, image, at);
+            bool opened = !Visible;
+            if (opened) Show();
+            // A hidden window still holds the last picture it was given. If this one can't be drawn it goes away again, so
+            // the old one never comes back up in its place.
+            try { Layer(Handle, image, at); }
+            catch (Exception) { if (opened && Visible) Hide(); throw; }
             Bitmap old = shown;
             shown = image;
             if (old != null && old != image) old.Dispose();
@@ -1266,6 +1271,27 @@ namespace CapriDesktop
             return image;
         }
 
+        // The same bars, few, thin and faint, drawn straight onto someone else's picture: the light glitch that flickers behind
+        // the icons while she throws them around.
+        internal static void Light(Graphics graphics, Size size, double progress, int seed, int flicker)
+        {
+            Random pick = new Random(seed + flicker);
+            double fade = Math.Max(0, Math.Min(1, (1 - progress) / 0.65));
+            fade = fade * fade * (3 - 2 * fade);
+            int bars = (int)Math.Round((3 + pick.Next(4)) * (0.45 + 0.55 * fade));
+            for (int i = 0; i < bars; i++)
+            {
+                int tall = 1 + pick.Next(6), width = size.Width / 4 + pick.Next(Math.Max(1, size.Width * 3 / 4));
+                int x = pick.Next(Math.Max(1, size.Width - width)), y = pick.Next(Math.Max(1, size.Height - tall));
+                int kind = pick.Next(10);
+                int alpha = (int)((kind < 4 ? 180 + pick.Next(60) : 150 + pick.Next(100)) * fade * 0.4);
+                if (alpha <= 0) continue;
+                using (Brush brush = new SolidBrush(Color.FromArgb(alpha, kind < 4 ? Ink : kind < 8 ? Look.Red : Crimson))) graphics.FillRectangle(brush, x, y, width, tall);
+                if (pick.Next(3) == 0)
+                    using (Brush ghost = new SolidBrush(Color.FromArgb(alpha / 3, Look.Red))) graphics.FillRectangle(ghost, x + pick.Next(-size.Width / 16, size.Width / 16 + 1), y + tall + 1, width / 2, Math.Max(1, tall / 2));
+            }
+        }
+
         internal static void Tendrils(Bitmap image, Rectangle room, PointF middle, SizeF spread, float unit, double progress, int seed, int flicker)
         {
             room = Rectangle.Intersect(room, new Rectangle(Point.Empty, image.Size));
@@ -1730,11 +1756,12 @@ namespace CapriDesktop
             using (Brush flash = new SolidBrush(Color.FromArgb((int)(150 * Math.Min(1, wide / (30 * scale))), 255, 255, 255))) graphics.FillEllipse(flash, middle - w * 1.6f, lower - w * 0.35f, w * 3.2f, w * 0.7f);
         }
 
-        private static void Sliced(Graphics graphics, Bitmap self, Point at, double shown, double glitch, float scale, Random pick)
+        // Her picture in slices that slide apart, with a colour split either side. Her ribbons use it too, split in her own colours.
+        internal static void Sliced(Graphics graphics, Bitmap self, Point at, double shown, double glitch, float scale, Random pick, Color? one = null, Color? other = null)
         {
             using (ImageAttributes plain = Tint(Color.Empty, shown))
-            using (ImageAttributes green = Tint(Mint, shown * 0.6 * glitch))
-            using (ImageAttributes violet = Tint(Violet, shown * 0.6 * glitch))
+            using (ImageAttributes green = Tint(one ?? Mint, shown * 0.6 * glitch))
+            using (ImageAttributes violet = Tint(other ?? Violet, shown * 0.6 * glitch))
             {
                 float shift = (float)(4 * scale * glitch);
                 for (int top = 0; top < self.Height; )
@@ -1746,7 +1773,7 @@ namespace CapriDesktop
                     top += tall;
                 }
             }
-            Color[] bars = { Color.White, Mint, Look.Red, Violet };
+            Color[] bars = { Color.White, one ?? Mint, other ?? Look.Red, other ?? Violet };
             for (int i = 0, count = (int)Math.Round(5 * glitch); i < count; i++)
             {
                 int y = at.Y + (int)(self.Height * (0.1 + pick.NextDouble() * 0.8));
@@ -3124,7 +3151,15 @@ namespace CapriDesktop
                 image.Dispose();
                 image = broken;
             }
-            Present(image, at);
+            // A frame of her glitch is never what stays up when the next one can't be drawn (fushen, 10 Nov: her bubble sat torn
+            // over a game until she was restarted). A clean frame stays until its new words draw.
+            try { Present(image, at); }
+            catch (Exception)
+            {
+                image.Dispose();
+                if (!clean && Visible) Hide();
+                throw;
+            }
             clean = glitch == 0;
             lastCursor = cursor;
             lastState = State;
