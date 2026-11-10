@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -2815,7 +2815,7 @@ namespace CapriDesktop
                         SendDiscordScreenshot);
                     discordBridge.Autonomy = AutonomyBridge;
                     discordBridge.PcAction = DiscordPcAction;
-                    PcApproved = delegate(string pcHeldTask) { pcApprovedRun = true; System.Threading.ThreadPool.QueueUserWorkItem(delegate { string pcOutcome; try { pcOutcome = RunJob(pcHeldTask, pcHeldTask); PcDiary(pcHeldTask, pcOutcome); PcDiary(pcHeldTask, pcOutcome); } catch (Exception pcFault) { pcOutcome = "That failed: " + pcFault.Message; } try { if (discordBridge != null && !string.IsNullOrWhiteSpace(pcOutcome)) discordBridge.QueueMessage(pcOutcome); } catch (Exception) { } }); };
+                    PcApproved = delegate(string pcHeldTask) { pcApprovedRun = true; System.Threading.ThreadPool.QueueUserWorkItem(delegate { string pcOutcome; try { pcOutcome = RunJob(pcHeldTask, pcHeldTask); PcDiary(pcHeldTask, pcOutcome); } catch (Exception pcFault) { pcOutcome = "That failed: " + pcFault.Message; } try { if (discordBridge != null && !string.IsNullOrWhiteSpace(pcOutcome)) discordBridge.QueueMessage(pcOutcome); } catch (Exception) { } }); };
                     PcLoopStart(); discordBridge.MindPut = MindPutBridge;
                     discordBridge.MindEdits = MindEditsBridge;
                     discordBridge.MindSettings = MindSettingsBridge;

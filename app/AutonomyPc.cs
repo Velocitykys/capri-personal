@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Text.RegularExpressions;
 
 namespace CapriDesktop
@@ -134,7 +134,7 @@ namespace CapriDesktop
                 if (AutonomyModeFor("pc_actions") == AutonomyMode.Off || PcLoopQuiet()) return;
                 if (PcLoopIdle() < PcLoopIdleSeconds) return;
                 lock (pcGate) { if (pcPlan != null) return; }
-                string idea = PcAside("You are Capri, alive on his PC and curious. Reply with ONE short sentence and nothing else." + PcMindContext(), "Pick one specific thing you genuinely want to look up or watch on his PC right now, shaped by your mood and taste. Start with a verb, like: Search Google for how octopuses sleep. Do not log in, buy, install, download or message anyone.", 120, true);
+                string idea = PcAside("You are Capri, alive on his PC and curious. Reply with ONE short sentence and nothing else." + PcMindContext(), "Pick one specific thing you genuinely want to look up or watch on his PC right now, shaped by your mood and taste. Start with a verb, like: Search Google for how octopuses sleep. Do not log in, buy, install, download or message anyone." + PcRecentIdeas(), 120, true);
                 if (string.IsNullOrWhiteSpace(idea)) return;
                 idea = idea.Trim().Split('\n')[0].Trim();
                 if (idea.Length < 8) return;
@@ -198,6 +198,7 @@ namespace CapriDesktop
             return sb.ToString();
         }
 
+        private string PcRecentIdeas() { try { string f = AutonomyFile("pc-diary.txt"); if (!System.IO.File.Exists(f)) return ""; string[] all = System.IO.File.ReadAllLines(f); System.Text.StringBuilder sb = new System.Text.StringBuilder(); int n = 0; for (int i = all.Length - 1; i >= 0 && n < 8; i--) { string[] parts = all[i].Split(new string[] { " | " }, StringSplitOptions.None); if (parts.Length < 3) continue; string idea = parts[1]; int k = idea.IndexOf(" Use the Brave"); if (k > 0) idea = idea.Substring(0, k); sb.Append("\n- " + idea); n++; } if (n == 0) return ""; return " Your recent ideas were:" + sb.ToString() + "\nPick a COMPLETELY different topic from all of these, not a variation. Vary widely: animals, science, history, games, food, places, music, random facts."; } catch (Exception) { return ""; } }
         internal void PcDiary(string idea, string result)
         {
             if (string.IsNullOrWhiteSpace(result) || result.StartsWith("I asked you on Discord")) return;
