@@ -21,7 +21,7 @@ In the website's **help chat**, what you type, your last few messages and any pi
 
 Cloudflare logging is on for the worker. If no model can answer, the worker logs the errors they gave back. Those errors aren't scrubbed, so one could repeat part of what you asked.
 
-GitHub hosts the website and the downloads. Cloudflare runs the counters, help chat and Remote relay. They keep their own logs under their own privacy policies, and so does Anthropic for help chat requests. The site's fonts, scripts and pictures come from the site itself, with no third-party analytics. When you visit, your browser asks GitHub for the latest release and the changelog.
+GitHub hosts the website and the downloads, and Microsoft hosts the Store copy. Cloudflare runs the counters, help chat and Remote relay. They keep their own logs under their own privacy policies, and so does Anthropic for help chat requests. The site's fonts, scripts and pictures come from the site itself, with no third-party analytics. When you visit, your browser asks GitHub for the latest release and the changelog.
 
 ## What the app connects to
 
@@ -55,7 +55,8 @@ Your PC and phone's browser connect out to a Cloudflare Worker, with one Durable
 - **Removing a phone.** Revoke on the PC removes its saved pairing. The relay deletes its token hash and closes its connection when the PC reaches it, or at the PC's next sign-in if offline. The phone clears its pairing when it receives the removal notice, or when the relay rejects the removed phone. Unpair while connected to your PC tells it too; otherwise it only clears this browser's pairing. Revoking a phone also revokes the phones its links added. Remove all phones revokes every phone and starts a fresh room and PC token, so a phone the relay didn't hear about is cut off too.
 - **Keys sent to the PC.** They travel end-to-end encrypted and are saved with DPAPI, just like a key typed in her Mainframe. They are never sent back to the phone.
 - **Screen view.** Frames go only while a phone watches, end-to-end encrypted. A badge stays on the PC while a phone watches or calls.
-- **Phone only.** Your own key is saved in localStorage in that browser on capriai.app. It goes straight to your chosen provider with your chat: Anthropic (`api.anthropic.com`), OpenAI (`api.openai.com`), Google AI (`generativelanguage.googleapis.com`), OpenRouter (`openrouter.ai`) or DeepSeek (`api.deepseek.com`). Saved chat stays in that browser. Those requests use no relay and pass through nothing of ours.
+- **Phone only with a key.** Your own key is saved in localStorage in that browser on capriai.app. It goes straight to your chosen provider with your chat: Anthropic (`api.anthropic.com`), OpenAI (`api.openai.com`), Google AI (`generativelanguage.googleapis.com`), OpenRouter (`openrouter.ai`) or DeepSeek (`api.deepseek.com`). Saved chat stays in that browser. Those requests use no relay and pass through nothing of ours. Once a UTC day, after her first reply that worked with either phone brain, the page also sends `capri-reactions.lachydotmcg.workers.dev/phone-day` two yes/no flags (this browser's first count, and whether it's also paired with a PC). That request carries no key, chat or id, and the worker adds it to the day's totals without storing anything about the sender.
+- **Free phone brain.** The page sends the newest chat turns to `capri-reactions.lachydotmcg.workers.dev/free`, which passes at most 12 turns and 6,000 characters to Workers AI (Gemma) with the worker's own prompt. A client system turn, model, limits and every other field are dropped, and chat-template markers are stripped. The worker stores and logs no chat. It counts 15 messages a UTC day per salted daily hash of the connection address (an IPv6 address by its /64), and before each call it holds that call's upper-bound cost against a shared 8,000-Neuron daily ceiling, so the route itself never spends more than that in a day. Counts older than yesterday are deleted on the next free message. Many addresses can still use up the day's pool; that closes the free brain until midnight UTC and costs nothing more.
 - **Shared site storage.** Capri Remote shares browser storage with the rest of capriai.app. A script on any capriai.app page could read a phone-only key, saved chats and the phone's relay sign-in, but not its encryption key. Those pages run only the site's own scripts, plus YouTube's player script on the home page after you press Play on her song. Remote's own page allows only its own scripts.
 
 ## Your brain and voice providers
@@ -75,11 +76,13 @@ A local brain, her own ears and her local voices stay on your PC. A custom brain
 
 ## Windows or your antivirus warned me
 
-Her Windows builds aren't code signed, and each new release starts with no reputation, so you may see **Windows protected your PC**. Press **More info**, then **Run anyway**.
+Her Windows builds on GitHub and the website aren't code signed, and each new release starts with no reputation, so you may see **Windows protected your PC**. Press **More info**, then **Run anyway**.
+
+The [Microsoft Store copy](https://apps.microsoft.com/detail/9P0KFRB76X0G) (CapriAI) is signed and checked by Microsoft, so it doesn't get this warning. It updates through the Store.
 
 Antivirus apps can flag her too. Taking screenshots, moving the mouse, pressing keys, listening to the mic and starting apps are her job, and they look a lot like what malware does. That usually means a false alarm, but an alert alone can't tell you a file is safe, so check it:
 
-1. Only download her from the [official release page](https://github.com/lachydotmcg/capri-desktop/releases/latest) or the [official website](https://capriai.app/).
+1. Only download her from the [official release page](https://github.com/lachydotmcg/capri-desktop/releases/latest), the [official website](https://capriai.app/) or the [Microsoft Store](https://apps.microsoft.com/detail/9P0KFRB76X0G).
 2. In PowerShell, from your download folder, run:
 
    ```powershell

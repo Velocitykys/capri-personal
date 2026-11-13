@@ -4,7 +4,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
+#if !CROSS
 using System.Windows.Automation;
+#endif
 
 namespace CapriDesktop
 {
@@ -20,7 +22,12 @@ namespace CapriDesktop
         private readonly SavedList<Entry> file;
         private readonly object gate = new object();
         private readonly List<Entry> entries = new List<Entry>();
+        #if CROSS
+        internal Func<string> Current = delegate { return null; };
+        internal Func<string> CurrentProblem = delegate { return null; };
+#else
         internal Func<string> Current = FrontAddress;
+#endif
 
         internal Websites(string folder)
         {
@@ -74,6 +81,13 @@ namespace CapriDesktop
             string name = Key(args.Name);
             if (args.Action == "forget") name = Nickname(name) ?? name;
             string address = args.Action == "list" || args.Action == "forget" ? null : Address(string.IsNullOrWhiteSpace(args.Site) ? Current() : args.Site);
+#if CROSS
+            if (args.Action != "list" && args.Action != "forget" && address == null && string.IsNullOrWhiteSpace(args.Site))
+            {
+                string problem = CurrentProblem();
+                if (problem != null) return problem;
+            }
+#endif
             lock (gate)
             {
                 if (args.Action == "list")
@@ -107,6 +121,13 @@ namespace CapriDesktop
             Match explicitSite = Regex.Match(text, @"^remember\s+(.+?)\s+(?:is|as)\s+(\S+)$", RegexOptions.IgnoreCase);
             // "Remember my score is 12.5" is a note about them, so an address has to look like one.
             if (explicitSite.Success && Regex.IsMatch(explicitSite.Groups[2].Value, @"[a-z]{2}(?:[/:?#]\S*)?$|^(?:https?://)?\d+\.\d+\.\d+\.\d+", RegexOptions.IgnoreCase) && Address(explicitSite.Groups[2].Value) != null) return new ToolArguments { Action = "save", Name = Key(explicitSite.Groups[1].Value), Site = Address(explicitSite.Groups[2].Value) };
+            Match addressFirst = Regex.Match(text, @"^remember\s+(\S+)\s+as\s+(.+?)(?:\s+(?:and open it (?:the )?next time i say|so i can just say)\s+(.+))?$", RegexOptions.IgnoreCase);
+            if (addressFirst.Success && Regex.IsMatch(addressFirst.Groups[1].Value, @"[a-z]{2}(?:[/:?#]\S*)?$|^(?:https?://)?\d+\.\d+\.\d+\.\d+", RegexOptions.IgnoreCase) && Address(addressFirst.Groups[1].Value) != null)
+            {
+                string name = Key(addressFirst.Groups[2].Value);
+                if (addressFirst.Groups[3].Success && Key(addressFirst.Groups[3].Value) != name) return null;
+                return new ToolArguments { Action = "save", Name = name, Site = Address(addressFirst.Groups[1].Value) };
+            }
             Match forgotten = Regex.Match(text, @"^forget (?:the )?(.+?) (?:web)?site$", RegexOptions.IgnoreCase);
             return forgotten.Success ? new ToolArguments { Action = "forget", Name = Key(forgotten.Groups[1].Value) } : null;
         }
@@ -127,6 +148,7 @@ namespace CapriDesktop
             return Regex.IsMatch(name ?? "", @"address|search or enter|search with.*enter|adresse|direcci[oó]n|indirizzo|endere[cç]o", RegexOptions.IgnoreCase) ? 2 : 0;
         }
 
+#if !CROSS
         internal static string FrontAddress()
         {
             try
@@ -162,5 +184,6 @@ namespace CapriDesktop
             }
             catch (Exception) { return null; }
         }
+#endif
     }
 }

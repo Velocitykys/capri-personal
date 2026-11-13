@@ -20,34 +20,57 @@ namespace CapriDesktop
 
     internal sealed class FileFinder
     {
-        internal const string Description = "Find files or folders on this PC by name. Give the name in its original language, keeping any extension, without command words or a location. Returns whole paths, best match first. Use action show to select the first result in File Explorer, or stop to cancel a search. Searches names only, not file contents.";
-        internal const string Schema = "{\"type\":\"object\",\"properties\":{\"description\":{\"type\":\"string\",\"description\":\"The file or folder name to match, in its original language; quote a literal name\"},\"action\":{\"type\":\"string\",\"description\":\"What to do; search by default\",\"enum\":[\"search\",\"show\",\"stop\"]}}}";
+#if CROSS
+        internal const string Description = "Find files or folders by name. Give the name in its original language, keeping any extension, without command words or a location. Returns whole paths, best match first. Search is bounded. Use action show or open to reveal the first result in Finder on Mac or open its folder on Linux; with a description, it searches first. Use stop to cancel. Searches names only, not file contents.";
+#else
+        internal const string Description = "Find files or folders on this PC by name. Give the name in its original language, keeping any extension, without command words or a location. Returns whole paths, best match first. Use action show or open to select the first result in File Explorer; with a description, it searches first. Use stop to cancel a search. Searches names only, not file contents.";
+#endif
+        internal const string Schema = "{\"type\":\"object\",\"properties\":{\"description\":{\"type\":\"string\",\"description\":\"The file or folder name to match, in its original language; quote a literal name\"},\"action\":{\"type\":\"string\",\"description\":\"What to do; search by default; show and open search first if needed\",\"enum\":[\"search\",\"show\",\"open\",\"stop\"]}}}";
         private readonly object gate = new object();
         private CancellationTokenSource searching;
         private List<FileMatch> last = new List<FileMatch>();
         private DateTime foundAt;
+#if !CROSS
         internal Func<IEnumerable<string>> Roots = Places;
         internal Func<IEnumerable<string>> Wider = Everywhere;
         internal Func<string, bool> Reveal = Show;
-        internal bool Busy { get { lock (gate) return searching != null; } }
-        internal bool Found { get { lock (gate) return last.Count > 0 && DateTime.UtcNow - foundAt < TimeSpan.FromMinutes(10); } }
+#endif
+        internal bool Busy { get {
+#if CROSS
+            return MacFiles.Busy;
+#else
+            lock (gate) return searching != null;
+#endif
+        } }
+        internal bool Found { get {
+#if CROSS
+            return MacFiles.Found;
+#else
+            lock (gate) return last.Count > 0 && DateTime.UtcNow - foundAt < TimeSpan.FromMinutes(10);
+#endif
+        } }
 
-        internal void Stop() { lock (gate) if (searching != null) searching.Cancel(); }
+        internal void Stop() {
+#if CROSS
+            MacFiles.Stop();
+#else
+            lock (gate) if (searching != null) searching.Cancel();
+#endif
+        }
 
         internal string Do(ToolArguments args, Func<bool> stopped)
         {
+#if CROSS
+            return MacFiles.Find(args, stopped);
+#else
             if (args.Action == "stop") { Stop(); return "Stopped looking for files."; }
-            if (args.Action == "show")
+            bool showing = args.Action == "show" || args.Action == "open";
+            if (showing && string.IsNullOrWhiteSpace(args.Description))
             {
                 string first;
                 lock (gate) first = last.Count == 0 ? null : last[0].Path;
-                if (first == null) return "Find a file or folder first, then I can show it to you.";
-                if (!Directory.Exists(first) && !File.Exists(first)) return "That path is no longer there: " + first;
-                try { if (Reveal(first)) return "Selected " + first + " in File Explorer."; }
-                catch (Win32Exception) { }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
-                return "Couldn't select that in File Explorer. Here's the path:\n" + first;
+                if (first != null) return Select(first);
+                return "Find a file or folder first, then I can show it to you.";
             }
             if (string.IsNullOrWhiteSpace(args.Description)) return "What file or folder should I find?";
             CancellationTokenSource request = new CancellationTokenSource();
@@ -70,6 +93,7 @@ namespace CapriDesktop
                     if (searching == request) { last = found; foundAt = DateTime.UtcNow; }
                 }
                 if (found.Count == 0) return "I didn't find a name matching " + args.Description + " in the folders I could read.";
+                if (showing) return Select(found[0].Path);
                 List<string> lines = new List<string>();
                 foreach (FileMatch match in found) lines.Add(match.Path);
                 return "The closest match is " + Path.GetFileName(found[0].Path) + ". Here are the paths you can copy:\n" + string.Join("\n", lines.ToArray()) + "\nSay show it to me to select the first one in File Explorer.";
@@ -79,12 +103,27 @@ namespace CapriDesktop
                 lock (gate) if (searching == request) searching = null;
                 request.Dispose();
             }
+#endif
         }
+
+#if !CROSS
+        private string Select(string first)
+        {
+            if (!Directory.Exists(first) && !File.Exists(first)) return "That path is no longer there: " + first;
+            try { if (Reveal(first)) return "Selected " + first + " in File Explorer."; }
+            catch (Win32Exception) { }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return "Couldn't select that in File Explorer. Here's the path:\n" + first;
+        }
+#endif
 
         internal static ToolArguments Request(string text, bool busy, bool found)
         {
             if (Regex.IsMatch(text, @"^(?:stop (?:looking|searching)(?: for (?:files|folders))?|cancel (?:the )?(?:file |folder )?search)$", RegexOptions.IgnoreCase) || busy && Regex.IsMatch(text, @"^(?:stop|cancel|never mind|nevermind)$", RegexOptions.IgnoreCase)) return new ToolArguments { Action = "stop" };
             if (found && Regex.IsMatch(text, @"^(?:show (?:it|that) to me|show me (?:it|that)|open (?:that|the) folder)$", RegexOptions.IgnoreCase)) return new ToolArguments { Action = "show" };
+            Match showing = Regex.Match(text, @"^(?:open|show(?: me)?)\s+(.+?\b(?:file|folder|directory))$", RegexOptions.IgnoreCase);
+            if (showing.Success && !Regex.IsMatch(showing.Groups[1].Value, @"^(?:(?:the|my|a|an|that|this)\s+)*(?:(?:downloads?|documents?|desktop|pictures?|photos?|music|videos?|screenshots?)\s+)?(?:file|folder|directory)$|[,;]|\b(?:and|then|but|or)\b", RegexOptions.IgnoreCase)) return new ToolArguments { Description = showing.Groups[1].Value, Action = "show" };
             Match path = Regex.Match(text, @"^(?:show|tell|give) me (?:the )?(?:path|location) (?:to|of|for)\s+(.+)$|^(?:find|locate|look for|search for)\s+(.+?)(\s+on (?:my|the) (?:pc|computer))?$|^where(?:'?s| is| are)\s+(.+)$", RegexOptions.IgnoreCase);
             if (!path.Success) return null;
             string description = path.Groups[1].Success ? path.Groups[1].Value : path.Groups[2].Success ? path.Groups[2].Value : path.Groups[4].Value;
@@ -98,7 +137,7 @@ namespace CapriDesktop
         private static readonly Regex Quoted = new Regex("(?:^|\\s)[\"'\u201c](?<name>.+?)[\"'\u201d](?=\\s|$)");
 
         // The words that name it. "My photos" keeps photos, because there's nothing else to go on.
-        private static string Wanted(string description)
+        internal static string Wanted(string description)
         {
             Match quoted = Quoted.Match(description ?? "");
             if (quoted.Success) return Plain(quoted.Groups["name"].Value);
@@ -108,7 +147,7 @@ namespace CapriDesktop
             return Regex.Replace(named.Trim().Length > 0 ? named : plain, @"\s+", " ").Trim();
         }
 
-        private static int Score(string name, string wanted)
+        internal static int Score(string name, string wanted)
         {
             string actual = Plain(name);
             if (wanted.Length == 0 || actual.Length == 0) return 0;
@@ -132,6 +171,7 @@ namespace CapriDesktop
             return Regex.IsMatch(name, @"^(?:Windows|WinSxS|node_modules|bower_components|\.git|\.svn|\.hg|\.cache|\.nuget|\.npm|\.pnpm-store|__pycache__|\.venv|venv|\$Recycle\.Bin|System Volume Information|Recovery|Config\.Msi)$", RegexOptions.IgnoreCase);
         }
 
+#if !CROSS
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         private struct FindData
         {
@@ -351,6 +391,7 @@ namespace CapriDesktop
             return true;
         }
 
+#endif
         internal static string Spoken(string text)
         {
             return Regex.Replace(text ?? "", @"(?m)^([a-zA-Z]):[\\/]([^\r\n]+)\r?$", delegate(Match path)

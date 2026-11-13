@@ -763,6 +763,9 @@ namespace CapriDesktop
             Bitmap made;
             if (cells.TryGetValue(key, out made)) return made;
             made = new Bitmap(canvas, canvas, PixelFormat.Format32bppPArgb);
+            // On her artist's standing set a clone glitches in on the first frame of that loop, with the glitch drawn under her.
+            double under = 0;
+            if (Companion.StandsIn(clip, idle)) { under = Companion.UnderLevel(clip, cell); clip = idle; cell = 0; }
             Bitmap strip = left && clip.HasFlipped ? clip.FlippedNow : clip.Strip;
             int width = strip.Width / clip.Count;
             float high = size * clip.Height, broad = high * width / strip.Height;
@@ -773,7 +776,9 @@ namespace CapriDesktop
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 graphics.TranslateTransform(canvas / 2f, canvas / 2f);
                 if (left) graphics.ScaleTransform(-1, 1);
-                graphics.DrawImage(strip, new RectangleF(-broad / 2f + clip.ShiftX * size, -high / 2f + clip.ShiftY * size, broad, high), new RectangleF(cell * width, 0, width, strip.Height), GraphicsUnit.Pixel);
+                RectangleF target = new RectangleF(-broad / 2f + clip.ShiftX * size, -high / 2f + clip.ShiftY * size, broad, high);
+                if (under > 0) Shatter.Under(graphics, strip, new Rectangle(cell * width, 0, width, strip.Height), target, under, (int)(key & 0x7FFFFFFF));
+                graphics.DrawImage(strip, target, new RectangleF(cell * width, 0, width, strip.Height), GraphicsUnit.Pixel);
             }
             cells[key] = made;
             return made;
@@ -829,6 +834,8 @@ namespace CapriDesktop
                     double age = now - body.Born;
                     bool grinning = (body == Swarm.Nabber && Swarm.Holding) || (body.Hauling != null && body.Hauling.Holding);
                     Clip clip = age < Swarm.GlitchIn ? glitch : grinning ? grin : Swarm.Walking(body, now) ? walk : idle;
+                    // On her artist's standing set a grinning clone stands in her loop, since her grin is her old stand.
+                    if (clip == grin && Companion.StandsIn(grin, idle)) clip = idle;
                     int which = clip == glitch ? 0 : clip == grin ? 1 : clip == walk ? 2 : 3;
                     int cell = clip == glitch ? Math.Min(clip.Count - 1, (int)(age * clip.Fps)) : (int)((now + body.Phase) * clip.Fps) % clip.Count;
                     // Every drawn frame stays in memory here, so a long loop keeps about 16 of them.
@@ -923,6 +930,8 @@ namespace CapriDesktop
         private string cloneLast;
 
         private int upsets;
+        private double upsetAt;
+        private double upsetNoteAt;
 
         private string CloneTool(string action, int count) { return InvokeRequired ? (string)Invoke(new Func<string, int, string>(Clone), action, count) : Clone(action, count); }
 
@@ -935,16 +944,38 @@ namespace CapriDesktop
         }
 
         // An insult sets her clones off 1 time in 3, then 2 in 3, and always by the third. Never over a job, a game or a stream,
-        // and the note near her tells anyone who's never met them how to stop it.
-        internal bool Upset(int roll)
+        // and the note near her tells anyone who's never met them how to stop it. One she sat out still counts toward the
+        // next for ten minutes. Ones thrown at her clones while they're out don't.
+        internal bool Upset(int roll, string held = null)
         {
-            if (!preferences.UpsetChaos || working != null || hidden || cloneWindow != null || InChat || Computer.Streaming || Computer.GameOpen() != null) return false;
-            upsets++;
-            if (roll >= upsets) return false;
+            if (!preferences.UpsetChaos) return false;
+            if (cloneWindow != null) return UpsetHeld("clones already out");
+            double now = clock.Elapsed.TotalSeconds;
+            if (now - upsetAt > 600) upsets = 0;
+            upsetAt = now;
+            upsets = Math.Min(3, upsets + 1);
+            if (held == null) held = working != null ? "job" : hidden ? "hidden" : InChat ? "voice chat" : Computer.Streaming ? "stream" : Computer.GameOpen() != null ? "game" : null;
+            if (held != null) return UpsetHeld(held);
+            if (roll >= upsets)
+            {
+                Brain.Log("chaos when upset", -1, "No clones this time: chance. Tally " + upsets + "/3.");
+                return false;
+            }
             upsets = 0;
             Clone("spawn", 0);
             if (cloneWindow != null) cloneWindow.Pin(Said.In(Swarm.Sorry), new Point(anchor.X + Width / 2, anchor.Y - 24));
             return true;
+        }
+
+        private bool UpsetHeld(string reason)
+        {
+            double now = clock.Elapsed.TotalSeconds;
+            if (now >= upsetNoteAt)
+            {
+                upsetNoteAt = now + 60;
+                Brain.Log("chaos when upset", -1, "Clones held: " + reason + ". Tally " + upsets + "/3.");
+            }
+            return false;
         }
 
         // A number makes exactly that many. No number makes one that keeps multiplying until they stop it.

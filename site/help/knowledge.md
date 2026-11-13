@@ -47,7 +47,9 @@ A mic is only needed for voice chat.
 
 ### Where do I get it?
 - Website: https://capriai.app/
-- Windows: Capri-Setup.exe
+- Every download on one page, with the one for your device on top: https://capriai.app/#download
+- Windows, the first pick: the Microsoft Store, listed as CapriAI (signed, version 0.8.9, Capri Remote included): https://apps.microsoft.com/detail/9P0KFRB76X0G
+- Windows, the latest release: Capri-Setup.exe (updates herself, not signed yet)
 - Mac (Apple Silicon): Capri-mac-apple-silicon.zip
 - Mac (Intel): Capri-mac-intel.zip
 - Linux: Capri-linux-x64.AppImage (one file, from 0.8.4) or Capri-linux-x64.tar.gz
@@ -91,7 +93,18 @@ From 0.7.7 the installer looks like the Mainframe and has no Windows title bar: 
 If the speech model fails it says "Couldn't install the local speech model" and "Capri is installed. Get it later in Capri Mainframe, or add an API key." Press Finish. Capri still works; get her free voice later with Get free voice under VOICE.
 
 ### Why does Windows warn me?
-Capri is new and not signed yet, so SmartScreen doesn't know it. That's normal for new apps. The code is open on GitHub, so anyone can check it.
+The latest release (Capri-Setup.exe) is new and not signed yet, so SmartScreen doesn't know it. That's normal for new apps. The code is open on GitHub, so anyone can check it. The Microsoft Store copy is signed, so it doesn't get this warning (next answer).
+
+### Is Capri on the Microsoft Store? Which download should I get?
+Yes. She's on the Microsoft Store as CapriAI: https://apps.microsoft.com/detail/9P0KFRB76X0G . It's the first pick for Windows on the website.
+
+There are two ways to get her on Windows:
+- The Microsoft Store copy (version 0.8.9) is signed and checked by Microsoft, so Windows doesn't warn you. It has Capri Remote, her ribbon teleport and the icon rampage. It updates through the Store when a new version is sent there, and says "Update through the Microsoft Store." where the website copy would update itself.
+- The latest release (Capri-Setup.exe from the website or GitHub) updates herself as soon as a new version is out. It isn't signed yet, so Windows or your antivirus may warn you as if it were a virus.
+
+It's the same app from the same code. Get the Store copy, unless you'd rather have each new version the day it's out. Both are on https://capriai.app/#download
+
+The Store copy can't install VB-CABLE (the virtual cable she uses on calls) for you. Get it from VB-Audio's site yourself.
 
 ### Does it need admin rights?
 No. It installs for your Windows user only, into %LOCALAPPDATA%\Capri (open the Run box with Win + R and paste that to see it).
@@ -128,7 +141,19 @@ If you downloaded it from the Capri website or GitHub, it's a false alarm on a n
 
 These are generic, machine-learning or behaviour detections. They often flag new apps that aren't signed yet. Restore the file from quarantine (or allow it in your antivirus), then run it again. If you want to be sure, check the code on GitHub or check the download's SHA256 (below).
 
+If you'd rather not deal with the alert, the Microsoft Store copy is signed and doesn't get it: https://apps.microsoft.com/detail/9P0KFRB76X0G
+
 On VirusTotal, a few of about 70 engines flagging Capri.exe or Capri-Setup.exe is the same kind of detection. People have seen Bkav Pro (W32.Malware), SecureAge (Malicious) and Trapmine (Suspicious.low.ml.score). The SHA256 check below tells you whether your file is the one on the release page.
+
+### What do VirusTotal behaviour reports mean? (memory, mscoree.dll, process injection, obfuscated)
+VirusTotal's behaviour tab lists what a sandbox saw Capri-Setup.exe or Capri.exe do. Each flag is most likely from one of these things, not from a virus:
+- "Memory from unbacked memory", mscoree.dll loads, a vectored exception handler, CFG or DEP policy, or "unhooking": most likely the .NET runtime. Capri is a .NET app, so the runtime compiles her code into memory as she runs, and compiles any code mods you add, and sets up its own handlers. Sandboxes read that as these behaviours. Capri has no code that changes CFG or DEP or unhooks anything.
+- Starts at logon: most likely her Start with Windows entry, if you turned it on or had it on from an earlier version. The switch is in Capri Mainframe > Settings > HABITS > Start with Windows.
+- Process injection: in 0.8.7 and older, most likely her desktop icon prank, which used a small piece of memory inside Explorer, the program that draws your desktop. Since 0.8.8 she reads and moves icons through Windows' own view of the desktop and doesn't touch Explorer's memory.
+- Obfuscated: most likely her pictures and sounds, which are packed inside the exe and make it look compressed. In 0.8.7 and older the setup also carried Capri.exe inside it and wrote it out when it installed. Since 0.8.8 the setup is Capri herself under another name, with nothing packed inside.
+- Names ending in !ml, or FileRep and Generic: machine-learning and reputation guesses for a new, unsigned file. Signing is the real fix, tracked in https://github.com/lachydotmcg/capri-desktop/issues/101
+
+If you're not sure about your file, check the download's SHA256 (below) and ask in the Discord. Don't turn your antivirus off.
 
 ### My browser won't download it
 - Opera "Failed - Insufficient permissions" (French: "Échec - Autorisations insuffisantes"): try another browser like Chrome or Edge, or download it from https://github.com/lachydotmcg/capri-desktop/releases/latest.
@@ -237,7 +262,13 @@ After the first run, the Mainframe starts minimized. Open it with right-click he
 Only one Capri runs at a time. Opening her again while she's running brings her to your mouse pointer and opens the Mainframe.
 
 ### First launch
-On a new install she starts on Wander: Rarely, and an EXTRAS window opens over Mainframe with four switches, all off: Watch my screen, Comment on my games, Clip my games and Listen for Capri. Pick what you want and press Done. All four are in Settings too. Anyone updating keeps their settings and doesn't see it.
+On a new install (0.9.0 and newer) the installer opens her straight away. She glitches in, says hi, and a small card in the Mainframe's look opens beside her:
+1. Pick her brain: ON THIS PC (her own free brain, picked already), FREE KEY (Google AI Studio, NVIDIA or OpenRouter, with Paste and the steps to get one), MY PLAN OR KEY (your Claude or ChatGPT plan, Ollama, or a paid key), or NO AI (no brain at all). The language row under them sets the language she talks in; it starts on her guess from Windows.
+2. Her own brain is about 3 GB and starts downloading when you press Next. Its progress shows along the bottom of the card while you carry on.
+3. TALK TO ME: MY FREE VOICE (runs on your PC, no key) or TEXT ONLY, and YOUR MIC with a test.
+4. The extras: Watch my screen, Comment on my games, Clip my games and Listen for Capri, all off until you pick them.
+Every screen has Skip, and Skip all ends the card for good. Closing it with Alt + F4 skips the rest too. Paste reads your clipboard once, only when you press it. If a key doesn't connect, the card says why and offers Try again.
+Anyone updating keeps their settings and never sees the card. Before 0.9.0 a new install got only the EXTRAS window over Mainframe.
 
 ---
 
@@ -329,7 +360,8 @@ Her right-click menu, the Type box, the installer and her pop-up notes (like "Ca
   - "Best fit for this PC: <name>"
 - Set up her brain: starts the download. It changes to Cancel while it runs, and Try again if it fails.
 - "Have Ollama? Open it, then press Refresh."
-- "Pick one. Only one brain runs at a time." with NORMAL. MEDIUM INTELLIGENCE lists "NVIDIA, Gemini, OpenRouter", or says "Most NVIDIA models can't see your screen." with NVIDIA on that row. Three rows:
+- "Pick one. Only one brain runs at a time." with NORMAL. MEDIUM INTELLIGENCE lists "NVIDIA, Gemini, OpenRouter", or says "Most NVIDIA models can't see your screen." with NVIDIA on that row. Four rows:
+  - OFF (0.9.0): "No AI · no brain at all". She stays on your desktop with no brain: nothing is downloaded for it and nothing is sent to any model or service. She still walks, sits on windows, dances to your music, reacts to clicks, naps and does what she knows by phrase, like volume, music and her moves. A question gets one short line saying her brain is off, and not again for a while. Picking any other row switches a brain back on; your keys and downloaded brain stay. Her first launch card offers it as NO AI.
   - NORMAL: "Free · local model", marked "Start with this!". Use her built-in brain, Ollama, LM Studio, Jan, KoboldCpp or llama.cpp on your PC. New installs start here.
   - MEDIUM INTELLIGENCE: "Free". Accepts NVIDIA, Google AI Studio (Gemini) or OpenRouter keys. OpenRouter only lists models ending :free.
   - MAX INTELLIGENCE: "Key or plan". Accepts Gemini, OpenRouter, NVIDIA, OpenAI, Claude or DeepSeek keys, or your own Claude or ChatGPT plan through My plan. Full model list, including paid models.
@@ -385,7 +417,7 @@ With NORMAL selected, Refresh also looks for local servers. Start your server wi
 - Ride cursor / Hop off
 - Check for updates
 - Mods (0.8.3): opens her Mods page. Browse mods opens the directory window. See "How do I get mods?" below.
-- Remote (0.8.7, Windows): opens Capri Remote to pair a phone. See "Capri Remote" below.
+- Remote (0.8.7, Windows): opens Capri Remote to pair a phone. From 0.9.0 it has a small phone mark before its name. See "Capri Remote" below.
 - Help: opens the Help page on the website, where you can ask Capri for help in the corner
 - Quit Capri (red)
 
@@ -435,6 +467,8 @@ CAPRI
 - Always on top: keeps her above your other windows. Off, other windows can cover her; she still comes to the front to pop in or ask for attention. On Mac and Linux it's right-click her > Settings > Always on top.
 - Mainframe size (0.7.7 and newer): Auto, 100%, 125%, 150%, 175% or 200%. Auto makes the Mainframe and its windows bigger when your desktop is bigger than the screen showing it, like AMD Virtual Super Resolution or NVIDIA DSR drawing 3840 x 2160 on a 1920 x 1080 screen, and shows what it picked, like "Auto · 200%". On an ordinary screen Auto is 100%, and Windows' own display scaling still applies on top. Pick a size to set it yourself. It doesn't change Capri's own size; that's Size above.
 - Mainframe colours: Night City (red and cyan), Black, White or Grey. Changes the Mainframe and its windows, her right-click menu, the Type box and her notes straight away. On Mac and Linux it changes the Mainframe only. Her bubble and her own colours stay as they are; colour sets change those.
+- Pat stroke (0.9.0): how long you have to stroke her before a head pat counts, so the cursor brushing past her doesn't count.
+- Jealous of other AIs (0.9.0): off by default. When it's on and you open another AI, like ChatGPT in a tab or an app, she gets a little jealous and can offer to close it for you. Choose apps sets which ones she may close.
 
 WATCH
 - Watch my screen: she comments now and then. With an Every slider: 10 s, 15 s, 30 s, 1 min, 1.5 min, 2 min, 3 min, 5 min or 10 min. The default is 2 min.
@@ -456,6 +490,14 @@ HABITS
 - Perch: how many frames a second she shows while she sits on a window: 10, 15, 20, 30 (default), 40, 50 or 60 fps. Her sway takes 2 seconds at every setting. 10 and 15 use less CPU. Above 30 she draws in-between frames, so she moves more smoothly but uses more CPU, and the HABITS line says "Perch over 30 fps uses more CPU". On Mac and Linux her perch stays at 30.
 - Remember our chats (under Use her cursor): on by default. She writes every chat into a daily transcript and folds older chats into memories.md. Both stay on your PC (section 13).
 - Open her memories (at the right of HABITS' heading): edits memories.md inside Mainframe. Save writes your changes. Daily transcripts stay in the transcripts folder.
+- Music app (0.9.0): where she plays music when you don't name an app: Spotify, YouTube or Apple Music. On Apple Music she plays your playlists and Favourite Songs; if Apple Music is missing she uses Spotify, and if it asks you to sign in or subscribe she stops and tells you. On Linux the choices are Spotify and YouTube.
+
+SOUNDS (0.9.0, under HABITS)
+- Chimes: on by default. Soft sounds when your typed message is sent, when she's heard you finish talking, and when hey capri opens her ears.
+- Sound set: Glass (default), Shard, Burst, Crush, Pulse or Air. Each step saves at once and plays its heard chime.
+- Chime volume: 10% to 100%. Default 40%. Letting go plays the heard chime at the new volume.
+- Message sent, Heard you, Listening: turn each chime on or off.
+Her ears keep what you say straight after a chime; its echo can't start a line or cut her off. Chimes are Windows only for now.
 
 KEYS (bottom of the left column)
 - Talk, Mute mic, Type, Hide/show and Quiet buttons show her keys. Click one, press new keys, then Confirm. Confirm and Cancel show at the right of KEYS' heading while you pick. Since 0.7.4 any key works, on its own or with any of Ctrl, Alt, Shift and Win: F8, Ctrl + Shift + K and Win + Alt + J all work. Cancel keeps the old key.
@@ -475,6 +517,8 @@ The new settings are here. Scroll down the Settings page to reach HABITS and GAM
 - GAMES > Clip my games: keeps recent game video and PC sound ready to save. Off by default.
 - GAMES > Save big moments: saves moments her game commentary picks. Off by default; turning it on also turns Clip my games on.
 - GAMES > Fast hands in games: uses Claude Haiku 5.5 for game jobs on a Claude key. On by default.
+- GAMES > Comments: Off stops game comments in Gaming Mode too (0.9.0). Asking her to stop commenting does the same.
+- GAMES > Game sounds (0.9.0): lets her ignore loud bursts in your game while hits, deaths and kills still count.
 
 ### Changing her keys
 1. In the Mainframe, click Settings and use the KEYS row at the bottom (Talk, Mute mic, Type, Hide/show or Quiet). Clicking "Ctrl + Alt + V to talk" or "Ctrl + Alt + N mutes mic" on the main page opens Settings with that key ready to change.
@@ -547,7 +591,9 @@ Use preset returns to the Pop-ins slider's pace. Moving that slider also clears 
 ### How do I get mods? (0.8.3)
 Right-click her > Open Capri Mainframe > Mods, beside Settings. On Mac and Linux it's on the CAPRI heading. Press Browse mods to open the Mods directory window. Each listing shows a preview, name, author, description, downloads and ratings. Search finds names, authors and descriptions. All, Settings, Code, Skins and Skills filter the list.
 
-Press Install on the mod you want. View opens its folder on GitHub so you can read about it first. Once installed, click its stars to rate it from 1 to 5.
+Press Install on the mod you want. View lets you read about it first. Once installed, click its stars to rate it from 1 to 5.
+
+View on a mod (0.9.0) shows the first few lines of its README, with Learn more for the whole page. A mod with no description takes one from its README.
 
 Already have a mod file? Press Import mod on the Mods page and pick it. The file types are:
 - .capri-mod: settings mods, including colour sets.
@@ -557,6 +603,8 @@ Already have a mod file? Press Import mod on the Mods page and pick it. The file
 
 On and Off switch an installed mod. Remove deletes it from her mods folder. Mods folder opens that folder.
 
+Before a code mod runs, she asks "Run this code mod?" in her own look, with a red warning mark (0.9.0; it used to be a white Windows box). The words are the same. No is the default: Enter, Esc, the close key and Alt + F4 all answer No, and a key held down from before it opened can't answer it. Its default key's rim is lit, and Tab moves it.
+
 ### How do I publish a mod? (0.8.3)
 In Mainframe > Mods, press Publish beside an imported mod. It shows the steps for submitting your mod on GitHub: fork capri-mods, add a folder under mods with your mod file, README.md and preview.png, then open a pull request.
 
@@ -565,7 +613,28 @@ A skill is a mod with know-how for a game, like which towers to buy and when. Wh
 
 She knows the game from its window title, leaving out version numbers and anything after a dash, so "Bloons TD 6" and "BloonsTD6" both count. Skills work on Windows, Mac and Linux. Off on the Mods page stops one.
 
+From 0.9.0 she knows the names of every skill that's on, in chat and in jobs, and reads one in full when it fits what you're doing. A skill with no games line is for anything, so it can hold know-how for any kind of task.
+A skill's game also counts when it runs in a browser tab, like Five Nights at Freddy's in Chrome, when you ask her to play it or name it (Windows). A real game window still comes first.
+
 To make one: a .capri-skill file starts with a header between two --- lines (capri-skill: 1, then id, name, author, description and games, the game names separated by commas), then the know-how in plain words. Publish it like any other mod.
+
+### Workspace (beta) (0.9.0, Windows)
+Workspace is her window for chats with Claude Code. Open it from Mainframe > BRAIN > WORKSPACE (beta), or ask her to "open workspace".
+- It runs your own Claude Code, on your Claude plan or key. Install Claude Code and sign in to it first.
+- It opens straight into a new chat in her folder, C:\Users\<you>\Capri\Workspace. The folder is only made when the first message goes. Press "change" to pick another folder, or + to add folders (Add folders) or files (Add files) through Windows' own file picker. Files go with one message, like attachments, and show under it once it's sent. Folders stay with the chat.
+- Chats are listed down the left. A chat is named from its first message, and keeps its own Claude Code session, so you can pick it up later.
+- MODE: Ask me shows a card for anything beyond reading the chat's folders. Edits only lets file edits in its folders through and asks about commands, web calls and reading outside them. Plan only uses Claude Code's plan mode. Everything lets its tools run without asking, and switches at once.
+- MODEL: Default, Opus, Sonnet or Haiku. A mode or model change applies from your next message.
+- A card asks before a tool runs, with Allow and Deny. Edits show the lines taken out in red and the lines put in in green.
+- Undo last edits puts back Claude's file edits from the last turn. It can't undo commands. If a file changed since, she asks first, and files she takes away go to the Recycle Bin.
+- A folder you pick asks for your trust once. Until you trust it, that folder's own Claude Code settings, hooks and MCP servers don't load. Her own folder never asks.
+- Each run of tool calls folds into one line, like "3 commands ran, 1 file read", with an icon for each kind. Click the line to open it; hover it for its steps in plain words. Failed or denied calls are counted in pink. A "Thinking" line shines while Claude works between calls.
+- An approval card asks in one plain sentence, with the raw details behind a link. Deny opens a box under the keys for why; a second Deny or Enter sends it. A denied row keeps your no and your reason.
+- Each turn shows how long it took and what it cost, like "19m 35s · $1.82".
+- Select text with the mouse, across messages, code blocks and tool rows, and press Ctrl + C, or use the copy key on a message or code block (it ticks when it's copied).
+- Claude's replies show headings, lists, task boxes, quotes, rules, tables, code blocks and links.
+- She finishes saving a chat before the Workspace closes.
+- Workspace is a beta: it was tested with a stand-in Claude Code and real chats on one PC. Local models aren't in it yet.
 
 ### Code/Husk Mode (0.8.3)
 Right-click her > Open Capri Mainframe > Settings > Advanced Settings > BRAIN > Code/Husk Mode. Pick Off, Claude Code, Codex or Both. Picking a coding assistant installs her hooks with backups and keeps your other hooks and settings. Restart Claude Code or Codex after setting it up. In Codex, trust her hooks when it asks.
@@ -1232,7 +1301,7 @@ While a song or video plays, a small black player with her pink and cyan neon sh
 - It follows Always on top: on, it stays over your windows, just under her. Off, it sits among them.
 - Her own screenshots during a job look straight through it.
 
-Turn it off: Mainframe > Settings > Mini player, or the player's menu > Turn off mini player. It's Windows only for now.
+Turn it off: Mainframe > Settings > Mini player, or the player's menu > Turn off mini player. It's on a Mac and Linux too.
 
 ### Sleep
 If you don't touch the mouse or keyboard for a while, she falls asleep. Move the mouse to wake her. Mainframe > Settings > Sleep sets the time, or Never. On Mac and Linux it's right-click her > Move > Fall asleep after.
@@ -1247,6 +1316,14 @@ Mainframe > Settings > Sounds sets her sound effects (arrive, leave, hops, click
 
 ### Sleeping
 "Go to sleep" or "good night, Capri". She gets up when you talk to her or move her. On her own she dozes off when the PC is quiet for as long as Settings says, right where she sits (since 0.8.5), and sleeps until you're back. She also lies down awake for a couple of minutes now and then.
+
+### Hearts and a secret (0.9.0, Windows)
+She sends you a little finger heart when she feels like it, or when you ask ("send me a heart"). There's no wait between them: ask again and it starts over. Brains on your PC can send one too.
+She has a secret emote too. How to find it stays a secret, so this page doesn't say.
+Both animations are by Qewiw (mix_qewiw1412_86144).
+
+### Sitting facing the middle (0.9.0)
+When she sits on a window she faces the middle of the screen, and lands already facing that way, so she never flips partway. From nathanZW.
 
 ---
 
@@ -1425,6 +1502,9 @@ She can say a short reaction to a win, death, close call or mistake while her ha
 
 This is separate from GAMES > Comments, which controls her reactions while you're playing. Turning Comments off doesn't turn off the lines from a game job she's doing for you.
 
+### Asking her something mid-game (0.9.0, Windows)
+During a game job, ask what's on screen ("what is that", "what happened") and she answers from a picture taken just then, even with "oh no, hey capri" in front. Ask about the game and she knows its skill. When you change what her job should do, she says so in her own words.
+
 ### What is Gaming Mode?
 It's on by default: a game in front brings it up with nothing said. She stays on your desktop as usual, you can still drag her, and she reacts when something happens in the game. Ask separately if you want her to play.
 
@@ -1463,6 +1543,9 @@ Ask "remind me on 5 December at 9am to call Mum". Dates accept YYYY-MM-DD, day t
 
 Reminders are saved in %LOCALAPPDATA%\Capri\reminders.json. Capri needs to be running to deliver them. If one became due while she was closed, she gives it as a late reminder when she starts again. Quiet, full-screen play and voice chat keep reminders as text. For regular water or stretch check-ins, use Settings > Advanced Settings > CAPRI > Check in on me.
 
+### Stopwatch (0.9.0)
+"Start a stopwatch", "how long has it been?" and "stop the stopwatch". One stopwatch, no laps. On Windows, a Mac and Linux.
+
 ### Can I save a routine?
 Say "when I say focus time, open Notepad". She saves the phrase and steps. Saying "focus time" later runs them as an ordinary request, using your usual permissions. Saving a routine doesn't run it straight away or schedule it for a time.
 
@@ -1475,10 +1558,15 @@ Ask "play tic-tac-toe", "play connect four" or "play rock paper scissors". Her o
 - On the board, use 1–9 for tic-tac-toe, 1–7 for connect four, or R, P and S for rock paper scissors. Arrow keys and Enter work too.
 - N starts another round. Esc closes the board.
 
+From 0.8.9, every board has three levels: easy, normal and hard. Normal is the default. Add one when you ask, like "play connect four on easy", click it at the top of the board, or say "switch to hard" while a board is up. On tic-tac-toe, connect four and rock paper scissors, changing level starts a new round.
+
+- Easy is beatable. Hard tic-tac-toe never loses.
+- In rock paper scissors, easy means she has a habit you can spot, normal is pure chance, and hard guesses from the hands you've already played. She never sees the hand you're playing now.
+
 Rock paper scissors is first to three points. The boards keep your scores for the session.
 
 ### The Play menu (0.8.3)
-Right-click her > Open Capri Mainframe > Settings > GAMES > Play... opens the menu. Pick Chess, Connect four, Tic-tac-toe or Rock, paper, scissors. You can also ask her to play one, even without a brain connected.
+Right-click her > Open Capri Mainframe > Settings > GAMES > Play... opens the menu. From 0.8.9, right-click her > Play opens it too. Pick Chess, Connect four, Tic-tac-toe or Rock, paper, scissors. You can also ask her to play one, even without a brain connected.
 
 ### Can I give her a file to read?
 Drag a file onto her, or ask her to read its full path. Put paths with spaces in quotes, such as `read "C:\Notes\project plan.txt"`. Then ask about its contents.
@@ -1626,6 +1714,7 @@ The words can have mistakes, especially with music or other sounds over the spee
 Text her, call her and watch your PC's screen from your phone's browser at https://capriai.app/remote.
 
 - Remote connects to Capri on Windows. The Mac and Linux preview has no Remote yet.
+- It needs Capri 0.8.7 or newer on the PC, from the website or the Microsoft Store (the Store copy has it from 0.8.9).
 - Off by default. She keeps your Remote on or off setting after a restart.
 - Keep Capri open, Remote on and your PC awake and online to use her on the PC. For chat without a PC, see "Use her without a PC" below.
 
@@ -1674,11 +1763,18 @@ On Android:
 
 ### Use her without a PC
 1. Open capriai.app/remote and choose Use her without a PC, or open SETTINGS > This phone.
-2. Use your own Claude (Anthropic), ChatGPT (OpenAI), Gemini (Google AI), OpenRouter or DeepSeek API key.
-3. Paste the key and press Use this phone. Once it's checked, Model lets you pick a chat model the key can use.
+2. Press Start free to talk with no key.
+3. For a key, choose "or use your own key" for Claude (Anthropic), ChatGPT (OpenAI), Gemini (Google AI), OpenRouter or DeepSeek.
+4. Paste the key and press Use this phone. Once it's checked, Model lets you pick a chat model the key can use.
+
+- The free brain is a smaller model than the brains you can use with a key. You get 15 messages a day, back at midnight UTC. SETTINGS shows what's left and the reset time where you live.
+- Everyone shares one daily pool too, because it costs real money, so free messages can run out sooner on a busy day.
+- SETTINGS > Switch to your own key skips Capri's daily limit; your provider's charges and limits still apply. A key you saved before stays saved when you try Start free.
+- Free chat goes from your phone through Capri's server to Cloudflare's AI. The server doesn't store or log the chat, only daily counts against a scrambled connection address, and it deletes counts older than yesterday.
 
 - This is text chat with no PC. Her tools, opening apps, playing music, reminders, SCREEN, JOBS, CALL and her voice need Capri on your PC.
-- The key stays in this browser on this phone and goes only to the provider. It doesn't go through the relay, capriai.app or your PC. Forget key removes it from this browser.
+- Your own key stays in this browser on this phone and goes only to the provider. It doesn't go through the relay, capriai.app or your PC. Forget key removes it from this browser.
+- Once a day, after her first reply, the page tells Capri's server that a phone used her that day, with two yes or no answers: first time in this browser, and also paired with a PC. It sends no key, chat, name or id, and the server keeps only each day's totals.
 - NVIDIA keys, Capri codes and Claude or ChatGPT plans stay PC-only.
 - To go back to the paired PC, open SETTINGS > Your PC > Use your PC.
 
@@ -1697,7 +1793,7 @@ On Android:
 - The Cloudflare relay can see room and device IDs, which devices are online, connection timing and encrypted frame sizes. It checks sign-in tokens and the one-time code, and stores their SHA-256 hashes. It can't read your messages, audio, screen pictures or API keys, and never gets the encryption keys. It doesn't log frames.
 - Brain keys sent from the phone are write-only: she never sends them back, even in part. Your PC checks and saves them like keys entered in Mainframe, protected with Windows DPAPI for your Windows account.
 - Her SECURITY settings still decide what she asks first. An ask-first question shows in JOBS with Allow and Deny; pairing a phone doesn't turn those settings off.
-- Your chosen brain and voice services still receive what they need to answer, as described in section 19. Phone-only chat sends your words and key straight to the provider you picked.
+- Your chosen brain and voice services still receive what they need to answer, as described in section 19. On a phone, the free brain sends your words through Capri's server to Cloudflare's AI; your own key sends them straight to the provider you picked. Either sends one anonymous phone count a day to Capri's server (see "Use her without a PC").
 
 ### Pairing and connection problems
 - "Code used up. Show a new one": the QR is expired, used or no longer valid. Press New code (or Pair a phone) on the PC and scan again. Retrying the old QR won't work.
@@ -1761,7 +1857,7 @@ The update worked. Open Capri from the Start menu.
 Wait a few seconds, then press Restart to update again.
 
 ### Mac and Linux
-No automatic updates yet, but she tells you when a new version is out: "Capri X is out. Right-click me > Get Capri X."
+On a Mac, and on Linux from the tarball, there are no automatic updates yet, but she tells you when a new version is out: "Capri X is out. Right-click me > Get Capri X." Started from Capri-linux-x64.AppImage (0.9.0 and newer), she downloads a newer release by herself when she checks for updates, and her right-click menu shows "Restart Capri to update to X" (see "The Linux AppImage updates itself" in section 21).
 1. Right-click her > Get Capri X. Its download page opens. (The item only shows when there's a new version.)
 2. Download Capri-mac-apple-silicon.zip, Capri-mac-intel.zip, Capri-linux-x64.AppImage or Capri-linux-x64.tar.gz.
 3. Quit Capri and put the new one where the old one was. Her settings, notes, chat and keys stay, because they're kept outside the app.
@@ -1915,8 +2011,7 @@ Code/Husk Mode works here too: Advanced Settings > BRAIN > Code/Husk Mode. Her h
 - No built-in brain. Use Ollama or an API key.
 - No keyboard shortcuts.
 - No mouse and keyboard jobs on Mac.
-- No automatic updates. She says when a new version is out, and right-click her > Get Capri X opens its download page.
-- No mini player.
+- No automatic updates on a Mac, or on Linux from the tarball. She says when a new version is out, and right-click her > Get Capri X opens its download page. Started from the Linux AppImage she updates herself (0.9.0).
 
 ### TALK on Linux
 Follow the [Linux TALK setup](https://github.com/lachydotmcg/capri-desktop#linux-talk-setup) to install `parec`, extract sherpa-onnx into her ears folder (or put `sherpa-onnx-offline` on PATH) and add her English Parakeet pack. Pick your default mic in your sound settings. Hover over her, click TALK, say one English line and pause. Click TALK again to cancel. She transcribes the audio on your PC and uses the same brain and reply voice as TYPE.
@@ -1992,6 +2087,23 @@ The preview doesn't have everything Windows has yet (see "Not yet" above). Capri
 ### Where's the Mainframe on Mac or Linux?
 Capri Mainframe is included in the 0.8.3 preview, with BRAIN, VOICE and CAPRI, plus Simple Settings and Advanced Settings. Update if you're on an older preview.
 
+From 0.9.0 on a Mac and Linux:
+- She says your reminders and routines.
+- She reads PDF pages: PDFKit on a Mac, pdftotext on Linux. If pdftotext is missing she says which package to install (poppler-utils, or poppler on Arch).
+- On a Mac she sits on a window you name, and focus goes back to your app when her mini player closes.
+- On Linux she moves on niri, and stays put when the desktop answers late or a few pixels off.
+- Settings > HABITS > Music app: Spotify, YouTube, or Apple Music on a Mac.
+
+### The Linux AppImage updates itself (0.9.0)
+Started from Capri-linux-x64.AppImage, she downloads a newer release by herself when she checks for updates (after she starts, every 6 hours, or when you pick Check for updates). She takes only a finished release and checks its size and SHA-256 against the release's SHA256SUMS.txt. Her right-click menu then shows "Restart Capri to update to X". Picking it, or asking her clearly to update, copies the new AppImage next to yours, then she closes, swaps the two and starts the new one. If the new one closes within 4 seconds, the old one is put back and she says so once.
+- If the AppImage sits in a folder she can't write to (like /opt), the menu shows "Get Capri X" and opens the release page instead. A full disk is said in its own words.
+- What happened is written to updates/update.log in her data folder (~/.config/Capri/updates/update.log).
+- A tarball, a package or a source build doesn't replace itself: those get the release page as before.
+- Patch by Kelv.
+
+### Hyprland (0.9.0)
+On Hyprland, Mainframe has a Close button and no Minimize button (nothing there brings a minimized window back), and Super+C closes Mainframe while it's focused. Capri keeps running. Patch by Kelv.
+
 ---
 
 ## 22. Older versions (0.6.2 and before)
@@ -2029,7 +2141,7 @@ Then check the exact message, your Capri version (top of the Mainframe), and the
 ### Install and antivirus
 - "Windows protected your PC": More info > Run anyway.
 - "Item Not Found", or the installer vanished: Ctrl + J > Keep in Chrome or Edge, or restore it from your antivirus quarantine. Open it from your Downloads folder.
-- Antivirus says Trojan, Wacatac, Zusy, Gen:Suspicious or MachineLearning/Anomalous: if you downloaded it from the Capri website or GitHub, it's a false alarm on a new unsigned app. Restore and allow it.
+- Antivirus says Trojan, Wacatac, Zusy, Gen:Suspicious or MachineLearning/Anomalous: if you downloaded it from the Capri website or GitHub, it's a false alarm on a new unsigned app. Restore and allow it. For what VirusTotal behaviour flags mean, see "What do VirusTotal behaviour reports mean?" above.
 - Opera "Insufficient permissions": use Chrome or Edge, or download from GitHub releases.
 - Phone says "dangerous download": download Capri-Setup.exe on your Windows PC. To use her from a phone, see "Capri Remote".
 - "Quit Capri from her tray menu, then install again.": quit Capri first.
@@ -2206,6 +2318,12 @@ Her game and screen comments leave on their own after a moment.
 
 ### Gaming Mode when she plays
 When she plays a game for you she goes into Gaming Mode by herself once the game is in front. It stays up until the game closes. "Gaming mode off" keeps it off for that job.
+
+### Her chat shows the model's thinking or a written-out tool call
+From 0.9.0 she keeps a brain's thinking and written-out tool calls out of her chat, her voice and the saved chat. A tool call written into a reply is never run. If you still see one, press right-click her > Help > Copy error details and send it with the brain and model you use; her log notes each leak.
+
+### She froze on a glitch frame during a game job
+From 0.9.0 her teleport and glitch run on their own clock, so a busy job can't freeze them. If it happens, press Esc and send Copy error details: it includes any "timers starved" line.
 
 ---
 

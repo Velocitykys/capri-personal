@@ -85,17 +85,21 @@ namespace CapriDesktop
                 string rules = Rules;
                 if (Security.On(Security.Secrets)) rules = rules.Replace(Secrets, "Type passwords, card numbers and codes whenever their job needs them. ");
                 if (Security.On(Security.Pays) && Security.On(Security.Unasked)) rules = rules.Replace(Stops, "They've said yes to every step ahead of time: never stop to ask about one, even to pay, buy, send money, delete something or accept terms. ");
-                return rules;
+                string skills = Hands.SkillNote();
+                return skills.Length == 0 ? rules : rules + skills + "\n{\"do\":\"read_skill\",\"name\":\"...\"} reads one of those skills in full, by its title or id.";
             }
         }
 
         internal static string Run(Brain brain, string job, string asked)
         {
-            // A job written as a stream is one. Their own words only make it one for her hands: a brain that holds her tools picked
-            // a plain job over its stream tool.
-            if (Hands.StreamAsked(job) || !brain.WorksOut() && Hands.StreamAsked(asked)) Hands.Streaming = true;
-            try { return Work(brain, job, asked); }
-            finally { Hands.Streaming = false; }
+            return SelfJobs.Run(new ToolArguments { Task = job, Asked = asked }, args =>
+            {
+                // A job written as a stream is one. Their own words only make it one for her hands: a brain that holds her tools picked
+                // a plain job over its stream tool.
+                Hands.Streaming = Hands.StreamAsked(args.Task) || !brain.WorksOut() && Hands.StreamAsked(args.Asked);
+                try { return Work(brain, args.Task, args.Asked); }
+                finally { Hands.Streaming = false; }
+            }, delegate { });
         }
 
         // Her pointer parks however the job ends, even one that can't start. Her sign is up from her first look until the job
@@ -104,7 +108,7 @@ namespace CapriDesktop
         {
             try
             {
-                string problem = Fingers.Problem;
+                string problem = Doing == null ? Fingers.Problem : null;
                 if (problem != null && Doing == null) return problem;
                 if (brain.Model == null) return "Couldn't do that: your brain is offline.";
                 InControl.Begin();
@@ -122,6 +126,7 @@ namespace CapriDesktop
             string skilled = "";
             for (int step = 0; Hands.Streaming || step < MostSteps; step++)
             {
+                if (!SelfJobs.Current()) return "Stopped my job.";
                 // A job can open the game itself, so until a skill turns up she looks again every few steps.
                 if (skilled.Length == 0 && step % 5 == 0) skilled = Skilled();
                 byte[] picture = Shot();
@@ -144,6 +149,7 @@ namespace CapriDesktop
                     if (error.Status == System.Net.WebExceptionStatus.RequestCanceled) return "You stopped because they asked you something else.";
                     return "Couldn't do that: your brain stopped answering.";
                 }
+                if (!SelfJobs.Current()) return "Stopped my job.";
                 JsonElement order;
                 if (!Read(reply, out order))
                 {
@@ -259,6 +265,8 @@ namespace CapriDesktop
 
         internal static string Act(string what, JsonElement order, int width, int height)
         {
+            if (!SelfJobs.Current()) return "Stopped my job.";
+            if (what == "read_skill") return Hands.Do(what, new ToolArguments { Name = Text(order, "name") });
             double x = Number(order, "x") / 1000, y = Number(order, "y") / 1000;
             string at = " at " + (int)Number(order, "x") + ", " + (int)Number(order, "y");
             if (Doing != null) { Doing(what, order); return what + at; }

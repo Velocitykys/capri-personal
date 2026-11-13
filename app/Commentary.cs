@@ -53,9 +53,13 @@ namespace CapriDesktop
         // A brain that can't see still gets what a game's log said, but a flash with no picture is nothing to go on.
         internal static Func<bool> Sees = delegate { return true; };
         internal static Func<string, string, byte[][], string> See;
+        internal static Func<string, string> Avoid = delegate { return ""; };
+        internal static Func<string, string, bool> Guard = delegate { return true; };
         internal static Action<string, string, GameMood> Speak;
         internal static Func<byte[]> Shot = delegate { return null; };
         internal static Func<bool> Moments = delegate { return false; };
+        // GAMES > Game sounds: whether a big burst of the game's sound counts as a moment (#234).
+        internal static Func<bool> Hears = delegate { return true; };
         internal static Func<string> Keep;
         // The time, so the smoke test can move it on.
         internal static Func<int> Clock = delegate { return Environment.TickCount; };
@@ -101,6 +105,9 @@ namespace CapriDesktop
         // as a reaction does, and it goes up in the feed even while she can't talk.
         internal static bool Moment(string kind, string detail, byte[] frameBefore, byte[] frameAfter)
         {
+            // With Game sounds off a burst is no moment. The banner look GameWatch gave it first still counts, so a kill read
+            // off the screen still gets its reaction.
+            if (Reactions.KindOf(kind) == "sound" && !Hears()) return false;
             bool live = Reactions.KindOf(kind) != null && Reactions.Running;
             if (live) Reactions.React(kind, detail);
             return Trigger(kind, detail, frameBefore, frameAfter, live);
@@ -166,7 +173,7 @@ namespace CapriDesktop
                 if (before != null) frames.Add(Shrunk(before));
                 if (after != null) frames.Add(Shrunk(after));
                 moments = Moments();
-                line = Line(See(Brain.Character + RulesFor(moments), Ask(kind, detail, game, recent, pace, frames.Count, died), frames.ToArray()), recent, out flagged);
+                line = Line(See(Brain.Character + RulesFor(moments), Ask(kind, detail, game, recent, pace, frames.Count, died) + Avoid(game), frames.ToArray()), recent, out flagged);
                 if (!Computer.ScreenNames(line, game)) { line = ""; flagged = false; }
             }
             catch (Exception error)
@@ -186,6 +193,7 @@ namespace CapriDesktop
             bool current = spent <= (live ? Reactions.BrainLate : Late) && here;
             bool keep = line.Length > 0 && current;
             bool moment = flagged && moments && spent <= Late && here && Moments();
+            if (keep && !Guard(line, game)) keep = false;
             Func<string> save = null;
             Action<string> trace = Trace;
             if (trace != null) trace("comment " + kind + " " + took.ElapsedMilliseconds + " ms " + (keep ? "said" : "dropped") + ": " + line);
@@ -505,9 +513,12 @@ namespace CapriDesktop
             Commentary.Free = CommentFree;
             Commentary.Sees = delegate { return Unseeing() == null; };
             Commentary.See = delegate(string system, string ask, byte[][] frames) { return AskHead(system, ask, 120, frames); };
+            Commentary.Avoid = delegate(string game) { return ownSpeech.Avoid("game comment", game); };
+            Commentary.Guard = delegate(string line, string game) { return !ownSpeech.Repeats("game comment", line, game); };
             Commentary.Speak = delegate(string line, string kind, GameMood mood) { Post(delegate { CommentSay(line, kind, mood); }); };
             Commentary.Shot = CommentShot;
             Commentary.Moments = delegate { return preferences.ClipMoments && clips.Enabled; };
+            Commentary.Hears = delegate { return GameSoundsOn; };
             WireReactions();
             Commentary.Keep = delegate
             {
@@ -566,11 +577,12 @@ namespace CapriDesktop
             // can't talk (F67).
             if (Reactions.Running)
             {
+                if (ownSpeech.Repeats("game comment", line, game) || !Reactions.Post(line, true)) return;
+                ownSpeech.Take("game comment", line, game);
                 brain.Remember("(Something happened in their game: " + kind + ".)", line);
-                Reactions.Post(line, true);
                 return;
             }
-            if (!CommentFree()) return;
+            if (!CommentFree() || !ownSpeech.Take("game comment", line, game)) return;
             Commentary.Stage.Mood(mood);
             Commentary.Stage.Say(line);
             Action<string> test = commentTest;

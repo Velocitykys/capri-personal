@@ -8,7 +8,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <DefineConstants>$(DefineConstants);CROSS</DefineConstants>
     <NoWarn>$(NoWarn);CS0649;CS0169;CS0414;CA1416;SYSLIB0014</NoWarn>
-    <Version>0.8.8</Version>
+    <Version>0.9.0</Version>
     <Product>Capri</Product>
     <ApplicationIcon>../assets/chip.ico</ApplicationIcon>
     <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
@@ -18,6 +18,11 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
   <ItemGroup>
+    <None Include="../docs/provenance/SkiaSharp/LICENSE.md" Link="licenses/native-font-bootstrap-SkiaSharp-MIT.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="native/capri-input" Condition="Exists('native/capri-input')" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="bridge/**/*.py;bridge/**/*.json;bridge/**/*.md;bridge/**/*.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.22" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.22" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
@@ -26,8 +31,13 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../app/Brain.cs" Link="Shared/Brain.cs" />
+    <Compile Include="../app/Leaks.cs" Link="Shared/Leaks.cs" />
     <Compile Include="../app/Care.cs" Link="Shared/Care.cs" />
     <Compile Include="../app/Engine.cs" Link="Shared/Engine.cs" />
+    <Compile Include="../app/FileFinder.cs" Link="Shared/FileFinder.cs" />
+    <Compile Include="../app/Websites.cs" Link="Shared/Websites.cs" />
+    <Compile Include="../app/GameNotes.cs" Link="Shared/GameNotes.cs" />
+    <Compile Include="../app/Reminders.cs" Link="Shared/Reminders.cs" />
     <Compile Include="../app/Hands.cs" Link="Shared/Hands.cs" />
     <Compile Include="../app/Husk.cs" Link="Shared/Husk.cs" />
     <Compile Include="../app/Presence.cs" Link="Shared/Presence.cs" />
@@ -45,6 +55,7 @@
     <EmbeddedResource Include="../assets/voice/*.wav" LogicalName="Capri.Voice.%(Filename)%(Extension)" />
     <EmbeddedResource Include="../assets/chip.png" LogicalName="Capri.Chip.png" />
     <EmbeddedResource Include="../assets/cursor.png" LogicalName="Capri.Cursor.png" />
+    <AvaloniaResource Include="../assets/fonts/CapriMainframe-Bold.ttf" Link="Assets/CapriMainframe-Bold.ttf" />
     <AvaloniaResource Include="../assets/fonts/ShareTechMono-Regular.ttf" Link="Assets/ShareTechMono-Regular.ttf" />
     <AvaloniaResource Include="../assets/fonts/Barlow*.ttf" Link="Assets/%(Filename)%(Extension)" />
     <EmbeddedResource Include="../assets/fonts/Barlow-OFL.txt" LogicalName="Capri.Font.Barlow-OFL.txt" />

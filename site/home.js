@@ -437,9 +437,48 @@
     dirty = true;
   };
 
-  // She leaves on her own glitch frames and arrives the same way, and the chapter's windows glide while she's gone.
+  // Where the ball of ribbon she forms from goes, on the screen. Sitting, the animation is drawn on this very pose, so it
+  // lines up with her perch cell; lying or standing it forms around her middle.
+  const spot = () => {
+    place();
+    const box = her.el.getBoundingClientRect();
+    if (pose === 'perch') return { x: box.left + size * (0.4323 + 5.97 / 384), y: box.top + size * (0.5938 + 12.34 / 384) };
+    return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+  };
+  // Her picture as she is right now: which cell of which strip, and where it is on the screen (it stays with her desktop if the page scrolls).
+  const portrait = () => {
+    const [name, cell] = her.shown.split(':'), image = strips.get(name), clip = table[name];
+    if (!image || !clip) return null;
+    const box = $('.sprite', her.el).getBoundingClientRect(), base = stage.getBoundingClientRect();
+    const sw = image.naturalWidth / clip.across, sh = image.naturalHeight / clip.rows, left = box.left - base.left, top = box.top - base.top;
+    return { image, sx: cell % clip.across * sw, sy: Math.floor(cell / clip.across) * sh, sw, sh, width: box.width, height: box.height,
+      at: () => { const now = stage.getBoundingClientRect(); return { x: now.left + left, y: now.top + top }; } };
+  };
+  // Her own picture takes over under the last of the drawings she forms from, with her arrival at its end, where she's whole.
+  const land = then => {
+    her.el.classList.remove('gone');
+    her.hold(restClip());
+    const name = pose === 'perch' ? 'perch_arrive' : pose === 'stand' ? 'arrive' : '';
+    if (!name || still || !ready.has(name)) { if (then) then(); return; }
+    her.once(name, then);
+    her.from = time - Math.round(table[name].count * 0.7) / table[name].fps * 1000;
+  };
+  // She travels as her ribbons, as she does in the app (city/ribbons.js), and the chapter's windows glide while she's on her way.
+  // Without them (her desktop off screen, or the drawings not loaded) she leaves on her own glitch frames and arrives the same way.
   const teleport = (move, then) => {
     if (still) { move(); if (then) then(); return; }
+    const ribbons = window.CapriRibbons;
+    if (ribbons && ribbons.ready && live.has(stage)) {
+      const base = stage.getBoundingClientRect(), was = spot(), picture = portrait();
+      her.el.classList.add('gone');
+      move();
+      const going = ribbons.trip({
+        from: () => { const now = stage.getBoundingClientRect(); return { x: was.x - base.left + now.left, y: was.y - base.top + now.top }; },
+        to: spot, size, picture, mirrored: true, onShown: () => land(then)
+      });
+      if (!going) land(then);
+      return;
+    }
     her.once(pose === 'lie' ? 'laydown_leave' : pose === 'perch' ? 'perch_leave' : 'leave', () => {
       if (still) { move(); if (then) then(); return; }
       her.el.classList.add('gone');
@@ -1314,7 +1353,7 @@
     [/\b(mac|macos|apple|silicon|intel)\b/i, 'Mac needs macOS 15 or newer, choom. Grab the Apple Silicon or Intel zip. The Help page has the first-open steps.'],
     [/\b(linux|wayland|x11|appimage)\b/i, 'Linux is an early preview, choom. AppImage or tarball, with Ollama for my brain. On Wayland I sit at the bottom of your screen.'],
     [/\b(ram|memory requirements|requirements|specs|graphics|disk space)\b/i, 'Local brain: 8 GB RAM, 16 is better, and 3 to 5 GB space. With a brain key: 4 GB RAM and under 100 MB, choom.'],
-    [/\b(install|download|windows|setup)\b/i, 'On Windows 10 or 11, 64-bit, grab Capri-Setup.exe and open it, choom. The installer has everything.'],
+    [/\b(install|download|windows|setup|microsoft store)\b/i, "On Windows 10 or 11, get me from the Microsoft Store, choom. It's signed, so Windows won't warn you. Want the newest stuff first? Grab Capri-Setup.exe instead."],
     [/\b(cost|price|free|pay|subscription)\b/i, "I'm free, choom. My built-in brain and free voice run on your PC. Some optional cloud keys need paid credits."],
     [/\b(offline|internet|connection)\b/i, 'My built-in brain and free voice run on your PC, choom. A brain from a key needs internet.'],
     [/\b(brain|model|ollama|nvidia)\b/i, 'Open Capri Mainframe, then BRAIN > Set up her brain, choom. On Mac and Linux my brain uses Ollama.'],
@@ -1618,6 +1657,39 @@
   perform('hero');
   requestAnimationFrame(tick);
 
+  // ---------- One Capri. She is up on the city's edge or down here on her desktop, and city/city.js sends her between them. ----------
+  let upTop = false;
+  window.CapriStage = {
+    get size() { return size; },
+    // free to leave: not in the middle of a hop, on a cursor, in a hand or in the air
+    get free() { return upTop || !(hopping || riding || drag || flight); },
+    spot,
+    portrait,
+    // She leaves her desktop: her bubble and her pill go with her, and her chapters wait for her.
+    away() {
+      if (asleep) wake(true);
+      upTop = hopping = true;
+      pillUntil = 0;
+      pink.classList.remove('on');
+      stopTalk();
+      talkbox.classList.add('off');
+      her.el.classList.add('gone');
+    },
+    // Before she comes down, her desktop goes to the chapter the page is on, so she lands where that chapter has her.
+    settle() {
+      if (!upTop || scene === shownScene) return;
+      arrange(scene);
+      shownScene = scene;
+      cut();
+    },
+    // She is back: she says the chapter's line, and catches up with wherever the page has been scrolled to.
+    back() {
+      if (!upTop) return;
+      upTop = false;
+      land(() => { hopping = false; perform(shownScene); if (scene !== shownScene) go(scene); });
+    }
+  };
+
   if ('IntersectionObserver' in window) {
     const chapters = new IntersectionObserver(entries => {
       if (!wide.matches) return;
@@ -1640,6 +1712,7 @@
   const mark = $('#wordmark');
   const hero = $('.hero');
   const weigh = () => {
+    if (!mark) return;
     if (still || !wide.matches) { mark.style.transform = ''; return; }
     const box = hero.getBoundingClientRect();
     const gone = clamp(-box.top / Math.max(1, box.height), 0, 1);
@@ -1713,8 +1786,12 @@
   let system = /Android|iPhone|iPad|CrOS/.test(agent) ? 'windows' : /mac/i.test(platform) && navigator.maxTouchPoints < 2 ? 'mac' : /linux|x11/i.test(platform) ? 'linux' : 'windows';
   const urls = {};
   for (const link of $$('a[data-os]')) urls[link.dataset.os] = link.href;
+  // Windows gets the signed copy on the Microsoft Store first; the latest release is a link beside it.
+  const pick = () => system === 'windows' ? 'store' : system;
   const point = () => {
-    install.href = urls[system] || urls.windows;
+    const to = pick();
+    install.href = urls[to] || urls.windows;
+    if (to === 'store') { install.target = '_blank'; install.rel = 'noopener noreferrer'; } else install.removeAttribute('target');
     for (const link of $$('a[data-os]')) if (urls[link.dataset.os]) link.href = urls[link.dataset.os];
     const yours = $('[data-panel="' + (system === 'intel' ? 'mac' : system) + '"] .yours');
     if (yours) yours.hidden = false;
@@ -1733,6 +1810,7 @@
   } else if (system === 'mac' && intelGraphics()) { system = 'intel'; point(); }
   const headsUp = $('#heads-up');
   const warn = os => {
+    if (os === 'store') return;                                                  // the Store copy is signed: no heads-up
     const showing = os === 'intel' ? 'mac' : os;
     for (const note of $$('p[data-os]', headsUp)) note.hidden = note.dataset.os !== showing;
     if (headsUp.showModal && !headsUp.open) headsUp.showModal();
@@ -1740,10 +1818,84 @@
   document.addEventListener('click', event => {
     const link = event.target.closest('a[data-os], #install');
     if (!link) return;
-    warn(link.dataset.os || system);
-    readCount({ method: 'POST', keepalive: true }).catch(() => {});
+    warn(link.dataset.os || pick());
+    if (!/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) readCount({ method: 'POST', keepalive: true }).catch(() => {});
   });
   headsUp.addEventListener('click', event => { if (event.target === headsUp) headsUp.close(); });
+
+  // ---------- Get her: the pick for this device, big on her pink, and every way to get her as square tiles ----------
+  // A tile picks; the big button downloads. The big card is a copy of the picked tile's hidden details, which point() and
+  // the release keep up to date like every other download link, so the copy carries the right address and size.
+  const getHer = $('#download');
+  if (getHer) {
+    const card = { box: $('.gh-card', getHer), icon: $('#gh-icon'), label: $('#gh-for'), name: $('#gh-name'), tag: $('#gh-tag'), marks: $('#gh-marks'), go: $('#gh-go') };
+    const options = $$('.gh-option', getHer);
+    const touchMac = /mac/i.test(platform) && navigator.maxTouchPoints > 1;               // an iPad says it is a Mac
+    let mine = /OculusBrowser|Quest/.test(agent) ? 'quest'                                // a Meta Quest's browser says it is Linux
+      : /Android|iPhone|iPad|iPod/.test(agent) || touchMac ? 'phone'
+      : /mac/i.test(platform) ? (system === 'intel' ? 'intel' : 'mac')
+      : /CrOS/.test(agent) ? 'linux'                                                     // a Chromebook runs her Linux build, as a folder
+      : /linux|x11/i.test(platform) ? 'appimage'
+      : 'store';                                                                         // Windows: the signed copy first
+    let picked = false;
+    const choose = way => {
+      const option = options.find(item => item.dataset.way === way);
+      if (!option) return;
+      const more = $('.gh-more', option);
+      for (const item of options) $('.gh-way', item).setAttribute('aria-pressed', String(item === option));
+      card.icon.replaceChildren($('.gh-way .glyph', option).cloneNode(true));
+      card.label.textContent = option.dataset.for;
+      card.name.textContent = option.dataset.name;
+      card.tag.innerHTML = $('.gh-tag-full', more).innerHTML;
+      card.marks.innerHTML = $('.marks', more).innerHTML;
+      // the first link becomes the big button, with the file's size in it; any other link stays a link
+      card.go.replaceChildren(...$$('.os-links a', more).map((link, index) => {
+        const copy = link.cloneNode(true);
+        if (index > 0) return copy;
+        copy.className = 'btn';
+        const words = document.createElement('span');
+        words.textContent = link.dataset.big || link.textContent;
+        copy.replaceChildren(words);
+        const size = $('[data-size]', more);
+        if (size) {
+          const amount = document.createElement('span');
+          amount.className = 'size';
+          amount.dataset.size = size.dataset.size;
+          amount.textContent = size.textContent;
+          copy.append(' ', amount);
+        }
+        return copy;
+      }));
+    };
+    const markMine = () => {
+      for (const tab of $$('.gh-mine', getHer)) tab.remove();
+      const option = options.find(item => item.dataset.way === mine);
+      if (!option) return;
+      const tab = document.createElement('span');
+      tab.className = 'gh-mine';
+      tab.textContent = 'For you';
+      option.append(tab);
+    };
+    markMine();
+    choose(mine);
+    if (mine === 'mac' && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+      navigator.userAgentData.getHighEntropyValues(['architecture']).then(values => {
+        if (values.architecture !== 'x86') return;
+        mine = 'intel';
+        markMine();
+        if (!picked) choose(mine);
+      }).catch(() => {});
+    }
+    getHer.addEventListener('click', event => {
+      const tile = event.target.closest('.gh-way');
+      if (!tile) return;
+      picked = true;
+      choose(tile.closest('.gh-option').dataset.way);
+      // on a phone her desktop is pinned over the top of the page, and the big card can be under it or above the screen
+      const covered = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+      if (card.box.getBoundingClientRect().top < covered) card.box.scrollIntoView({ block: 'start', behavior: still ? 'instant' : 'smooth' });
+    });
+  }
 
   // ---------- Real numbers. The page keeps its built-in snapshot if these can't be reached. ----------
   const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });

@@ -288,7 +288,7 @@ namespace CapriDesktop
                 modHides[i].Text = isHidden ? "Unhide" : "Hide";
                 modHides[i].AccessibleName = (isHidden ? "Unhide " : "Hide ") + mod.File.Name + " in this list";
                 modHides[i].Invalidate();
-                modAbouts[i].Text = ((mod.Changed ? "CHANGED, approve it again. " : mod.Code ? "RUNS CODE. " : mod.Skin ? (mod.On && capri.ModList.SkinStack.Count > 1 ? "SKIN, LAYER " + (capri.ModList.SkinStack.IndexOf(mod) + 1) + " OF " + capri.ModList.SkinStack.Count + ". " : "SKIN. ") : mod.Skill ? "SKILL. " : "") + (string.IsNullOrEmpty(mod.File.Author) ? "" : "by " + mod.File.Author + ". ") + (mod.File.Description ?? "") + (mod.Code || mod.File.WakeNames.Length == 0 ? "" : " Names: " + string.Join(", ", mod.File.WakeNames)) + (mod.Skill ? " For " + mod.File.Games[0] + "." : "")).Trim();
+                modAbouts[i].Text = ((mod.Changed ? "CHANGED, approve it again. " : mod.Code ? "RUNS CODE. " : mod.Skin ? (mod.On && capri.ModList.SkinStack.Count > 1 ? "SKIN, LAYER " + (capri.ModList.SkinStack.IndexOf(mod) + 1) + " OF " + capri.ModList.SkinStack.Count + ". " : "SKIN. ") : mod.Skill ? "SKILL. " : "") + (string.IsNullOrEmpty(mod.File.Author) ? "" : "by " + mod.File.Author + ". ") + (mod.File.Description ?? "") + (mod.Code || mod.File.WakeNames.Length == 0 ? "" : " Names: " + string.Join(", ", mod.File.WakeNames)) + (mod.Skill && mod.File.Games.Length > 0 ? " For " + mod.File.Games[0] + "." : "")).Trim();
                 modAbouts[i].ForeColor = mod.Changed ? Rose : Faint;
                 modSwitches[i].Text = mod.On ? "On" : "Off";
                 modSwitches[i].Accent = mod.On ? Cyan : Rose;
@@ -506,7 +506,7 @@ namespace CapriDesktop
                     return false;
                 }
                 FillMods();
-                ModSays(mod.Skin ? Stacked(mod) : mod.Code ? mod.File.Name + " is on and running." : mod.Skill ? mod.File.Name + " is on. She uses it when she plays " + mod.File.Games[0] + "." : mod.File.WakeNames.Length == 0 ? mod.File.Name + " is on." : mod.File.Name + " is on. She now answers to " + Mods.Listed(mod.File.WakeNames) + " too.", false);
+                ModSays(mod.Skin ? Stacked(mod) : mod.Code ? mod.File.Name + " is on and running." : mod.Skill ? mod.File.Name + " is on." + (mod.File.Games.Length == 0 ? " She can read it when it fits." : " She uses it when she plays " + mod.File.Games[0] + ".") : mod.File.WakeNames.Length == 0 ? mod.File.Name + " is on." : mod.File.Name + " is on. She now answers to " + Mods.Listed(mod.File.WakeNames) + " too.", false);
                 return true;
             }
             catch (ModException error)
@@ -691,7 +691,7 @@ namespace CapriDesktop
 
         private bool AskToRun(ModFile mod, string hash)
         {
-            return MessageBox.Show(this, Mods.Consent(mod, hash), "Run this code mod?", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+            return Question.Ask(this, Mods.Consent(mod, hash), "Run this code mod?");
         }
 
         private void RemoveMod(int row)

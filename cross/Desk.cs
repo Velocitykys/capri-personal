@@ -6,21 +6,26 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Avalonia;
+using Avalonia.Platform;
 
 namespace CapriDesktop
 {
     internal sealed class Spot
     {
         internal long Window;
+        internal int Pid;
+        internal string Name;
         internal PixelRect Bounds;
         internal bool Seat;
         internal bool Solid;
     }
 
-    internal abstract class Desk
+    internal abstract class Desk : IDisposable
     {
         internal List<PixelRect> Screens = new List<PixelRect>();
         internal double Scale = 1;
+        // Set by Program. The niri bridge needs parts of her app that the desktop test build leaves out.
+        internal static Func<Desk> Niri;
 
         internal static Desk Make()
         {
@@ -28,7 +33,8 @@ namespace CapriDesktop
             {
                 if (OperatingSystem.IsWindows()) return new WindowsDesk();
                 if (OperatingSystem.IsMacOS()) return new MacDesk();
-                if (OperatingSystem.IsLinux() && HyprDesk.Socket() != null) return new HyprDesk();
+                if (HyprlandDesktop.Current is HyprlandDesktop hyprland) return new HyprlandDesk(hyprland);
+                if (OperatingSystem.IsLinux() && Program.Smoke == null && Niri?.Invoke() is Desk niri) return niri;
                 if (OperatingSystem.IsLinux() && Environment.GetEnvironmentVariable("DISPLAY") != null)
                 {
                     // On Wayland, XWayland only knows where the mouse is while it's over an X window, such as her while she's held.
@@ -46,13 +52,19 @@ namespace CapriDesktop
         internal virtual double Points { get { return 0; } }
         internal abstract List<Spot> Windows(ICollection<long> skip);
         internal abstract Spot Find(long window);
+        internal virtual Spot Find(long window, PixelPoint near) { return Find(window); }
         internal abstract bool Alive(long window);
         internal virtual string Debug() { return ""; }
+        internal virtual void BindScreens(IReadOnlyList<Screen> screens) { }
+        internal virtual PixelRect? WorkAt(PixelPoint point) { return null; }
+        internal virtual IEnumerable<PixelRect> WorkAreas { get { return null; } }
+        public virtual void Dispose() { }
         // Where the mouse is on the whole desktop, in pixels, or null where the desktop won't say (Wayland).
         internal virtual PixelPoint? Pointer() { return null; }
         // Where the mouse is while she's being dragged, read straight from the desktop, so a window move the desktop hasn't
         // confirmed yet doesn't skew it. Null keeps the drag on her window's own idea of where it is.
         internal virtual PixelPoint? Grabbed() { return null; }
+        internal virtual void TrackDrag(bool active) { }
 
         // Asks the window manager not to give this window the keyboard when it's shown.
         internal virtual void Unfocused(long window) { }
@@ -241,7 +253,9 @@ namespace CapriDesktop
                     if (box == IntPtr.Zero || !CGRectMakeWithDictionaryRepresentation(box, out area)) continue;
                     PixelRect bounds = new PixelRect((int)Math.Round(area.X * Scale), (int)Math.Round(area.Y * Scale), (int)Math.Round(area.Width * Scale), (int)Math.Round(area.Height * Scale));
                     if (bounds.Width <= 0 || bounds.Height <= 0) continue;
-                    found.Add(Make(id, bounds, true));
+                    Spot spot = Make(id, bounds, true);
+                    spot.Pid = (int)Whole(info, owner);
+                    found.Add(spot);
                 }
             }
             finally { CFRelease(array); }
@@ -287,7 +301,7 @@ namespace CapriDesktop
     internal sealed class X11Desk : Desk
     {
         private const string Library = "libX11.so.6";
-        private delegate int Handler(IntPtr display, IntPtr error);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int Handler(IntPtr display, IntPtr error);
         [DllImport(Library)] private static extern IntPtr XOpenDisplay(IntPtr name);
         [DllImport(Library)] private static extern IntPtr XDefaultRootWindow(IntPtr display);
         [DllImport(Library)] private static extern IntPtr XInternAtom(IntPtr display, string name, bool onlyIfExists);
@@ -300,24 +314,29 @@ namespace CapriDesktop
         [DllImport(Library)] private static extern bool XQueryPointer(IntPtr display, IntPtr window, out IntPtr root, out IntPtr child, out int rootX, out int rootY, out int x, out int y, out uint mask);
         [DllImport(Library)] private static extern int XChangeProperty(IntPtr display, IntPtr window, IntPtr property, IntPtr type, int format, int mode, IntPtr[] data, int elements);
         [DllImport(Library)] private static extern int XFlush(IntPtr display);
-        private static Handler handler;
-        private static IntPtr previous;
-        private static IntPtr ours;
+        internal static readonly X11Safety Errors = new X11Safety();
+        private static readonly Handler handler = Errors.Handle;
+        private static bool installed;
         private readonly IntPtr display;
         private readonly IntPtr root;
         private readonly Dictionary<string, IntPtr> atoms = new Dictionary<string, IntPtr>();
+        private readonly Func<IntPtr, string, long[]> read;
+
+        internal X11Desk(Func<IntPtr, string, long[]> read) { this.read = read; }
 
         internal X11Desk()
         {
             display = XOpenDisplay(IntPtr.Zero);
             if (display == IntPtr.Zero) throw new InvalidOperationException("No X display.");
-            ours = display;
-            handler = delegate(IntPtr where, IntPtr error)
+            lock (Errors)
             {
-                if (where == ours || previous == IntPtr.Zero) return 0;
-                return Marshal.GetDelegateForFunctionPointer<Handler>(previous)(where, error);
-            };
-            previous = XSetErrorHandler(Marshal.GetFunctionPointerForDelegate(handler));
+                Errors.Display = display;
+                if (!installed)
+                {
+                    Errors.Previous = XSetErrorHandler(Marshal.GetFunctionPointerForDelegate(handler));
+                    installed = true;
+                }
+            }
             root = XDefaultRootWindow(display);
         }
 
@@ -353,20 +372,18 @@ namespace CapriDesktop
 
         private long[] Property(IntPtr window, string name)
         {
+            if (read != null) return read(window, name);
             IntPtr type;
             int format;
             IntPtr items;
             IntPtr after;
             IntPtr data;
-            if (XGetWindowProperty(display, window, Atom(name), IntPtr.Zero, new IntPtr(4096), false, IntPtr.Zero, out type, out format, out items, out after, out data) != 0 || data == IntPtr.Zero) return null;
+            int status = XGetWindowProperty(display, window, Atom(name), IntPtr.Zero, new IntPtr(4096), false, IntPtr.Zero, out type, out format, out items, out after, out data);
             try
             {
-                if (format != 32) return null;
-                long[] values = new long[items.ToInt64()];
-                for (int i = 0; i < values.Length; i++) values[i] = Marshal.ReadIntPtr(data, i * IntPtr.Size).ToInt64();
-                return values;
+                return X11Safety.Property(status, type, format, items, data);
             }
-            finally { XFree(data); }
+            finally { if (data != IntPtr.Zero) XFree(data); }
         }
 
         internal override List<Spot> Windows(ICollection<long> skip)
@@ -386,8 +403,8 @@ namespace CapriDesktop
 
         internal override Spot Find(long window)
         {
-            long[] clients = Property(root, "_NET_CLIENT_LIST");
-            if (clients != null && Array.IndexOf(clients, window) < 0) return null;
+            long[] clients = Property(root, "_NET_CLIENT_LIST") ?? Property(root, "_NET_CLIENT_LIST_STACKING");
+            if (clients == null || Array.IndexOf(clients, window) < 0) return null;
             long[] current = Property(root, "_NET_CURRENT_DESKTOP");
             return Look(new IntPtr(window), current != null && current.Length > 0 ? current[0] : -1);
         }
@@ -406,6 +423,8 @@ namespace CapriDesktop
 
         private Spot Look(IntPtr window, long desktop)
         {
+            long[] pid = Property(window, "_NET_WM_PID");
+            if (pid != null && pid.Length > 0 && pid[0] == Environment.ProcessId) return null;
             long[] where = Property(window, "_NET_WM_DESKTOP");
             if (desktop >= 0 && where != null && where.Length > 0 && where[0] != desktop && (where[0] & 0xFFFFFFFF) != 0xFFFFFFFF) return null;
             long[] kinds = Property(window, "_NET_WM_WINDOW_TYPE");
@@ -452,183 +471,6 @@ namespace CapriDesktop
 
     // Hyprland, through its own socket: her windows float and stay on every workspace instead of tiling, she sits on the
     // windows it lists on the workspaces it shows, and she knows where the mouse is, which Wayland doesn't otherwise say.
-    internal sealed class HyprDesk : Desk
-    {
-        private readonly string socket = Socket();
-        private readonly int own = Environment.ProcessId;
-        private readonly HashSet<string> tamed = new HashSet<string>();
-        private readonly System.Threading.Timer taming;
-        private double scale = 1;
-
-        // Her bubble, typing box and pill show up after she does, so every second any new window of hers gets tamed too.
-        internal HyprDesk()
-        {
-            taming = new System.Threading.Timer(delegate
-            {
-                try { foreach (JsonElement client in Json("j/clients").EnumerateArray()) if (client.GetProperty("pid").GetInt32() == own) Tame(client); }
-                catch (Exception) { }
-            }, null, 500, 1000);
-        }
-
-        internal static string Socket()
-        {
-            string signature = Environment.GetEnvironmentVariable("HYPRLAND_INSTANCE_SIGNATURE");
-            if (string.IsNullOrEmpty(signature) || signature.IndexOfAny(new[] { '/', '\\' }) >= 0) return null;
-            string runtime = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR");
-            foreach (string folder in new[] { runtime == null ? null : Path.Combine(runtime, "hypr"), "/tmp/hypr" })
-            {
-                if (folder == null) continue;
-                string path = Path.Combine(folder, signature, ".socket.sock");
-                if (File.Exists(path)) return path;
-            }
-            return null;
-        }
-
-        internal override string Name { get { return "Hyprland"; } }
-
-        internal override string Debug() { return "scale " + scale; }
-
-        internal string Ask(string command)
-        {
-            using (Socket talk = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified))
-            {
-                talk.ReceiveTimeout = 1000;
-                talk.SendTimeout = 1000;
-                talk.Connect(new UnixDomainSocketEndPoint(socket));
-                talk.Send(Encoding.UTF8.GetBytes(command));
-                using (MemoryStream reply = new MemoryStream())
-                {
-                    byte[] chunk = new byte[65536];
-                    int got;
-                    while ((got = talk.Receive(chunk)) > 0) reply.Write(chunk, 0, got);
-                    return Encoding.UTF8.GetString(reply.ToArray());
-                }
-            }
-        }
-
-        private JsonElement Json(string command)
-        {
-            using (JsonDocument parsed = JsonDocument.Parse(Ask(command))) return parsed.RootElement.Clone();
-        }
-
-        // XWayland apps, like her, see Hyprland's layout times the monitor's scale when it zeroes their scaling.
-        private void Rescale(JsonElement monitors)
-        {
-            double found = 1;
-            try
-            {
-                JsonElement option = Json("j/getoption xwayland:force_zero_scaling");
-                if (option.TryGetProperty("int", out JsonElement zero) && zero.GetInt32() == 1)
-                    foreach (JsonElement monitor in monitors.EnumerateArray()) found = Math.Max(found, monitor.GetProperty("scale").GetDouble());
-            }
-            catch (Exception) { }
-            scale = found;
-        }
-
-        private int Px(double value) { return (int)Math.Round(value * scale); }
-
-        internal override PixelPoint? Pointer()
-        {
-            try
-            {
-                JsonElement at = Json("j/cursorpos");
-                return new PixelPoint(Px(at.GetProperty("x").GetDouble()), Px(at.GetProperty("y").GetDouble()));
-            }
-            catch (Exception) { return null; }
-        }
-
-        internal override List<Spot> Windows(ICollection<long> skip)
-        {
-            List<Spot> found = new List<Spot>();
-            JsonElement monitors = Json("j/monitors");
-            Rescale(monitors);
-            HashSet<long> shown = new HashSet<long>();
-            foreach (JsonElement monitor in monitors.EnumerateArray())
-            {
-                shown.Add(monitor.GetProperty("activeWorkspace").GetProperty("id").GetInt64());
-                if (monitor.TryGetProperty("specialWorkspace", out JsonElement special) && special.TryGetProperty("id", out JsonElement id) && id.GetInt64() != 0) shown.Add(id.GetInt64());
-            }
-            List<JsonElement> clients = new List<JsonElement>();
-            foreach (JsonElement client in Json("j/clients").EnumerateArray())
-            {
-                if (client.GetProperty("pid").GetInt32() == own) { Tame(client); continue; }
-                clients.Add(client);
-            }
-            // Floating windows sit over tiled ones, and among each the last focused is on top.
-            clients.Sort(delegate(JsonElement a, JsonElement b)
-            {
-                int floating = b.GetProperty("floating").GetBoolean().CompareTo(a.GetProperty("floating").GetBoolean());
-                return floating != 0 ? floating : a.GetProperty("focusHistoryID").GetInt32().CompareTo(b.GetProperty("focusHistoryID").GetInt32());
-            });
-            foreach (JsonElement client in clients)
-            {
-                Spot spot = Look(client, shown);
-                if (spot != null && !skip.Contains(spot.Window)) found.Add(spot);
-            }
-            return found;
-        }
-
-        internal override Spot Find(long window)
-        {
-            JsonElement monitors = Json("j/monitors");
-            HashSet<long> shown = new HashSet<long>();
-            foreach (JsonElement monitor in monitors.EnumerateArray()) shown.Add(monitor.GetProperty("activeWorkspace").GetProperty("id").GetInt64());
-            foreach (JsonElement client in Json("j/clients").EnumerateArray())
-                if (Address(client) == window) return Look(client, shown);
-            return null;
-        }
-
-        internal override bool Alive(long window)
-        {
-            foreach (JsonElement client in Json("j/clients").EnumerateArray()) if (Address(client) == window) return true;
-            return false;
-        }
-
-        private static long Address(JsonElement client)
-        {
-            string address = client.GetProperty("address").GetString() ?? "";
-            if (address.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) address = address.Substring(2);
-            long value;
-            return long.TryParse(address, System.Globalization.NumberStyles.HexNumber, null, out value) ? value : 0;
-        }
-
-        private Spot Look(JsonElement client, HashSet<long> shown)
-        {
-            if (!client.GetProperty("mapped").GetBoolean() || client.GetProperty("hidden").GetBoolean()) return null;
-            long workspace = client.GetProperty("workspace").GetProperty("id").GetInt64();
-            bool pinned = client.TryGetProperty("pinned", out JsonElement pin) && pin.GetBoolean();
-            if (!pinned && !shown.Contains(workspace)) return null;
-            JsonElement at = client.GetProperty("at"), size = client.GetProperty("size");
-            int width = Px(size[0].GetDouble()), height = Px(size[1].GetDouble());
-            if (width <= 0 || height <= 0) return null;
-            int full = client.TryGetProperty("fullscreen", out JsonElement screen) ? (screen.ValueKind == JsonValueKind.True ? 1 : screen.ValueKind == JsonValueKind.Number ? screen.GetInt32() : 0) : 0;
-            return Make(Address(client), new PixelRect(Px(at[0].GetDouble()), Px(at[1].GetDouble()), width, height), full == 0);
-        }
-
-        // Hyprland tiles every new window, which would make her a tile, so each of hers floats and is pinned to every workspace.
-        private void Tame(JsonElement client)
-        {
-            string address = client.GetProperty("address").GetString();
-            if (address == null) return;
-            lock (tamed) if (tamed.Contains(address)) return;
-            try
-            {
-                if (!client.GetProperty("floating").GetBoolean()) Dispatch("float", "setfloating", address);
-                if (!(client.TryGetProperty("pinned", out JsonElement pin) && pin.GetBoolean())) Dispatch("pin", "pin", address);
-                lock (tamed) tamed.Add(address);
-            }
-            catch (Exception) { }
-        }
-
-        // Hyprland 0.57 and later take Lua, like hl.dsp.window.pin({ action = "enable", window = "address:0x..." }); older ones
-        // take "pin address:0x...". She tries Lua first and falls back when it isn't taken.
-        private void Dispatch(string lua, string classic, string address)
-        {
-            string reply = Ask("dispatch hl.dsp.window." + lua + "({ action = \"enable\", window = \"address:" + address + "\" })");
-            if (reply.Trim() != "ok") Ask("dispatch " + classic + " address:" + address);
-        }
-    }
-
     // KDE on Wayland won't tell an app where the mouse is, but KWin will tell a script. Her jobs ask it this way, only
     // around a borrowed click, since it takes a few hundred milliseconds: a one-line script prints the cursor and the
     // desktop's size to the journal under a fresh tag, and she reads it back. 0 to 1 across the desktop, or null.
